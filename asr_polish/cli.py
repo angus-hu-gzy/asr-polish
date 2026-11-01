@@ -7,9 +7,11 @@
     asr-polish lexicon import 词表.txt             # 批量导入词表
     asr-polish lexicon list                        # 列出词表
     asr-polish lexicon export --out out.json       # 导出词表
+    asr-polish fetch <B站链接>                     # 从 B站视频取文本（字幕轨→必剪ASR）
     asr-polish version                             # 显示版本
 
-纯标准库实现（argparse），无第三方依赖。
+核心能力纯标准库实现（argparse），无第三方依赖；
+仅 fetch 命令在「无字幕 → 必剪 ASR」时需要可选依赖 yt-dlp。
 """
 from __future__ import annotations
 
@@ -69,6 +71,39 @@ def _cmd_lexicon_list(args: argparse.Namespace) -> None:
         print(f"{i:>3}. {e['correct']:<20} [{e.get('category', '未分类')}]  {variants}")
 
 
+def _cmd_fetch(args: argparse.Namespace) -> None:
+    from .bili import fetch, BiliError
+
+    try:
+        result = fetch(args.url, cookie_path=args.cookie)
+    except BiliError as e:
+        print(f"错误：{e}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"标题：{result.title}", file=sys.stderr)
+    print(f"UP主：{result.owner}", file=sys.stderr)
+    print(f"时长：{result.duration // 60}分{result.duration % 60}秒  "
+          f"来源：{result.source}", file=sys.stderr)
+    for w in result.warnings:
+        print(f"提示：{w}", file=sys.stderr)
+
+    text = result.text
+    if not args.no_correct:
+        cr = correct_text(text)
+        text = cr.text
+        if args.verbose:
+            print(cr.summary(), file=sys.stderr)
+    if not args.no_assess:
+        print(file=sys.stderr)
+        print(assess(text, duration_seconds=result.duration).summary(), file=sys.stderr)
+
+    if args.out:
+        Path(args.out).write_text(text + "\n", encoding="utf-8")
+        print(f"文本已写入：{args.out}", file=sys.stderr)
+    else:
+        print(text)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="asr-polish",
@@ -107,6 +142,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_ls = lex_sub.add_parser("list", help="列出内置词表全部条目")
     p_ls.set_defaults(func=_cmd_lexicon_list)
+
+    p_fetch = sub.add_parser("fetch", help="从 B站视频链接获取文本（字幕轨优先，无字幕走必剪 ASR）")
+    p_fetch.add_argument("url", help="B站视频链接或 bvid")
+    p_fetch.add_argument("--cookie", default=None, help="cookies.txt 路径（可选，用于取 AI 字幕）")
+    p_fetch.add_argument("--no-correct", action="store_true", help="不做术语订正")
+    p_fetch.add_argument("--no-assess", action="store_true", help="不做质量打分")
+    p_fetch.add_argument("-v", "--verbose", action="store_true", help="输出订正明细")
+    p_fetch.add_argument("--out", default=None, help="把文本写入文件而非 stdout")
+    p_fetch.set_defaults(func=_cmd_fetch)
 
     return parser
 

@@ -22,6 +22,9 @@ dynamic = ["version"]
 Homepage = "https://github.com/angus-hu-gzy/asr-polish"
 Repository = "https://github.com/angus-hu-gzy/asr-polish"
 
+[project.optional-dependencies]
+bilibili = ["yt-dlp"]
+
 [project.scripts]
 asr-polish = "asr_polish.cli:main"
 

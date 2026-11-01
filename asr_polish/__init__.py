@@ -7,7 +7,10 @@
 - crosscheck : 多引擎交叉验证 —— 对齐多个转写结果，标出低置信片段
 - quality    : 转写质量自评 —— 五维打分，一眼看出这段文字能不能信
 
-纯标准库实现，零第三方依赖。
+附加能力：
+- fetch      : 从 B站视频链接取文本（字幕轨优先，无字幕走必剪云端 ASR）
+
+核心能力纯标准库实现，零第三方依赖；仅 fetch 在无字幕场景需要可选依赖 yt-dlp。
 """
 from . import lexicon_io
 from .lexicon import Lexicon, DEFAULT_LEXICON_PATH
@@ -28,8 +31,13 @@ from .quality import (
     QualityReport,
     Dimension,
 )
+from .bili import (
+    fetch,
+    FetchResult,
+    BiliError,
+)
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "Lexicon",
@@ -46,5 +54,8 @@ __all__ = [
     "assess",
     "QualityReport",
     "Dimension",
+    "fetch",
+    "FetchResult",
+    "BiliError",
     "__version__",
 ]

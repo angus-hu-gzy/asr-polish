@@ -5,9 +5,9 @@
 [![Zero deps](https://img.shields.io/badge/dependencies-0-brightgreen)]()
 [![Author](https://img.shields.io/badge/author-angus--hu--gzy-555555)](https://github.com/angus-hu-gzy)
 
-中文语音转写（ASR）**质量打磨**工具 —— 把「转写出来的文字」变得可信。
+中文语音转写（ASR）**质量打磨**工具 —— 把「转写出来的文字」变得可信，也能直接**从 B站视频取文本**。
 
-纯 Python 标准库实现，**零第三方依赖**。
+核心能力纯 Python 标准库实现、**零第三方依赖**；仅「从 B站取文本」在无字幕场景需要可选依赖 `yt-dlp`。
 
 ## 为什么需要它
 
@@ -74,6 +74,23 @@ print(report.summary())
 
 五个维度：乱码检测（硬伤）、重复片段、可疑同音字、术语可识别度、字符密度。乱码或重复严重时**一票封顶**，总分不会及格的假象。
 
+### ④ 从 B站视频取文本 `fetch`
+
+一条命令，直接从 B站视频链接拿到可用的转写文本（字幕轨优先，无字幕走必剪云端 ASR），并自动接上订正 + 打分。
+
+```python
+from asr_polish import fetch
+
+result = fetch("https://www.bilibili.com/video/BVxxxxxxxxxx")
+print(result.title)   # 视频标题
+print(result.source)  # "字幕轨" 或 "必剪云端ASR"
+print(result.text)    # 转写文本（可直接接 correct_text / assess）
+```
+
+- **字幕轨优先**：有字幕直接取（纯标准库、秒级），无字幕自动切必剪云端 ASR（约 13 秒）
+- **有 Cookie 能取到 AI 字幕**：传入 cookies.txt 路径可多取到 B站 AI 字幕轨
+- **隐私**：无字幕时音频会上传至 B站服务器（公开视频音轨，风险低）
+
 ## 实测效果
 
 用一段 22 分钟的真实技术视频，对比「本地 faster-whisper」与「必剪云端 ASR」两份转写：
@@ -88,11 +105,14 @@ print(report.summary())
 
 ## 安装
 
-零第三方依赖，Python 3.9+ 即可。
+核心能力零第三方依赖，Python 3.9+ 即可。
 
 ```bash
-pip install -e .          # 开发安装；发布到 PyPI 后可直接 pip install asr-polish
+pip install -e .              # 只装核心（订正 / 交叉验证 / 打分）
+pip install -e .[bilibili]    # 额外支持从 B站视频取文本（引入 yt-dlp）
 ```
+
+发布到 PyPI 后可直接 `pip install asr-polish`（或 `asr-polish[bilibili]`）。
 
 装好后即可用命令行工具 `asr-polish`：
 
@@ -106,11 +126,17 @@ asr-polish assess "转写文本" --duration 1316
 # 交叉验证两个转写文本文件
 asr-polish crosscheck cloud.txt local.txt
 
+# 从 B站视频取文本（字幕轨优先，无字幕走必剪云端 ASR）
+asr-polish fetch "https://www.bilibili.com/video/BVxxxxxxxxxx"
+asr-polish fetch BVxxxxxxxxxx --out transcript.txt   # 文本存文件
+
 # 词表管理
 asr-polish lexicon list                    # 列出词表
 asr-polish lexicon import my_words.txt     # 批量导入
 asr-polish lexicon export --out out.json   # 导出
 ```
+
+> `fetch` 文本走 stdout、元信息与评分走 stderr，方便 `asr-polish fetch <链接> > text.txt` 直接存文本。
 
 ## 快速开始
 
@@ -189,6 +215,7 @@ asr-polish/
 │   ├── correction.py      # 术语订正引擎
 │   ├── crosscheck.py      # 多引擎交叉验证
 │   ├── quality.py         # 转写质量自评
+│   ├── bili.py            # B站视频取文本（字幕轨 → 必剪云端 ASR）
 │   ├── lexicon.py         # 词表加载
 │   ├── lexicon_io.py      # 词表批量导入/导出
 │   └── data/
@@ -211,3 +238,4 @@ asr-polish/
 - **订正基于词表，不是万能**。它能抓词表里收录的错误；词表没覆盖的错字抓不到，且存在误伤风险（如医疗内容里的「接生」会被误判为 `JSON`）。因此每处订正都**留痕可回溯**，重要场景请人工核对。
 - **交叉验证基于字符级对齐**。它衡量「多引擎是否一致」，而非「是否正确」——两个引擎可能同时错成同一个词。它回答的是「这段可不可信」，不是「这段绝对正确」。
 - **质量评分是启发式的**，用于横向对比和快速筛查，不是绝对标准。
+- **fetch 依赖外部服务**。字幕轨来自 B站 API（可能因风控或视频设置拿不到）；无字幕时的必剪 ASR 需要 `yt-dlp` 下载音频并把音轨上传至 B站服务器。二者任一失败都会给出明确报错，而非静默返回空文本。
