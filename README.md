@@ -35,9 +35,11 @@ print(result.summary())  # 订正 3 处：色考 → SQL；PASS → Python；福
 ```
 
 - **长词优先**：`Aging Decoding` 整体订正为 `Agentic Coding`，不会被子串抢先误替换
-- **英文变体加词边界**：`PASS`（全大写）命中 `Python`，但英文常用词 `pass`、`compass` 不受影响
-- **变体级置信分级**：置信度标在「变体」上，而非整条词目。规则默认 ASCII 变体 high、中文变体 medium；「不可能独立成词」的安全中文变体用 `high_variants` 白名单升级。medium 变体（如 `一部`→`异步`）只有在命中位置 ±8 字内出现 ≥2 个强相关词时才订正，`我们看一部电影` 不会被误改成 `我们看异步电影`
-- **每处订正可追溯**：返回原文、位置、类别，方便人工核对与回滚
+- **英文变体加词边界**：`PASS`（全大写）命中 `Python`，但英文常用词 `pass`、`compass` 不受影响（订正与打分用同一套判定）
+- **变体级置信分级**：置信度标在「变体」上，而非整条词目。规则默认 ASCII 变体 high、中文变体 medium；「不可能独立成词」的安全中文变体用 `high_variants` 白名单升级。medium 变体（如 `一部`→`异步`）需要上下文佐证才订正，`我们看一部电影` 不会被误改成 `我们看异步电影`
+- **上下文分强弱**：`strong_context`（如「虚拟机」「序列化」）命中 1 个即可，`context` 弱词需命中 ≥2 个——`我们讲爪哇的虚拟机` 能订正为 Java，而 `杰森·斯坦森主演的动作片` 不会误判为 JSON
+- **邻接保护 `guards`**：给「会被更长正常词包含」的变体加负向前瞻，`这台机器全占满了`、`请给特写镜头`、`买色口红色号` 都不会被误订正
+- **每处订正可追溯**：返回原文、位置、类别、置信度；`summary()` 会给 medium 改动标注「待确认」，方便只审这类改动
 
 ### ② 多引擎交叉验证 `crosscheck`
 
@@ -165,16 +167,23 @@ python tests/test_lexicon_io.py
   "entries": [
     { "correct": "SQL", "category": "编程语言",
       "confidence": "high",
-      "variants": ["色考", "色口", "seq l"], "note": "结构化查询语言" },
+      "variants": ["色考", "色口", "seq l"],
+      "guards": {"色口": "红"}, "note": "结构化查询语言" },
     { "correct": "异步", "category": "技术术语",
       "high_variants": ["易步"],
       "variants": ["一部", "易步"],
+      "strong_context": ["协程", "非阻塞"],
       "context": ["线程", "协程", "回调", "并发"], "note": "Async" }
   ]
 }
 ```
 
-字段说明：`confidence` 可整体指定 `high`/`medium`；`high_variants` 把「不可能独立成词」的安全中文变体升级为 high；`context` 是 medium 变体的强相关上下文词（±8 字内命中 ≥2 个才订正）。中文变体默认 medium（安全优先），ASCII 变体默认 high。
+字段说明：
+- `confidence`：整体指定 `high`/`medium`；中文变体默认 medium（安全优先），ASCII 变体默认 high。
+- `high_variants`：把「不可能独立成词」的安全中文变体升级为 high（无条件订正）。
+- `strong_context`：medium 变体的强上下文词，±8 字内命中 **1 个**即订正（如「虚拟机」对「爪哇」）。
+- `context`：medium 变体的弱上下文词，±8 字内需命中 **≥2 个**才订正。
+- `guards`：`{变体: 正则}`，给变体加负向前瞻做邻接保护——如 `"色口": "红"` 让「买色口红色号」不被误判为 SQL。
 
 按你的领域增删条目即可，也支持加载外部词表：
 
@@ -250,6 +259,7 @@ asr-polish/
 
 ## 变更记录
 
+- **0.4.0 → 0.5.0**：修复 CLI `--out` help 中 `%APPDATA%` 未转义导致 argparse 崩溃的 P0 回归（该版本 CLI 全不可用，请直接升到本版）；`quality` 与 `correction` 统一匹配逻辑（英文词边界 + 长词优先去重），`pass`/`compass` 不再被误标、重叠变体不再双重计数；medium 上下文分强弱（`strong_context` 命中 1 个即可，`context` 弱词需 ≥2）；新增 `guards` 邻接保护；`Correction` 增加 `confidence` 字段并在 `summary()` 标注 medium 改动；`cross_check` 剔除空引擎；CI 补充 editable 安装冒烟、wheel 内容校验、Windows job 与 ruff。
 - **0.3.0 → 0.4.0**：中文变体默认改为 `medium`（安全优先），引入 `high_variants` 白名单与 `context` 窄词表上下文；`USER_LEXICON_PATH` 改为平台感知（Windows `%APPDATA%`，POSIX 尊重 `XDG_CONFIG_HOME`）；交叉验证报告由「整体置信度」更名为「字符一致率」，两引擎冲突（0.5）现计入低置信片段。
 - **0.2.0 → 0.3.0**：`CrossCheckResult.merged` 由 dataclass 字段改为只读属性（等价于 `base_text`），直接以 `CrossCheckResult(merged=...)` 构造的调用会报 `TypeError`，请改用 `base_text=`。
 
@@ -259,7 +269,7 @@ asr-polish/
 
 ## 诚实说明（边界）
 
-- **订正基于词表，不是万能**。它能抓词表里收录的错误；词表没覆盖的错字抓不到。因此每处订正都**留痕可回溯**，重要场景请人工核对。为降低误伤，英文变体加了词边界、中文变体默认 medium（只在 ±8 字内命中 ≥2 个强相关词时订正），「不可能独立成词」的安全变体经 `high_variants` 白名单升级，但仍可能有个别误判。
+- **订正基于词表，不是万能**。它能抓词表里收录的错误；词表没覆盖的错字抓不到。因此每处订正都**留痕可回溯**（含置信度），重要场景请人工核对，尤其 `summary()` 标注「待确认」的 medium 改动。为降低误伤，英文变体加了词边界、中文变体默认 medium（需 ±8 字内强上下文命中 1 个或弱上下文命中 ≥2 个才订正）、易被正常词包含的变体另配 `guards` 邻接保护，「不可能独立成词」的安全变体经 `high_variants` 白名单升级，但仍可能有个别误判。
 - **交叉验证基于 token 级对齐**。它衡量「多引擎是否一致」，而非「是否正确」——两个引擎可能同时错成同一个词。它回答的是「这段可不可信」，不是「这段绝对正确」。
 - **质量评分是启发式的**，用于同一段内容的横向对比和快速筛查，不是绝对标准。
 - **fetch 依赖外部服务**。字幕轨来自 B站 API（可能因风控或视频设置拿不到）；无字幕时的必剪 ASR 需要 `yt-dlp` 下载音频并把音轨上传至 B站服务器。二者任一失败都会给出明确报错，而非静默返回空文本。

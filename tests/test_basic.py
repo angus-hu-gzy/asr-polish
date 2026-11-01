@@ -29,6 +29,15 @@ class TestCorrection(unittest.TestCase):
         r = correct_text("学习h t t p协议")
         self.assertIn("HTTP", r.text)
 
+    def test_correction_carries_confidence(self):
+        # 每处订正都应带置信度：白名单变体 high，上下文佐证的 medium
+        high = correct_text("请用易步的方式处理").corrections[0]
+        self.assertEqual(high.confidence, "high")
+        med = correct_text("线程和一部配合回调处理").corrections[0]
+        self.assertEqual(med.confidence, "medium")
+        # summary 对 medium 改动应标注「待确认」，便于只审 medium
+        self.assertIn("待确认", correct_text("线程和一部配合回调处理").summary())
+
 
 class TestNoFalsePositive(unittest.TestCase):
     """误伤回归测试：这些句子里的词形与某些「错误变体」撞车，但语义是正常中文/英文，不应被替换。"""
@@ -111,6 +120,18 @@ class TestNoFalsePositive(unittest.TestCase):
         # 「开园」即便附近出现「开源海报」也不应变 开源
         self._assert_untouched("那个庙会开园了，门口贴着开源海报")
 
+    def test_quanzhan_machine_full(self):
+        # 「全占满」是正常中文，guards 应阻止「全占」被误判为「全栈」
+        self._assert_untouched("这台机器全占满了")
+
+    def test_geite_closeup(self):
+        # 「给特写」是正常中文，guards 应阻止「给特」被误判为 Git
+        self._assert_untouched("请给特写镜头")
+
+    def test_sekou_lipstick(self):
+        # 「买色口红色号」是「买+口红色号」，guards 应阻止误判为 MySQL/SQL
+        self._assert_untouched("买色口红色号")
+
 
 class TestMediumConfidence(unittest.TestCase):
     """medium 变体在强相关上下文中才订正；high_variants 白名单无条件订正。"""
@@ -136,6 +157,19 @@ class TestMediumConfidence(unittest.TestCase):
         self.assertIn("异步", r1.text)
         r2 = correct_text("这属于病发场景")
         self.assertIn("并发", r2.text)
+
+    def test_strong_context_single_word_suffices(self):
+        # 强上下文词（虚拟机）命中 1 个即可订正「爪哇」→ Java
+        r = correct_text("我们讲爪哇的虚拟机")
+        self.assertIn("Java", r.text)
+
+    def test_weak_context_needs_two_words(self):
+        # 弱上下文词（数据 + 格式）命中 2 个，订正「杰森」→ JSON
+        r = correct_text("杰森这种数据格式很常见")
+        self.assertIn("JSON", r.text)
+        # 只有 1 个弱词则不够，不订正
+        r2 = correct_text("杰森这个格式")
+        self.assertNotIn("JSON", r2.text)
 
 
 class TestCrossCheck(unittest.TestCase):
@@ -167,6 +201,12 @@ class TestCrossCheck(unittest.TestCase):
         r = cross_check("SQL和Python", "色考和PASS")
         self.assertTrue(len(r.low_confidence_segments) >= 1)
 
+    def test_empty_engine_excluded(self):
+        # 空文本不应被算成「反对一切」：剔除后只剩 1 个有效引擎，一致率为 1
+        r = cross_check("今天讲SQL", "")
+        self.assertEqual(r.overall_confidence, 1.0)
+        self.assertEqual(r.segments[0].total, 1)
+
 
 class TestQuality(unittest.TestCase):
     def test_clean_text_scores_high(self):
@@ -186,6 +226,19 @@ class TestQuality(unittest.TestCase):
         r = assess("我们看一部电影", duration_seconds=4)
         dim = next(d for d in r.dimensions if d.name == "可疑同音字")
         self.assertEqual(dim.metric, 0)
+
+    def test_ascii_word_boundary_in_assess(self):
+        # 与 correct 一致：pass/compass 有词边界保护，assess 不应误判为 Python
+        for t in ("请 pass 这个参数", "这是 compass 指南针"):
+            r = assess(t, duration_seconds=4)
+            dim = next(d for d in r.dimensions if d.name == "可疑同音字")
+            self.assertEqual(dim.metric, 0, f"{t!r} 不应被标为可疑")
+
+    def test_overlapping_variants_not_double_counted(self):
+        # 「h t t p s」应只命中 HTTPS 一次，不再被 HTTP+HTTPS 扣两次分
+        r = assess("h t t p s 协议", duration_seconds=2)
+        dim = next(d for d in r.dimensions if d.name == "可疑同音字")
+        self.assertEqual(dim.metric, 1)
 
 
 class TestCLI(unittest.TestCase):

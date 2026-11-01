@@ -28,6 +28,9 @@ def _user_config_dir() -> Path:
 # 用户词表路径：`lexicon import` 写入此处，避免写只读的 site-packages 包目录
 USER_LEXICON_PATH = _user_config_dir() / "lexicon.json"
 
+# 当前支持的词表格式版本；加载到更高版本时提示（不阻断，尽量向后兼容）
+_SUPPORTED_LEXICON_VERSION = 2
+
 
 class Lexicon:
     """术语订正词表。
@@ -61,6 +64,11 @@ class Lexicon:
         # utf-8-sig 兼容 Windows 记事本「UTF-8 带 BOM」的常见情况
         with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
+        version = data.get("version", 1)
+        if isinstance(version, int) and version > _SUPPORTED_LEXICON_VERSION:
+            warnings.warn(
+                f"词表版本 v{version} 高于当前支持的 v{_SUPPORTED_LEXICON_VERSION}，"
+                f"部分字段可能被忽略：{path}", stacklevel=3)
         return data.get("entries", [])
 
     @staticmethod

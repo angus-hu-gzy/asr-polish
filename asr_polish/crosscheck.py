@@ -116,13 +116,18 @@ def _should_use_autojunk(tokens: List[str]) -> bool:
 
 
 def cross_check(*texts: str) -> CrossCheckResult:
-    """对 2 个及以上转写结果做交叉验证。第一个参数为基准文本。"""
+    """对 2 个及以上转写结果做交叉验证。第一个参数为基准文本。
+
+    空文本会被剔除：一个「没产出任何内容」的引擎不应被算成「反对一切」，
+    否则 `cross_check("今天讲SQL", "")` 会把一致率腰斩成 0.5。
+    """
+    texts = [t for t in texts if t]
     if not texts:
-        raise ValueError("至少需要 1 个转写结果")
+        raise ValueError("至少需要 1 个非空转写结果")
     base = texts[0]
     n = len(texts)
 
-    if n == 1 or not base:
+    if n == 1:
         seg = Segment(text=base, agree=n, total=n, confidence=1.0)
         return CrossCheckResult(base_text=base, segments=[seg])
 

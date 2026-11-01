@@ -7,12 +7,17 @@ on:
 
 jobs:
   test:
-    name: Python ${{ matrix.python-version }}
-    runs-on: ubuntu-latest
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        include:
+          # Windows 专属坑：BOM、控制台编码、%APPDATA% 路径——只在这会炸
+          - os: windows-latest
+            python-version: "3.12"
 
     steps:
       - uses: actions/checkout@v4
@@ -22,7 +27,58 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Install package
+        run: python -m pip install -e .
+
+      - name: CLI smoke（验证入口点 + argparse 能正常构建）
+        run: asr-polish --version
+
       - name: Run tests
         run: |
           python tests/test_basic.py
           python tests/test_lexicon_io.py
+
+  build:
+    name: Build & verify wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist & wheel
+        run: |
+          python -m pip install build
+          python -m build
+
+      - name: Verify wheel 内含词表/类型标记/NOTICE
+        run: |
+          python - <<'PY'
+          import glob, zipfile
+          whl = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(whl).namelist()
+          assert any("data/corrections.json" in n for n in names), "wheel 缺 corrections.json"
+          assert any(n.endswith("py.typed") for n in names), "wheel 缺 py.typed"
+          assert any("NOTICE" in n for n in names), "wheel 缺 NOTICE"
+          assert any("LICENSE" in n for n in names), "wheel 缺 LICENSE"
+          print("wheel 内容校验通过")
+          PY
+
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run ruff（未用 import / 未定义名 / 语法错误）
+        run: |
+          python -m pip install ruff
+          ruff check --select F,E9 .
