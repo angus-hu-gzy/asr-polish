@@ -86,9 +86,16 @@ def _detect_repetition(text: str) -> Tuple[float, List[Tuple[int, int, str]]]:
 def _detect_suspicious_variants(
     text: str, lexicon: Lexicon
 ) -> Tuple[int, List[Tuple[int, int, str]]]:
-    """返回 (可疑变体次数, 位置列表)。"""
+    """返回 (可疑变体次数, 位置列表)。
+
+    只统计 high 置信度的变体——与 `correct_text` 的判定保持一致：medium 变体
+    （如「一部」）在无技术语境时正确文本不会订正，这里也不应把它标成「疑似错字」，
+    避免「correct 说不用改、assess 却扣分」的自相矛盾。
+    """
     spans: List[Tuple[int, int, str]] = []
-    for variant, correct in lexicon.all_variants:
+    for variant, correct, confidence in lexicon.all_variants_with_confidence:
+        if confidence != "high":
+            continue
         flags = re.IGNORECASE if all(ord(c) < 128 for c in variant) else 0
         for m in re.finditer(re.escape(variant), text, flags):
             spans.append((m.start(), m.end(), f"疑似「{correct}」"))

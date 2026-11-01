@@ -15,7 +15,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
-from typing import List, Optional, Tuple
+from typing import List, Tuple
+
+# base token 数超过此阈值时才考虑 autojunk（避免正常长文本也损失对齐精度）
+_AUTOJUNK_THRESHOLD = 1000
+# token 去重占比低于此值视为「高度重复」（引擎卡死的典型特征）
+_REPETITIVE_RATIO = 0.1
 
 
 @dataclass
@@ -28,7 +33,9 @@ class Segment:
 
     @property
     def is_low_confidence(self) -> bool:
-        return self.confidence < 0.5
+        # <= 0.5：两引擎各执一词时 confidence 恰为 0.5，应算低置信，
+        # 避免「字符一致率 65%」与「低置信片段 0 个」互相矛盾。
+        return self.confidence <= 0.5
 
     @property
     def is_conflict(self) -> bool:
@@ -57,7 +64,11 @@ class CrossCheckResult:
 
     @property
     def overall_confidence(self) -> float:
-        """整体置信度 = 各段置信度的加权平均（按字符数加权）。"""
+        """整体一致率 = 各段置信度的加权平均（按字符数加权）。
+
+        注意：这是「按字符加权的片段平均一致度」，衡量多引擎有多一致，
+        不是「内容正确率」——两个引擎可能同时错成同一个词。
+        """
         total_chars = sum(len(s.text) for s in self.segments)
         if total_chars == 0:
             return 1.0
@@ -90,6 +101,20 @@ def _tokenize(s: str) -> List[Tuple[int, int, str]]:
     return tokens
 
 
+def _should_use_autojunk(tokens: List[str]) -> bool:
+    """仅在「文本既长又高度重复」时启用 autojunk。
+
+    正常长文本（token 去重占比较高）即使不开 autojunk 也很快（实测 1 万字约 0.6s）
+    且对齐更精确；只有「引擎卡死导致大段重复」这类文本才会触发近似平方级退化，
+    此时用 autojunk 跳过高频 token 以避免卡死，代价是重复区域的对齐变粗——而这类
+    文本本就会被 quality 的重复检测标记，可接受。
+    """
+    n = len(tokens)
+    if n <= _AUTOJUNK_THRESHOLD:
+        return False
+    return len(set(tokens)) / n < _REPETITIVE_RATIO
+
+
 def cross_check(*texts: str) -> CrossCheckResult:
     """对 2 个及以上转写结果做交叉验证。第一个参数为基准文本。"""
     if not texts:
@@ -110,7 +135,9 @@ def cross_check(*texts: str) -> CrossCheckResult:
         if not t:
             continue
         other_token_texts = [tok[2] for tok in _tokenize(t)]
-        sm = SequenceMatcher(None, base_token_texts, other_token_texts, autojunk=False)
+        autojunk = (_should_use_autojunk(base_token_texts)
+                    or _should_use_autojunk(other_token_texts))
+        sm = SequenceMatcher(None, base_token_texts, other_token_texts, autojunk=autojunk)
         for tag, i1, i2, _j1, _j2 in sm.get_opcodes():
             if tag == "equal" and i2 > i1:
                 # 这段 token 对应 base 的字符区间 [char_start, char_end)
@@ -126,7 +153,8 @@ def cross_check(*texts: str) -> CrossCheckResult:
         cur += diff[i]
         support[i] = cur
 
-    # 扫描出支持数相同的连续段
+    # 扫描出支持数相同的连续段（每段已是「最大同支持区间」，
+    # 相邻段支持数必然不同，短分歧段保留独立，不再塞进前一段以避免定位失真）
     segments: List[Segment] = []
     i = 0
     while i < length:
@@ -143,30 +171,12 @@ def cross_check(*texts: str) -> CrossCheckResult:
         ))
         i = j
 
-    # 合并过短的「分歧」片段（< 2 字符）到前一个片段，减少噪声碎片；
-    # 过短的「一致」片段保留独立，避免把确定正确的单字误标为分歧。
-    MIN_SEG = 2
-    merged_segments: List[Segment] = []
-    for seg in segments:
-        if (merged_segments and len(seg.text) < MIN_SEG
-                and seg.agree < seg.total):
-            prev = merged_segments[-1]
-            prev.text += seg.text
-            prev.confidence = min(prev.confidence, seg.confidence)
-            prev.agree = min(prev.agree, seg.agree)
-        else:
-            merged_segments.append(Segment(
-                text=seg.text, agree=seg.agree, total=seg.total,
-                confidence=seg.confidence,
-            ))
-    segments = merged_segments
-
     return CrossCheckResult(base_text=base, segments=segments)
 
 
 def confidence_report(result: CrossCheckResult) -> str:
     """生成一段可读的交叉验证报告。"""
-    lines = [f"整体置信度：{result.overall_confidence:.0%}"]
+    lines = [f"字符一致率：{result.overall_confidence:.0%}"]
     lines.append(f"片段总数：{len(result.segments)}，"
                  f"低置信片段：{len(result.low_confidence_segments)} 个")
     for seg in result.conflict_segments:

@@ -5,8 +5,10 @@
 - 英文变体加字母边界、中文变体精确匹配：纯 ASCII 变体用 `(?<![A-Za-z])...(?![A-Za-z])`
   包裹，避免「pass」命中「compass」「passport」；全大写变体（如 PASS）改为大小写敏感，
   避免把英文常用词「pass」误判成 Python。
-- 变体置信分级：词表条目可标注 `confidence: "medium"`。medium 变体（如「一部」→「异步」、
-  「兵法」→「并发」这类本身是合法中文常用词的）只有在命中位置附近出现同类别术语时才替换，
+- 变体级置信分级：置信度标在「变体」而非「条目」上。规则默认 ASCII 变体 high、中文变体
+  medium（`Lexicon.resolve_confidence` 负责），「不可能独立成词」的安全中文变体用
+  `high_variants` 白名单升级。high 变体无条件订正；medium 变体（如「一部」→「异步」这类
+  本身是合法中文常用词的）只有在命中位置 ±8 字内出现 ≥2 个强相关上下文词时才订正，
   从而避免「我们看一部电影」被改成「我们看异步电影」。
 - 记录每一处订正的位置与原文，方便人工核对与回滚。
 纯标准库实现，无第三方依赖。
@@ -15,12 +17,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, List, Tuple
+from typing import List, Tuple
 
 from .lexicon import Lexicon
 
 # medium 变体做上下文佐证时，向前后各扩展的字符窗口大小
-_CONTEXT_WINDOW = 24
+_CONTEXT_WINDOW = 8
+# medium 变体在窗口内至少命中的强相关词数量
+_MIN_CONTEXT_HITS = 2
 
 
 @dataclass
@@ -55,21 +59,29 @@ class Corrector:
 
     def __init__(self, lexicon: Lexicon | None = None):
         self.lexicon = lexicon or Lexicon()
-        # (变体, 正确词, 类别, 置信度)，按变体长度降序
-        self._patterns: List[Tuple[str, str, str, str]] = self._build_patterns()
-        # 类别 → 该类别下的所有正确术语（供 medium 变体上下文佐证）
+        # 类别 → 该类别下的所有正确术语（medium 变体上下文佐证的回退来源）
         self._category_terms: dict[str, List[str]] = self._build_category_terms()
+        # (变体, 正确词, 类别, 置信度, 上下文词)，按变体长度降序
+        self._patterns: List[Tuple[str, str, str, str, List[str]]] = self._build_patterns()
 
-    def _build_patterns(self) -> List[Tuple[str, str, str, str]]:
-        patterns: List[Tuple[str, str, str, str]] = []
+    def _build_patterns(self) -> List[Tuple[str, str, str, str, List[str]]]:
+        patterns: List[Tuple[str, str, str, str, List[str]]] = []
         for entry in self.lexicon.entries:
             correct = entry["correct"]
             category = entry.get("category", "")
-            confidence = str(entry.get("confidence", "high")).lower()
+            context_words = self._context_words_for(entry)
             for variant in entry.get("variants", []):
-                patterns.append((variant, correct, category, confidence))
+                confidence = self.lexicon.resolve_confidence(entry, variant)
+                patterns.append((variant, correct, category, confidence, context_words))
         patterns.sort(key=lambda x: len(x[0]), reverse=True)
         return patterns
+
+    def _context_words_for(self, entry: dict) -> List[str]:
+        """medium 变体的上下文佐证词：优先用条目的 context，否则回退到同类别术语。"""
+        words = self.lexicon.context_words(entry)
+        if words:
+            return words
+        return self._category_terms.get(entry.get("category", ""), [])
 
     def _build_category_terms(self) -> dict[str, List[str]]:
         """类别 → 正确术语列表（去重）。用于 medium 变体的上下文佐证。"""
@@ -106,31 +118,31 @@ class Corrector:
             flags = 0
         return pattern, flags
 
-    def _has_context(self, text: str, start: int, end: int, category: str) -> bool:
-        """medium 变体是否需要上下文佐证：命中位置附近是否出现同类别术语。"""
-        if not category:
+    def _has_context(self, text: str, start: int, end: int, context_words: List[str]) -> bool:
+        """medium 变体是否需要上下文佐证：±8 字窗口内出现 ≥2 个强相关词。"""
+        if not context_words:
             return False
         window = text[max(0, start - _CONTEXT_WINDOW): end + _CONTEXT_WINDOW]
-        for term in self._category_terms.get(category, []):
-            if term and term in window:
-                return True
-        return False
+        hits = sum(1 for w in context_words if w and w in window)
+        return hits >= _MIN_CONTEXT_HITS
 
     def correct(self, text: str) -> CorrectionResult:
         """对文本执行订正，返回订正结果。"""
         hits: List[Tuple[int, int, str, str, str]] = []  # (start, end, correct, original, category)
         occupied: List[Tuple[int, int]] = []              # 已占用的区间，避免重叠替换
 
-        for variant, correct, category, confidence in self._patterns:
+        for variant, correct, category, confidence, context_words in self._patterns:
             pattern, flags = self._pattern_for_variant(variant)
             for m in re.finditer(pattern, text, flags):
                 start, end = m.span()
                 # 跳过与已订正区间重叠的匹配
                 if any(not (end <= s or start >= e) for s, e in occupied):
                     continue
-                # medium 变体需要上下文佐证，否则视为正常用词跳过
+                # medium 变体需要上下文佐证，否则视为正常用词跳过；low/未知不自动订正
                 if confidence == "medium" and not self._has_context(
-                        text, start, end, category):
+                        text, start, end, context_words):
+                    continue
+                if confidence not in ("high", "medium"):
                     continue
                 hits.append((start, end, correct, m.group(0), category))
                 occupied.append((start, end))

@@ -6,14 +6,27 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
+import warnings
 from pathlib import Path
 from typing import Any, Optional
 
 # 默认词表路径：包内 data/corrections.json（只读基线）
 DEFAULT_LEXICON_PATH = Path(__file__).parent / "data" / "corrections.json"
 
+
+def _user_config_dir() -> Path:
+    """用户词表所在目录：Windows 用 %APPDATA%，POSIX 尊重 XDG_CONFIG_HOME。"""
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        return Path(base) / "asr-polish"
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "asr-polish"
+
+
 # 用户词表路径：`lexicon import` 写入此处，避免写只读的 site-packages 包目录
-USER_LEXICON_PATH = Path.home() / ".config" / "asr-polish" / "lexicon.json"
+USER_LEXICON_PATH = _user_config_dir() / "lexicon.json"
 
 
 class Lexicon:
@@ -37,12 +50,16 @@ class Lexicon:
         self.path = Path(path) if path else DEFAULT_LEXICON_PATH
         self.entries: list[dict[str, Any]] = self._load(self.path)
         if not path and include_user and USER_LEXICON_PATH.exists():
-            user_entries = self._load(USER_LEXICON_PATH)
-            self.entries = self._merge_entries(self.entries, user_entries)
+            try:
+                user_entries = self._load(USER_LEXICON_PATH)
+                self.entries = self._merge_entries(self.entries, user_entries)
+            except Exception:  # 用户词表损坏时降级：忽略并告警，不拖垮整个 import
+                warnings.warn(f"用户词表损坏，已忽略：{USER_LEXICON_PATH}", stacklevel=2)
         self._variant_map: dict[str, str] = self._build_variant_map()
 
     def _load(self, path: str | Path) -> list[dict[str, Any]]:
-        with open(path, encoding="utf-8") as f:
+        # utf-8-sig 兼容 Windows 记事本「UTF-8 带 BOM」的常见情况
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
         return data.get("entries", [])
 
@@ -95,6 +112,43 @@ class Lexicon:
                 pairs.append((variant, correct))
         pairs.sort(key=lambda x: len(x[0]), reverse=True)
         return pairs
+
+    @staticmethod
+    def _is_ascii(variant: str) -> bool:
+        return all(ord(ch) < 128 for ch in variant)
+
+    def resolve_confidence(self, entry: dict[str, Any], variant: str) -> str:
+        """解析单个变体的置信度：变体级白名单 > 条目级 > 规则默认。
+
+        规则默认：ASCII 变体（有词边界保护）→ high；中文变体 → medium。
+        中文变体常与合法中文词同形，默认按 medium 处理，只在命中位置附近出现
+        强相关上下文词时才订正；「不可能独立成词」的安全变体用 high_variants 白名单升级。
+        """
+        high = entry.get("high_variants") or []
+        if variant in high:
+            return "high"
+        medium = entry.get("medium_variants") or []
+        if variant in medium:
+            return "medium"
+        conf = str(entry.get("confidence") or "").strip().lower()
+        if conf in ("high", "medium", "low"):
+            return conf
+        return "high" if self._is_ascii(variant) else "medium"
+
+    @property
+    def all_variants_with_confidence(self) -> list[tuple[str, str, str]]:
+        """(变体, 正确词, 置信度) 列表，按变体长度降序。供质量自评等按置信度过滤。"""
+        pairs: list[tuple[str, str, str]] = []
+        for entry in self.entries:
+            correct = entry["correct"]
+            for variant in entry.get("variants", []):
+                pairs.append((variant, correct, self.resolve_confidence(entry, variant)))
+        pairs.sort(key=lambda x: len(x[0]), reverse=True)
+        return pairs
+
+    def context_words(self, entry: dict[str, Any]) -> list[str]:
+        """medium 变体的强相关上下文佐证词；未配置时返回空列表（由调用方回退到类别）。"""
+        return [str(w) for w in (entry.get("context") or []) if str(w)]
 
     def lookup_variant(self, text: str) -> Optional[str]:
         """若 text 是某个变体，返回对应正确词；否则 None。"""

@@ -86,6 +86,35 @@ def test_import_into_file():
         assert sql["variants"] == ["色考", "色口"]
 
 
+def test_load_with_utf8_bom():
+    # Windows 记事本「UTF-8 带 BOM」很常见，读取不应崩
+    from asr_polish.lexicon import Lexicon
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "lex.json"
+        content = '{"version":1,"entries":[{"correct":"SQL","variants":["色考"]}]}'
+        p.write_bytes(b"\xef\xbb\xbf" + content.encode("utf-8"))
+        data = lexicon_io.load_lexicon_data(p)
+        assert data["entries"][0]["correct"] == "SQL"
+        lex = Lexicon(path=p)
+        assert lex.entries[0]["correct"] == "SQL"
+
+
+def test_variant_level_confidence():
+    from asr_polish.lexicon import Lexicon
+    lex = Lexicon()
+    # 规则默认：中文变体 medium、ASCII 变体 high
+    e = {"correct": "X", "variants": ["某词", "x y z"]}
+    assert lex.resolve_confidence(e, "某词") == "medium"
+    assert lex.resolve_confidence(e, "x y z") == "high"
+    # high_variants 白名单升级「不可能独立成词」的中文变体
+    e2 = {"correct": "异步", "variants": ["一部", "易步"], "high_variants": ["易步"]}
+    assert lex.resolve_confidence(e2, "一部") == "medium"
+    assert lex.resolve_confidence(e2, "易步") == "high"
+    # 条目级 confidence 整体覆盖
+    e3 = {"correct": "SQL", "confidence": "high", "variants": ["色考"]}
+    assert lex.resolve_confidence(e3, "色考") == "high"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

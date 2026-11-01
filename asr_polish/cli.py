@@ -53,9 +53,12 @@ def _cmd_lexicon_import(args: argparse.Namespace) -> None:
         sys.exit(1)
     out = args.out or str(USER_LEXICON_PATH)
     added, merged = lexicon_io.import_into_lexicon_file(out, incoming)
-    total = len(lexicon_io.load_lexicon_data(out).get("entries", []))
+    total_in_file = len(lexicon_io.load_lexicon_data(out).get("entries", []))
     print(f"解析到 {len(incoming)} 条 → 新增 {added} 条，合并 {merged} 条")
-    print(f"词表现有 {total} 条，已写入：{out}")
+    print(f"词表文件现有 {total_in_file} 条，已写入：{out}")
+    if not args.out:
+        # 默认写入用户词表时，运行时按「内置词表 + 用户词表」合并后生效
+        print(f"（合并内置词表后共 {len(Lexicon().entries)} 条，运行时按此生效）")
 
 
 def _cmd_lexicon_export(args: argparse.Namespace) -> None:
@@ -132,7 +135,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_imp = lex_sub.add_parser("import", help="从文件批量导入词表（JSON/CSV/TXT）")
     p_imp.add_argument("file", help="待导入的文件路径")
-    p_imp.add_argument("--out", default=None, help="输出词表文件（默认写入用户词表 ~/.config/asr-polish/lexicon.json）")
+    p_imp.add_argument("--out", default=None, help="输出词表文件（默认写入用户词表：Windows 为 %APPDATA%/asr-polish，Linux/macOS 为 $XDG_CONFIG_HOME 或 ~/.config）")
     p_imp.add_argument("--format", choices=["auto", "json", "csv", "txt"], default="auto", help="输入格式（默认按扩展名/内容自动识别）")
     p_imp.set_defaults(func=_cmd_lexicon_import)
 

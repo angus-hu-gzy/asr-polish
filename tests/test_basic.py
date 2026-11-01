@@ -72,19 +72,70 @@ class TestNoFalsePositive(unittest.TestCase):
         # 「调式」是音乐术语，不应变「调试」
         self._assert_untouched("大调式和小调式")
 
+    def test_jason_name(self):
+        # 「杰森」是英文名 Jason 音译，不应变 JSON
+        self._assert_untouched("杰森·斯坦森主演的动作片")
+
+    def test_jiesheng_doctor(self):
+        # 「接生」是医疗用语，不应变 JSON
+        self._assert_untouched("产科医生正在接生")
+
+    def test_daoke_rivers(self):
+        # 「刀客」是江湖用语，不应变 Docker
+        self._assert_untouched("江湖上的刀客")
+
+    def test_duoke_name(self):
+        # 「多克」可作人名，不应变 Docker
+        self._assert_untouched("多克是一个人名")
+
+    def test_xipu_company(self):
+        # 「西普」可作公司名，不应变 SICP
+        self._assert_untouched("西普公司发布了新品")
+
+    def test_xiangnong_name(self):
+        # 「向农」可作人名，不应变 香农
+        self._assert_untouched("向农是一位老支书")
+
+    def test_yibu_database_video(self):
+        # 「一部」是量词，即便附近出现「数据库」也不应变 异步
+        self._assert_untouched("我看了一部关于数据库优化的视频")
+
+    def test_yibu_microservice_book(self):
+        self._assert_untouched("这是一部讲微服务的书")
+
+    def test_bingfa_distributed(self):
+        # 「兵法」即便附近出现「分布式系统」也不应变 并发
+        self._assert_untouched("他讲的兵法在分布式系统里也能用")
+
+    def test_kaiyuan_poster(self):
+        # 「开园」即便附近出现「开源海报」也不应变 开源
+        self._assert_untouched("那个庙会开园了，门口贴着开源海报")
+
 
 class TestMediumConfidence(unittest.TestCase):
-    """medium 变体在出现同类别术语的技术语境下仍应订正。"""
+    """medium 变体在强相关上下文中才订正；high_variants 白名单无条件订正。"""
 
-    def test_medium_with_context(self):
-        # 「并发」是「技术术语」类别，命中附近出现后，「一部」被订正为「异步」
-        r = correct_text("我们讲一部编程和并发处理")
+    def test_medium_with_strong_context(self):
+        # 「一部」±8 字内出现 ≥2 个强相关词（线程、回调）→ 订正为「异步」
+        r = correct_text("线程和一部配合回调处理")
         self.assertIn("异步", r.text)
 
     def test_medium_without_context(self):
         # 无技术语境 → 不订正
         r = correct_text("一部电影")
         self.assertEqual(r.text, "一部电影")
+
+    def test_medium_single_related_word_insufficient(self):
+        # 只有 1 个强相关词（并发），不足 ≥2 → 不订正
+        r = correct_text("我们讲一部和并发")
+        self.assertEqual(r.text, "我们讲一部和并发")
+
+    def test_whitelisted_variant_fires_unconditionally(self):
+        # 「易步」「病发」被 high_variants 白名单升为 high，无技术语境也应订正
+        r1 = correct_text("请用易步的方式处理")
+        self.assertIn("异步", r1.text)
+        r2 = correct_text("这属于病发场景")
+        self.assertIn("并发", r2.text)
 
 
 class TestCrossCheck(unittest.TestCase):
@@ -94,13 +145,27 @@ class TestCrossCheck(unittest.TestCase):
 
     def test_partial_conflict(self):
         r = cross_check("SQL和Python", "色考和PASS")
-        # 两段完全不同 → 整体置信度应显著低于 1
+        # 两段完全不同 → 字符一致率应显著低于 1
         self.assertLess(r.overall_confidence, 1.0)
         self.assertTrue(len(r.conflict_segments) >= 1)
 
     def test_single_engine(self):
         r = cross_check("只有一段")
         self.assertEqual(r.overall_confidence, 1.0)
+
+    def test_single_char_disagreement_kept_short(self):
+        # 只差一个「的」/「得」，分歧段应是单字「化」，而不是 13 个字被整段误标
+        a = "我们今天讨论数据库性能优化的问题"
+        b = "我们今天讨论数据库性能优得的问题"
+        r = cross_check(a, b)
+        self.assertTrue(len(r.conflict_segments) >= 1)
+        for seg in r.conflict_segments:
+            self.assertLessEqual(len(seg.text), 3, f"分歧段被错误合并：{seg.text!r}")
+
+    def test_two_engine_conflict_is_low_confidence(self):
+        # 两引擎各执一词（confidence=0.5）应计入低置信片段，不能为空
+        r = cross_check("SQL和Python", "色考和PASS")
+        self.assertTrue(len(r.low_confidence_segments) >= 1)
 
 
 class TestQuality(unittest.TestCase):
@@ -115,6 +180,22 @@ class TestQuality(unittest.TestCase):
     def test_repetition_scores_low(self):
         r = assess("很好很好很好很好很好很好", duration_seconds=2)
         self.assertLessEqual(r.score, 80)
+
+    def test_medium_variant_not_flagged_as_suspicious(self):
+        # medium 变体「一部」无技术语境时不订正，也不应被标成「疑似异步」扣分
+        r = assess("我们看一部电影", duration_seconds=4)
+        dim = next(d for d in r.dimensions if d.name == "可疑同音字")
+        self.assertEqual(dim.metric, 0)
+
+
+class TestCLI(unittest.TestCase):
+    def test_parser(self):
+        from asr_polish.cli import build_parser
+        p = build_parser()
+        args = p.parse_args(["correct", "讲色考"])
+        self.assertEqual(args.text, "讲色考")
+        args2 = p.parse_args(["lexicon", "list"])
+        self.assertEqual(args2.lex_cmd, "list")
 
 
 if __name__ == "__main__":

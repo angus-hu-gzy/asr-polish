@@ -68,6 +68,13 @@ def normalize_entry(item: Any) -> Optional[dict[str, Any]]:
     confidence = str(item.get("confidence") or "").strip().lower()
     if confidence in ("high", "medium", "low"):
         entry["confidence"] = confidence
+    # 变体级分级 / 上下文佐证字段透传（JSON 导入可用）
+    for key in ("high_variants", "medium_variants", "context"):
+        val = item.get(key)
+        if isinstance(val, list):
+            cleaned = [str(x).strip() for x in val if str(x).strip()]
+            if cleaned:
+                entry[key] = cleaned
     return entry
 
 
@@ -167,10 +174,10 @@ def merge_entries(
                     vset.append(v)
             if vset:
                 base["variants"] = vset
-            if inc.get("category"):
-                base["category"] = inc["category"]
-            if inc.get("note"):
-                base["note"] = inc["note"]
+            for key in ("category", "note", "confidence",
+                        "high_variants", "medium_variants", "context"):
+                if inc.get(key):
+                    base[key] = inc[key]
             merged += 1
         else:
             by_correct[c] = dict(inc)
