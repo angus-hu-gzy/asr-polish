@@ -13,7 +13,7 @@
 核心能力纯标准库实现，零第三方依赖；仅 fetch 在无字幕场景需要可选依赖 yt-dlp。
 """
 from . import lexicon_io
-from .lexicon import Lexicon, DEFAULT_LEXICON_PATH
+from .lexicon import Lexicon, DEFAULT_LEXICON_PATH, USER_LEXICON_PATH
 from .correction import (
     Corrector,
     Correction,
@@ -37,11 +37,12 @@ from .bili import (
     BiliError,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "Lexicon",
     "DEFAULT_LEXICON_PATH",
+    "USER_LEXICON_PATH",
     "lexicon_io",
     "Corrector",
     "Correction",

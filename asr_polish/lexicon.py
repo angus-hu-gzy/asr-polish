@@ -9,8 +9,11 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
-# 默认词表路径：包内 data/corrections.json
+# 默认词表路径：包内 data/corrections.json（只读基线）
 DEFAULT_LEXICON_PATH = Path(__file__).parent / "data" / "corrections.json"
+
+# 用户词表路径：`lexicon import` 写入此处，避免写只读的 site-packages 包目录
+USER_LEXICON_PATH = Path.home() / ".config" / "asr-polish" / "lexicon.json"
 
 
 class Lexicon:
@@ -25,17 +28,49 @@ class Lexicon:
             ...
           ]
         }
+
+    默认加载包内词表；若存在用户词表（USER_LEXICON_PATH），则按 correct 合并
+    用户条目（用户条目优先，可覆盖包内条目）。
     """
 
-    def __init__(self, path: Optional[str | Path] = None):
+    def __init__(self, path: Optional[str | Path] = None, include_user: bool = True):
         self.path = Path(path) if path else DEFAULT_LEXICON_PATH
-        self.entries: list[dict[str, Any]] = self._load()
+        self.entries: list[dict[str, Any]] = self._load(self.path)
+        if not path and include_user and USER_LEXICON_PATH.exists():
+            user_entries = self._load(USER_LEXICON_PATH)
+            self.entries = self._merge_entries(self.entries, user_entries)
         self._variant_map: dict[str, str] = self._build_variant_map()
 
-    def _load(self) -> list[dict[str, Any]]:
-        with open(self.path, encoding="utf-8") as f:
+    def _load(self, path: str | Path) -> list[dict[str, Any]]:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         return data.get("entries", [])
+
+    @staticmethod
+    def _merge_entries(
+        base: list[dict[str, Any]], user: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """用户词表条目按 correct 合并进基础词表（用户条目优先，变体去重合并）。"""
+        by_correct: dict[str, dict[str, Any]] = {}
+        order: list[str] = []
+        for e in base:
+            by_correct[e["correct"]] = dict(e)
+            order.append(e["correct"])
+        for e in user:
+            c = e["correct"]
+            if c in by_correct:
+                merged = by_correct[c]
+                vset = list(merged.get("variants", []))
+                for v in e.get("variants", []):
+                    if v not in vset:
+                        vset.append(v)
+                for k, v in e.items():
+                    if k != "variants":
+                        merged[k] = v
+            else:
+                by_correct[c] = dict(e)
+                order.append(c)
+        return [by_correct[c] for c in order]
 
     def _build_variant_map(self) -> dict[str, str]:
         """变体（小写归一）→ 正确词。用于快速反查。"""

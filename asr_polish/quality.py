@@ -1,13 +1,15 @@
-"""转写质量自评：对单个转写结果做五维打分。
+"""转写质量自评：对单个转写结果做四维打分。
 
-维度：
+维度（全部为负向/中性信号，术语密度不再作为正向加分项）：
 1. 乱码检测   —— 不可打印字符 / 替换字符 U+FFFD / 控制字符占比（硬伤，权重最高）
 2. 重复片段   —— 连续重复的短语（口吃式重复、引擎卡死式重复）
 3. 可疑同音字 —— 词表中「错误变体」的出现次数（说明可能存在未订正的错字）
-4. 术语可识别 —— 词表中「正确术语」的命中数（正向信号，越多越可信）
-5. 字符密度   —— 字/秒（需提供时长，中文正常约 3~6 字/秒）
+4. 字符密度   —— 字/秒（需提供时长，中文正常约 3~6 字/秒）
 
 输出 0~100 总分 + 各维度明细 + 低置信片段位置。
+
+注意：分数只用于「同一段内容的横向对比」（如对比两个引擎对同一音频的转写），
+不可跨内容比较——一段塞满术语的技术文本和一段日常闲聊，分数高低不代表谁更「准确」。
 纯标准库实现，无第三方依赖。
 """
 from __future__ import annotations
@@ -93,14 +95,6 @@ def _detect_suspicious_variants(
     return len(spans), spans
 
 
-def _count_correct_terms(text: str, lexicon: Lexicon) -> int:
-    """统计正确术语命中数（不重叠计数）。"""
-    count = 0
-    for term in lexicon.correct_terms:
-        count += text.count(term)
-    return count
-
-
 def _density_score(density: float) -> float:
     """字符密度 → 0~100 分。中文正常语速约 3~6 字/秒。"""
     if density <= 0:
@@ -145,26 +139,21 @@ def assess(
     spans.extend(v_spans)
     variant_score = max(0.0, 100.0 - variant_count * 15.0)
 
-    # 4. 术语可识别度（正向）
-    term_hits = _count_correct_terms(text, lexicon)
-    term_score = min(100.0, term_hits * 8.0)
-
-    # 组装维度与权重
+    # 组装维度与权重（不再包含正向的「术语可识别」维度）
     dimensions: List[Dimension] = []
-    dimensions.append(Dimension("乱码检测", garbled_ratio, "%", garbled_score, 0.25))
-    dimensions.append(Dimension("重复片段", repeat_ratio, "%", repeat_score, 0.25))
-    dimensions.append(Dimension("可疑同音字", float(variant_count), "处", variant_score, 0.20))
-    dimensions.append(Dimension("术语可识别", float(term_hits), "处", term_score, 0.15))
+    dimensions.append(Dimension("乱码检测", garbled_ratio, "%", garbled_score, 0.30))
+    dimensions.append(Dimension("重复片段", repeat_ratio, "%", repeat_score, 0.30))
+    dimensions.append(Dimension("可疑同音字", float(variant_count), "处", variant_score, 0.25))
 
-    # 5. 字符密度（需时长）
+    # 4. 字符密度（需时长）
     if duration_seconds and duration_seconds > 0:
         density = len(text) / duration_seconds
         dimensions.append(Dimension("字符密度", density, "字/秒",
                                     _density_score(density), 0.15))
     else:
-        # 无时长：把密度权重均摊到前四项
+        # 无时长：把密度权重均摊到前三项
         for d in dimensions:
-            d.weight += 0.15 / 4
+            d.weight += 0.15 / 3
 
     # 加权总分
     total_weight = sum(d.weight for d in dimensions)

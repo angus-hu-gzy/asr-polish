@@ -65,6 +65,9 @@ def normalize_entry(item: Any) -> Optional[dict[str, Any]]:
     note = str(item.get("note") or "").strip()
     if note:
         entry["note"] = note
+    confidence = str(item.get("confidence") or "").strip().lower()
+    if confidence in ("high", "medium", "low"):
+        entry["confidence"] = confidence
     return entry
 
 
@@ -203,6 +206,7 @@ def import_into_lexicon_file(
     existing = data.get("entries", [])
     merged_entries, added, merged = merge_entries(existing, incoming_entries)
     data["entries"] = merged_entries
+    p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(
         json.dumps(data, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",

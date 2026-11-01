@@ -1,0 +1,9 @@
+# 第三方声明
+
+本项目 `asr_polish/bili.py` 中的「必剪云端 ASR」协议实现（`transcribe_bcut` 相关部分）
+参考了开源项目 **SocialSisterYi/bcut-asr**。
+
+- 项目地址：https://github.com/SocialSisterYi/bcut-asr
+- 许可证：MIT License
+
+本实现为该协议的纯标准库重写，未直接复制其代码；此处保留署名以符合上游许可证要求。

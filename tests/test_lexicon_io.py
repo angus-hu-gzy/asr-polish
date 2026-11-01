@@ -93,8 +93,8 @@ if __name__ == "__main__":
         try:
             fn()
             print(f"PASS  {fn.__name__}")
-        except AssertionError as e:
+        except Exception as e:  # 捕获所有异常，避免单个用例打断整轮并报出具体用例
             failed += 1
-            print(f"FAIL  {fn.__name__}: {e}")
+            print(f"FAIL  {fn.__name__}: {type(e).__name__}: {e}")
     print(f"\n{len(fns) - failed}/{len(fns)} 通过")
     sys.exit(1 if failed else 0)

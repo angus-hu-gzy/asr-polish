@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from asr_polish import correct_text, cross_check, assess, Lexicon  # noqa: E402
+from asr_polish import correct_text, cross_check, assess  # noqa: E402
 
 
 class TestCorrection(unittest.TestCase):
@@ -15,11 +15,8 @@ class TestCorrection(unittest.TestCase):
         self.assertEqual(r.count, 1)
 
     def test_python_uppercase(self):
+        # 全大写 PASS 是 ASR 常见错误写法，应订正
         r = correct_text("学PASS")
-        self.assertIn("Python", r.text)
-
-    def test_python_case_insensitive(self):
-        r = correct_text("学Pass")
         self.assertIn("Python", r.text)
 
     def test_long_word_priority(self):
@@ -27,12 +24,67 @@ class TestCorrection(unittest.TestCase):
         r = correct_text("讲Aging Decoding")
         self.assertIn("Agentic Coding", r.text)
 
-    def test_no_false_positive(self):
-        # 不含错误变体的正常文本应原样保留
-        raw = "今天天气很好"
-        r = correct_text(raw)
-        self.assertEqual(r.text, raw)
+    def test_spelled_out_ascii(self):
+        # 字母拼读（含空格）应订正
+        r = correct_text("学习h t t p协议")
+        self.assertIn("HTTP", r.text)
+
+
+class TestNoFalsePositive(unittest.TestCase):
+    """误伤回归测试：这些句子里的词形与某些「错误变体」撞车，但语义是正常中文/英文，不应被替换。"""
+
+    def _assert_untouched(self, text):
+        r = correct_text(text)
+        self.assertEqual(r.text, text, f"不应改动：{text!r} -> {r.text!r}")
         self.assertEqual(r.count, 0)
+
+    def test_pass_keyword(self):
+        # pass 是英文「通过」关键字，不应被当 Python
+        self._assert_untouched("请 pass 这个参数")
+        self._assert_untouched("我今天通过了考试")
+
+    def test_compass_substring(self):
+        # 词边界应避免子串误伤
+        self._assert_untouched("这是 compass 指南针")
+
+    def test_k8s_legit_abbrev(self):
+        # k8s 是合法缩写，不应被替换成 Kubernetes
+        self._assert_untouched("k8s 集群")
+
+    def test_yibu_movie(self):
+        # 「一部」是量词，不应变「异步」
+        self._assert_untouched("我们看一部电影")
+
+    def test_bingfa_art_of_war(self):
+        self._assert_untouched("孙子兵法")
+
+    def test_kaiyuan_park(self):
+        self._assert_untouched("公园开园了")
+
+    def test_aide_education(self):
+        self._assert_untouched("这是爱的教育")
+
+    def test_shujuji_and(self):
+        # 「数据及」是「数据以及」的省略，不应变「数据集」
+        self._assert_untouched("数据及其他信息")
+
+    def test_diaoshi_music(self):
+        # 「调式」是音乐术语，不应变「调试」
+        self._assert_untouched("大调式和小调式")
+
+
+class TestMediumConfidence(unittest.TestCase):
+    """medium 变体在出现同类别术语的技术语境下仍应订正。"""
+
+    def test_medium_with_context(self):
+        # 「并发」是「技术术语」类别，命中附近出现后，「一部」被订正为「异步」
+        r = correct_text("我们讲一部编程和并发处理")
+        self.assertIn("异步", r.text)
+
+    def test_medium_without_context(self):
+        # 无技术语境 → 不订正
+        r = correct_text("一部电影")
+        self.assertEqual(r.text, "一部电影")
 
 
 class TestCrossCheck(unittest.TestCase):

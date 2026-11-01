@@ -35,12 +35,13 @@ print(result.summary())  # 订正 3 处：色考 → SQL；PASS → Python；福
 ```
 
 - **长词优先**：`Aging Decoding` 整体订正为 `Agentic Coding`，不会被子串抢先误替换
-- **英文变体大小写不敏感**：`PASS` / `Pass` / `pass` 都命中 `Python`
+- **英文变体加词边界**：`PASS`（全大写）命中 `Python`，但英文常用词 `pass`、`compass` 不受影响
+- **中文变体置信分级**：`一部`/`兵法` 这类本身是合法中文词的变体，只在技术语境下才订正
 - **每处订正可追溯**：返回原文、位置、类别，方便人工核对与回滚
 
 ### ② 多引擎交叉验证 `crosscheck`
 
-对同一段音频的多个转写结果做字符级序列对齐，输出片段级置信度。
+对同一段音频的多个转写结果做 token 级序列对齐，输出片段级置信度。
 
 ```python
 from asr_polish import cross_check, confidence_report
@@ -49,9 +50,10 @@ cloud = "今天讲SQL和Python，还有Flask框架。"
 local = "今天讲色考和PASS，还有福拉斯克框架。"
 result = cross_check(cloud, local)
 print(confidence_report(result))
-# 整体置信度：80%
+# 整体置信度：71%
 # [有分歧] (1/2 引擎一致) SQL
-# [有分歧] (1/2 引擎一致) ython
+# [有分歧] (1/2 引擎一致) Python
+# [有分歧] (1/2 引擎一致) Flask
 ```
 
 - 多个引擎一致 → 高置信；互相矛盾 → 低置信
@@ -59,20 +61,22 @@ print(confidence_report(result))
 
 ### ③ 转写质量自评 `quality`
 
-五维打分，一眼看出这段文字能不能信。
+四维打分，一眼看出这段文字能不能信。
 
 ```python
 from asr_polish import assess
 
 report = assess(text, duration_seconds=1316)
 print(report.summary())
-# 转写质量评分：97 / 100
+# 转写质量评分：96 / 100
 #   乱码检测: 0.00% → 100分
 #   可疑同音字: 1.00处 → 85分
 #   ...
 ```
 
-五个维度：乱码检测（硬伤）、重复片段、可疑同音字、术语可识别度、字符密度。乱码或重复严重时**一票封顶**，总分不会及格的假象。
+四个维度（全部为负向/中性信号）：乱码检测（硬伤）、重复片段、可疑同音字、字符密度。乱码或重复严重时**一票封顶**，总分不会及格的假象。
+
+> 分数只用于「同一段内容的横向对比」（如对比两个引擎对同一音频的转写），不可跨内容比较。
 
 ### ④ 从 B站视频取文本 `fetch`
 
@@ -97,11 +101,11 @@ print(result.text)    # 转写文本（可直接接 correct_text / assess）
 
 | 指标 | 本地 whisper | 必剪云端 |
 |---|---|---|
-| 术语订正命中 | 5 处（`接生→JSON`、`PASS→Python`…） | 1 处 |
-| 质量评分 | **85 分** | **97 分** |
+| 术语订正命中 | 3 处 | 0 处 |
+| 质量评分 | **81 分** | **96 分** |
 | 交叉验证整体置信度 | 96% | |
 
-质量评分客观地区分出了两个引擎的真实差距——这正是「转写完不知道哪个准」的解法。
+质量评分客观地区分出了两个引擎的真实差距——本地 whisper 的错误变体（可疑同音字）明显更多。这正是「转写完不知道哪个准」的解法。
 
 ## 安装
 
@@ -112,7 +116,7 @@ pip install -e .              # 只装核心（订正 / 交叉验证 / 打分）
 pip install -e .[bilibili]    # 额外支持从 B站视频取文本（引入 yt-dlp）
 ```
 
-发布到 PyPI 后可直接 `pip install asr-polish`（或 `asr-polish[bilibili]`）。
+> 当前尚未发布 PyPI，请用上面的源码安装方式；发布后即可 `pip install asr-polish`（或 `asr-polish[bilibili]`）。
 
 装好后即可用命令行工具 `asr-polish`：
 
@@ -144,8 +148,9 @@ asr-polish lexicon export --out out.json   # 导出
 # 直接运行示例（无需安装）
 python examples/demo.py
 
-# 运行测试
-python tests/test_basic.py tests/test_lexicon_io.py
+# 运行测试（两个测试文件需分别执行）
+python tests/test_basic.py
+python tests/test_lexicon_io.py
 ```
 
 ## 自定义词表
@@ -198,8 +203,8 @@ Vue,框架工具,"v u e|维优",前端框架
 导入时按 `correct` 去重合并：已存在的术语自动合并变体，新术语追加，并保留词表的名称/描述等元信息。
 
 ```bash
-asr-polish lexicon import examples/import_sample.txt   # 写入内置词表
-asr-polish lexicon import my.csv --out my_lexicon.json # 导入到新文件
+asr-polish lexicon import examples/import_sample.txt   # 写入用户词表（~/.config/asr-polish/lexicon.json）
+asr-polish lexicon import my.csv --out my_lexicon.json # 导入到指定文件
 ```
 
 > 完整示例见 `examples/import_sample.txt` 和 `examples/import_sample.csv`。
@@ -209,8 +214,12 @@ asr-polish lexicon import my.csv --out my_lexicon.json # 导入到新文件
 ```
 asr-polish/
 ├── pyproject.toml         # 打包配置（pip install 可装，提供 asr-polish 命令）
+├── LICENSE                # MIT
+├── NOTICE                 # 第三方声明（bcut-asr 参考）
 ├── asr_polish/
 │   ├── __init__.py        # 统一入口
+│   ├── __main__.py        # 支持 python -m asr_polish
+│   ├── py.typed           # PEP 561 类型标记
 │   ├── cli.py             # 命令行入口
 │   ├── correction.py      # 术语订正引擎
 │   ├── crosscheck.py      # 多引擎交叉验证
@@ -235,7 +244,7 @@ asr-polish/
 
 ## 诚实说明（边界）
 
-- **订正基于词表，不是万能**。它能抓词表里收录的错误；词表没覆盖的错字抓不到，且存在误伤风险（如医疗内容里的「接生」会被误判为 `JSON`）。因此每处订正都**留痕可回溯**，重要场景请人工核对。
-- **交叉验证基于字符级对齐**。它衡量「多引擎是否一致」，而非「是否正确」——两个引擎可能同时错成同一个词。它回答的是「这段可不可信」，不是「这段绝对正确」。
-- **质量评分是启发式的**，用于横向对比和快速筛查，不是绝对标准。
+- **订正基于词表，不是万能**。它能抓词表里收录的错误；词表没覆盖的错字抓不到。因此每处订正都**留痕可回溯**，重要场景请人工核对。为降低误伤，英文变体加了词边界、中文高风险变体采用「技术语境下才订正」的置信分级，但仍可能有个别误判。
+- **交叉验证基于 token 级对齐**。它衡量「多引擎是否一致」，而非「是否正确」——两个引擎可能同时错成同一个词。它回答的是「这段可不可信」，不是「这段绝对正确」。
+- **质量评分是启发式的**，用于同一段内容的横向对比和快速筛查，不是绝对标准。
 - **fetch 依赖外部服务**。字幕轨来自 B站 API（可能因风控或视频设置拿不到）；无字幕时的必剪 ASR 需要 `yt-dlp` 下载音频并把音轨上传至 B站服务器。二者任一失败都会给出明确报错，而非静默返回空文本。

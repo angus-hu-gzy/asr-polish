@@ -24,7 +24,7 @@ from . import __version__
 from .correction import correct_text
 from .crosscheck import cross_check, confidence_report
 from .quality import assess
-from .lexicon import Lexicon, DEFAULT_LEXICON_PATH
+from .lexicon import Lexicon, DEFAULT_LEXICON_PATH, USER_LEXICON_PATH
 from . import lexicon_io
 
 
@@ -51,7 +51,7 @@ def _cmd_lexicon_import(args: argparse.Namespace) -> None:
     if not incoming:
         print(f"未从 {args.file} 解析到任何有效条目", file=sys.stderr)
         sys.exit(1)
-    out = args.out or str(DEFAULT_LEXICON_PATH)
+    out = args.out or str(USER_LEXICON_PATH)
     added, merged = lexicon_io.import_into_lexicon_file(out, incoming)
     total = len(lexicon_io.load_lexicon_data(out).get("entries", []))
     print(f"解析到 {len(incoming)} 条 → 新增 {added} 条，合并 {merged} 条")
@@ -132,7 +132,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_imp = lex_sub.add_parser("import", help="从文件批量导入词表（JSON/CSV/TXT）")
     p_imp.add_argument("file", help="待导入的文件路径")
-    p_imp.add_argument("--out", default=None, help="输出词表文件（默认写入内置词表）")
+    p_imp.add_argument("--out", default=None, help="输出词表文件（默认写入用户词表 ~/.config/asr-polish/lexicon.json）")
     p_imp.add_argument("--format", choices=["auto", "json", "csv", "txt"], default="auto", help="输入格式（默认按扩展名/内容自动识别）")
     p_imp.set_defaults(func=_cmd_lexicon_import)
 

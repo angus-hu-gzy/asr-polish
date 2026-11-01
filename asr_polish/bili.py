@@ -213,7 +213,10 @@ def _download_audio(video: dict, tmpdir: str,
     if cookie_path and Path(cookie_path).exists():
         args += ["--cookies", str(cookie_path)]
     args.append(video["page_url"])
-    subprocess.run(args, capture_output=True, text=True, timeout=600)
+    proc = subprocess.run(args, capture_output=True, text=True, timeout=600)
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise BiliError(f"yt-dlp 下载音频失败：{detail[:200]}")
     for f in sorted(os.listdir(tmpdir)):
         if f.startswith("audio.") and not f.endswith(".part"):
             return os.path.join(tmpdir, f)
@@ -295,16 +298,20 @@ def fetch(url: str, cookie_path: Optional[str] = None,
     if not bvid:
         raise BiliError(f"未能从输入识别 bvid：{url}")
 
+    auto_cookie = False
     if not cookie_path:
         for p in _DEFAULT_COOKIE_PATHS:
             if p.exists():
                 cookie_path = str(p)
+                auto_cookie = True
                 break
 
     video = get_video_info(bvid, cookie_path=cookie_path)
     result = FetchResult(
         bvid=bvid, title=video["title"], owner=video["owner"],
         duration=video["duration"], source="", text="")
+    if auto_cookie:
+        result.warnings.append("已自动加载本机 Cookie（用于获取更完整的字幕）")
     if len(video["pages"]) > 1:
         result.warnings.append(f"多 P 视频（共 {len(video['pages'])} P），仅处理第一 P")
 
@@ -315,6 +322,7 @@ def fetch(url: str, cookie_path: Optional[str] = None,
             result.text = text
             return result
 
+    result.warnings.append("无字幕轨，音频将上传至 B站必剪服务做云端转写（公开视频音轨，风险低）")
     text = transcribe_bcut(video, cookie_path=cookie_path)
     if not text:
         raise BiliError("字幕轨与必剪 ASR 均未取到文本（可能音频下载失败或视频受限）")

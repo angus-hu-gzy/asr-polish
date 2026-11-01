@@ -1,7 +1,8 @@
 """多引擎交叉验证：对同一段音频的多个转写结果做序列对齐，输出片段级置信度。
 
 原理：
-- 以第一个转写为基准，用 difflib.SequenceMatcher 与其余每个转写做字符级对齐。
+- 以第一个转写为基准，用 difflib.SequenceMatcher 与其余每个转写做 token 级对齐
+  （英文单词/缩写作为一个 token，中文逐字，避免英文单词被字符级对齐切碎）。
 - 用差分数组统计基准文本每个字符被多少个引擎「支持」（即落在 equal 区间内）。
 - 支持数 / 引擎总数 = 该片段的置信度。多个引擎一致 → 高置信；互相矛盾 → 低置信。
 
@@ -14,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 
 @dataclass
@@ -38,8 +39,13 @@ class Segment:
 @dataclass
 class CrossCheckResult:
     """交叉验证结果。"""
-    merged: str                           # 合并文本（当前取基准文本）
+    base_text: str                        # 基准文本（第一个输入转写，作为对齐基准）
     segments: List[Segment] = field(default_factory=list)
+
+    @property
+    def merged(self) -> str:
+        """兼容旧字段名：即基准文本（并非多引擎融合结果，命名仅为历史遗留）。"""
+        return self.base_text
 
     @property
     def low_confidence_segments(self) -> List[Segment]:
@@ -59,6 +65,31 @@ class CrossCheckResult:
         return round(weighted / total_chars, 4)
 
 
+def _tokenize(s: str) -> List[Tuple[int, int, str]]:
+    """把文本切分为 token，返回 (char_start, char_end, token_text)。
+
+    - 连续 ASCII 字母/数字（英文单词、缩写、数字）作为一个 token
+    - 其余（中文单字、标点、空格）每个字符一个 token
+
+    这样英文单词作为一个整体参与对齐，不会被字符级对齐切成「ython」之类的碎片。
+    """
+    tokens: List[Tuple[int, int, str]] = []
+    i = 0
+    n = len(s)
+    while i < n:
+        c = s[i]
+        if c.isascii() and c.isalnum():
+            j = i
+            while j < n and s[j].isascii() and s[j].isalnum():
+                j += 1
+            tokens.append((i, j, s[i:j]))
+            i = j
+        else:
+            tokens.append((i, i + 1, c))
+            i += 1
+    return tokens
+
+
 def cross_check(*texts: str) -> CrossCheckResult:
     """对 2 个及以上转写结果做交叉验证。第一个参数为基准文本。"""
     if not texts:
@@ -68,19 +99,25 @@ def cross_check(*texts: str) -> CrossCheckResult:
 
     if n == 1 or not base:
         seg = Segment(text=base, agree=n, total=n, confidence=1.0)
-        return CrossCheckResult(merged=base, segments=[seg])
+        return CrossCheckResult(base_text=base, segments=[seg])
 
     # 差分数组：base 每个字符位置被多少个「其他引擎」支持
     length = len(base)
     diff = [0] * (length + 1)
+    base_tokens = _tokenize(base)
+    base_token_texts = [tok[2] for tok in base_tokens]
     for t in texts[1:]:
         if not t:
             continue
-        sm = SequenceMatcher(None, base, t, autojunk=False)
+        other_token_texts = [tok[2] for tok in _tokenize(t)]
+        sm = SequenceMatcher(None, base_token_texts, other_token_texts, autojunk=False)
         for tag, i1, i2, _j1, _j2 in sm.get_opcodes():
-            if tag == "equal":
-                diff[i1] += 1
-                diff[i2] -= 1
+            if tag == "equal" and i2 > i1:
+                # 这段 token 对应 base 的字符区间 [char_start, char_end)
+                char_start = base_tokens[i1][0]
+                char_end = base_tokens[i2 - 1][1]
+                diff[char_start] += 1
+                diff[char_end] -= 1
 
     # 前缀和 → 每个位置的支持数（0 ~ n-1）
     support = [0] * length
@@ -106,7 +143,25 @@ def cross_check(*texts: str) -> CrossCheckResult:
         ))
         i = j
 
-    return CrossCheckResult(merged=base, segments=segments)
+    # 合并过短的「分歧」片段（< 2 字符）到前一个片段，减少噪声碎片；
+    # 过短的「一致」片段保留独立，避免把确定正确的单字误标为分歧。
+    MIN_SEG = 2
+    merged_segments: List[Segment] = []
+    for seg in segments:
+        if (merged_segments and len(seg.text) < MIN_SEG
+                and seg.agree < seg.total):
+            prev = merged_segments[-1]
+            prev.text += seg.text
+            prev.confidence = min(prev.confidence, seg.confidence)
+            prev.agree = min(prev.agree, seg.agree)
+        else:
+            merged_segments.append(Segment(
+                text=seg.text, agree=seg.agree, total=seg.total,
+                confidence=seg.confidence,
+            ))
+    segments = merged_segments
+
+    return CrossCheckResult(base_text=base, segments=segments)
 
 
 def confidence_report(result: CrossCheckResult) -> str:
