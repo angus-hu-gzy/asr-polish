@@ -8,7 +8,7 @@ description = "中文语音转写（ASR）质量打磨工具：术语订正、�
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-authors = [{ name = "angus" }]
+authors = [{ name = "angus-hu-gzy" }]
 keywords = ["asr", "speech-to-text", "whisper", "术语订正", "转写", "中文", "nlp"]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -17,6 +17,10 @@ classifiers = [
     "Topic :: Text Processing :: Linguistic",
 ]
 dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/angus-hu-gzy/asr-polish"
+Repository = "https://github.com/angus-hu-gzy/asr-polish"
 
 [project.scripts]
 asr-polish = "asr_polish.cli:main"

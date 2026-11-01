@@ -1,5 +1,10 @@
 # asr-polish
 
+[![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![License](https://img.shields.io/badge/License-MIT-green)](./LICENSE)
+[![Zero deps](https://img.shields.io/badge/dependencies-0-brightgreen)]()
+[![Author](https://img.shields.io/badge/author-angus--hu--gzy-555555)](https://github.com/angus-hu-gzy)
+
 中文语音转写（ASR）**质量打磨**工具 —— 把「转写出来的文字」变得可信。
 
 纯 Python 标准库实现，**零第三方依赖**。
@@ -199,7 +204,7 @@ asr-polish/
 
 ## 许可证
 
-[MIT](./LICENSE)
+[MIT](./LICENSE) · 作者 [angus-hu-gzy](https://github.com/angus-hu-gzy)
 
 ## 诚实说明（边界）
 
