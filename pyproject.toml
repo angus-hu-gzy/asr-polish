@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "asr-polish"
+description = "中文语音转写（ASR）质量打磨工具：术语订正、多引擎交叉验证、转写质量自评"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "angus" }]
+keywords = ["asr", "speech-to-text", "whisper", "术语订正", "转写", "中文", "nlp"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Text Processing :: Linguistic",
+]
+dynamic = ["version"]
+
+[project.scripts]
+asr-polish = "asr_polish.cli:main"
+
+[tool.setuptools]
+packages = ["asr_polish"]
+
+[tool.setuptools.package-data]
+asr_polish = ["data/*.json"]
+
+[tool.setuptools.dynamic]
+version = { attr = "asr_polish.__version__" }

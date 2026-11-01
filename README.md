@@ -81,17 +81,41 @@ print(report.summary())
 
 质量评分客观地区分出了两个引擎的真实差距——这正是「转写完不知道哪个准」的解法。
 
+## 安装
+
+零第三方依赖，Python 3.9+ 即可。
+
+```bash
+pip install -e .          # 开发安装；发布到 PyPI 后可直接 pip install asr-polish
+```
+
+装好后即可用命令行工具 `asr-polish`：
+
+```bash
+# 术语订正
+asr-polish correct "今天讲色考和PASS，用福拉斯克搭微服务，讲h t t p和k8s"
+
+# 质量打分（--duration 传音频秒数，用于计算字符密度）
+asr-polish assess "转写文本" --duration 1316
+
+# 交叉验证两个转写文本文件
+asr-polish crosscheck cloud.txt local.txt
+
+# 词表管理
+asr-polish lexicon list                    # 列出词表
+asr-polish lexicon import my_words.txt     # 批量导入
+asr-polish lexicon export --out out.json   # 导出
+```
+
 ## 快速开始
 
 ```bash
-# 直接运行示例
+# 直接运行示例（无需安装）
 python examples/demo.py
 
 # 运行测试
-python tests/test_basic.py
+python tests/test_basic.py tests/test_lexicon_io.py
 ```
-
-无需安装任何依赖，Python 3.9+ 即可。
 
 ## 自定义词表
 
@@ -115,20 +139,62 @@ lexicon = Lexicon("/path/to/my_corrections.json")
 result = correct_text(text, lexicon)
 ```
 
+### 批量导入（不用手写 JSON）
+
+手写 JSON 既慢又容易格式出错。`lexicon import` 支持三种人类友好的格式，自动识别：
+
+**TXT**（每行一条，`#` 注释，分隔符支持 `=` / `->` / `:`）：
+
+```
+# 医疗影像领域
+DICOM = 迪康, 迪克姆, d i c o m
+PACS = 帕克斯, p a c s
+```
+
+**CSV**（表头 `correct,category,variants,note`，变体用 `|` 或 `;` 分隔）：
+
+```csv
+correct,category,variants,note
+Vue,框架工具,"v u e|维优",前端框架
+```
+
+**JSON**（标准词表结构或其 `entries` 数组）：
+
+```json
+[{"correct": "K8s", "variants": ["k 8 s", "库伯内特斯"]}]
+```
+
+导入时按 `correct` 去重合并：已存在的术语自动合并变体，新术语追加，并保留词表的名称/描述等元信息。
+
+```bash
+asr-polish lexicon import examples/import_sample.txt   # 写入内置词表
+asr-polish lexicon import my.csv --out my_lexicon.json # 导入到新文件
+```
+
+> 完整示例见 `examples/import_sample.txt` 和 `examples/import_sample.csv`。
+
 ## 目录结构
 
 ```
 asr-polish/
+├── pyproject.toml         # 打包配置（pip install 可装，提供 asr-polish 命令）
 ├── asr_polish/
-│   ├── __init__.py       # 统一入口
-│   ├── correction.py     # 术语订正引擎
-│   ├── crosscheck.py     # 多引擎交叉验证
-│   ├── quality.py        # 转写质量自评
-│   ├── lexicon.py        # 词表加载
+│   ├── __init__.py        # 统一入口
+│   ├── cli.py             # 命令行入口
+│   ├── correction.py      # 术语订正引擎
+│   ├── crosscheck.py      # 多引擎交叉验证
+│   ├── quality.py         # 转写质量自评
+│   ├── lexicon.py         # 词表加载
+│   ├── lexicon_io.py      # 词表批量导入/导出
 │   └── data/
 │       └── corrections.json   # 默认术语词表
-├── examples/demo.py      # 演示
-└── tests/test_basic.py   # 单元测试
+├── examples/
+│   ├── demo.py            # 演示
+│   ├── import_sample.txt  # 批量导入示例（TXT）
+│   └── import_sample.csv  # 批量导入示例（CSV）
+└── tests/
+    ├── test_basic.py      # 三个核心能力测试
+    └── test_lexicon_io.py # 词表导入/导出测试
 ```
 
 ## 许可证

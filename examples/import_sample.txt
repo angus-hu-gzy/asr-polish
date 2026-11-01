@@ -1,0 +1,26 @@
+"""演示词表批量导入：TXT 格式。
+
+每行一条：`正确词 = 变体1, 变体2, ...`（`#` 开头为注释，空行跳过）。
+分隔符也支持 `->` / `=>` / `:` / `：`。
+
+导入命令：
+    asr-polish lexicon import examples/import_sample.txt
+"""
+# ── 医疗影像领域示例（覆盖 AI 医疗方向）──
+DICOM = 迪康, 迪克姆, d i c o m
+PACS = 帕克斯, p a c s
+HIS = 海思, h i s
+EMR = 伊妹儿记录, e m r
+CT = 西替, c t
+MRI = 艾姆阿艾, m r i
+影像组学 = 影像祖学, 影像主学
+病灶 = 并灶, 病罩
+勾画 = 沟画, 沟化
+分割 = 分歌, 分阁
+
+# ── 通用开发术语 ──
+HTTPS = h t t p s, 埃去替替匹s
+Kubernetes = k 8 s, 库伯内特斯
+PyTorch = pytorch, 派托奇
+微服务 = 围服务
+过拟合 = 过你和, 过拟和

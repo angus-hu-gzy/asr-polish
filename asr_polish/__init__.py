@@ -9,7 +9,8 @@
 
 纯标准库实现，零第三方依赖。
 """
-from .lexicon import Lexicon
+from . import lexicon_io
+from .lexicon import Lexicon, DEFAULT_LEXICON_PATH
 from .correction import (
     Corrector,
     Correction,
@@ -32,6 +33,8 @@ __version__ = "0.1.0"
 
 __all__ = [
     "Lexicon",
+    "DEFAULT_LEXICON_PATH",
+    "lexicon_io",
     "Corrector",
     "Correction",
     "CorrectionResult",
