@@ -86,11 +86,12 @@ def normalize_entry(item: Any) -> Optional[dict[str, Any]]:
         cleaned = _clean_list(item.get(key))
         if cleaned:
             entry[key] = cleaned
-    guards = item.get("guards")
-    if isinstance(guards, dict):
-        cleaned_guards = {str(k): str(v) for k, v in guards.items() if str(v).strip()}
-        if cleaned_guards:
-            entry["guards"] = cleaned_guards
+    for key in ("guards", "left_guards"):
+        guards = item.get(key)
+        if isinstance(guards, dict):
+            cleaned_guards = {str(k): str(v) for k, v in guards.items() if str(v).strip()}
+            if cleaned_guards:
+                entry[key] = cleaned_guards
     return entry
 
 
@@ -190,7 +191,7 @@ def merge_entries(
                     vset.append(v)
             if vset:
                 base["variants"] = vset
-            for key in ("category", "note", "confidence", "guards") + _ENTRY_LIST_FIELDS:
+            for key in ("category", "note", "confidence", "guards", "left_guards") + _ENTRY_LIST_FIELDS:
                 if inc.get(key):
                     base[key] = inc[key]
             merged += 1

@@ -14,7 +14,8 @@
   即可）与 `context`（弱信号词，需命中 ≥2 个）。避免「我们讲爪哇的虚拟机」因只有 1 个
   强词而被漏判。
 - 邻接保护（guards）：条目可用 `guards: {变体: 正则}` 给「会被更长正常词包含」的中文
-  变体加负向前瞻，例如 `全占(?!满)` 让「全占满了」不被误判为「全栈」。
+  变体加负向前瞻，例如 `全占(?!满)` 让「全占满了」不被误判为「全栈」；`left_guards` 则是
+  负向后顾（左邻），例如 `PASS` 配 `\\s` 让测试日志里的「6/6 PASS」不被改成 Python。
 - 记录每一处订正的位置、原文与置信度，方便人工核对与回滚（尤其只审 medium 改动）。
 纯标准库实现，无第三方依赖。
 """
@@ -50,13 +51,16 @@ def has_context(text: str, start: int, end: int,
     return sum(1 for w in weak if w and w in window) >= _MIN_CONTEXT_HITS
 
 
-def variant_pattern(variant: str, guard: str = "") -> Tuple[str, int]:
-    """返回 (正则, flags)。correction 与 quality 共用，避免两侧判定分裂。
+def variant_pattern(variant: str, guard: str = "", left_guard: str = "") -> Tuple[str, int]:
+    r"""返回 (正则, flags)。correction 与 quality 共用，避免两侧判定分裂。
 
     - 纯 ASCII 变体：加字母边界，避免子串误伤；全大写（含字母）则大小写敏感。
     - 中文变体：精确匹配（不加 IGNORECASE）。
-    - guard：可选的负向前瞻内容（不含 `(?!...)` 包裹），用于中文变体的邻接保护，
+    - guard：可选的负向前瞻内容（不含 `(?!...)` 包裹），用于右邻保护，
       例如 guard="满" 让「全占满了」不命中「全占」。
+    - left_guard：可选的负向后顾内容（不含 `(?<!...)` 包裹），用于左邻保护，
+      例如 left_guard=r"\s" 让测试日志里的「6/6 PASS」不命中「PASS」。
+      必须是定长正则（Python 的 lookbehind 不支持变长）。
     """
     if is_ascii_variant(variant) and any(c.isalpha() for c in variant):
         pattern = r"(?<![A-Za-z0-9])" + re.escape(variant) + r"(?![A-Za-z0-9])"
@@ -69,6 +73,8 @@ def variant_pattern(variant: str, guard: str = "") -> Tuple[str, int]:
         flags = 0
     if guard:
         pattern += "(?!" + guard + ")"
+    if left_guard:
+        pattern = "(?<!" + left_guard + ")" + pattern
     return pattern, flags
 
 
@@ -115,7 +121,7 @@ class Corrector:
         self.lexicon = lexicon or Lexicon()
         # 类别 → 该类别下的所有正确术语（medium 变体弱上下文佐证的回退来源）
         self._category_terms: dict[str, List[str]] = self._build_category_terms()
-        # (变体, 正确词, 类别, 置信度, 强上下文词, 弱上下文词, guard)，按变体长度降序
+        # (变体, 正确词, 类别, 置信度, 强上下文词, 弱上下文词, guard, left_guard)，按变体长度降序
         self._patterns = self._build_patterns()
 
     def _build_patterns(self):
@@ -125,10 +131,13 @@ class Corrector:
             category = entry.get("category", "")
             strong, weak = self._context_words_for(entry)
             guards = entry.get("guards") or {}
+            left_guards = entry.get("left_guards") or {}
             for variant in entry.get("variants", []):
                 confidence = self.lexicon.resolve_confidence(entry, variant)
                 guard = guards.get(variant, "")
-                patterns.append((variant, correct, category, confidence, strong, weak, guard))
+                left_guard = left_guards.get(variant, "")
+                patterns.append((variant, correct, category, confidence,
+                                 strong, weak, guard, left_guard))
         patterns.sort(key=lambda x: len(x[0]), reverse=True)
         return patterns
 
@@ -167,8 +176,8 @@ class Corrector:
         hits: List[Tuple[int, int, str, str, str, str]] = []
         occupied: List[Tuple[int, int]] = []              # 已占用的区间，避免重叠替换
 
-        for variant, correct, category, confidence, strong, weak, guard in self._patterns:
-            pattern, flags = variant_pattern(variant, guard)
+        for variant, correct, category, confidence, strong, weak, guard, left_guard in self._patterns:
+            pattern, flags = variant_pattern(variant, guard, left_guard)
             for m in re.finditer(pattern, text, flags):
                 start, end = m.span()
                 # 跳过与已订正区间重叠的匹配

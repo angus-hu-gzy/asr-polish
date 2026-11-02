@@ -4,7 +4,7 @@
   "description": "用于修正语音转写（ASR）把技术术语、英文缩写、专有名词转成的同音/形近错字。置信度默认按规则推导：ASCII 变体（有词边界保护）为 high，中文变体为 medium；可用 high_variants 白名单把「不可能独立成词」的安全中文变体升级为 high，用 context 为 medium 变体提供强相关的上下文佐证词。",
   "entries": [
     { "correct": "SQL", "category": "编程语言", "confidence": "high", "high_variants": ["色考", "色q"], "variants": ["色考", "色口", "色q", "seq l", "sec l"], "context": ["数据库", "查询", "语句", "索引", "表"], "guards": {"色口": "红|腔"}, "note": "结构化查询语言" },
-    { "correct": "Python", "category": "编程语言", "confidence": "high", "high_variants": ["派森", "拍森"], "variants": ["PASS", "派森", "拍森"], "guards": {"PASS": "/"}, "note": "编程语言" },
+    { "correct": "Python", "category": "编程语言", "confidence": "high", "high_variants": ["派森", "拍森"], "variants": ["PASS", "派森", "拍森"], "guards": { "PASS": "/" }, "left_guards": { "PASS": "\\s" }, "note": "编程语言" },
     { "correct": "Java", "category": "编程语言", "variants": ["加瓦", "爪哇", "加吧"], "strong_context": ["虚拟机", "字节码", "JVM"], "context": ["虚拟机", "面向对象", "继承", "字节码", "编译", "多态", "接口"], "note": "编程语言" },
     { "correct": "JavaScript", "category": "编程语言", "confidence": "high", "variants": ["加瓦斯奎特", "加瓦斯奎尔"], "note": "编程语言" },
     { "correct": "JSON", "category": "编程语言", "high_variants": ["j宋"], "variants": ["杰森", "接生", "j宋"], "strong_context": ["序列化", "反序列化", "键值", "解析"], "context": ["接口", "序列化", "键值", "字段", "解析", "数组", "格式", "请求", "响应", "数据"], "note": "数据交换格式" },

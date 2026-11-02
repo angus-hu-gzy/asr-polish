@@ -89,23 +89,35 @@ class Lexicon:
             elif isinstance(val, (list, tuple)):
                 entry[key] = [str(v).strip() for v in val if str(v).strip()]
 
-        guards = entry.get("guards")
-        if isinstance(guards, dict):
-            valid: dict[str, str] = {}
-            for variant, guard in guards.items():
-                guard = str(guard or "")
-                if not guard:
-                    continue
-                try:
-                    re.compile("(?!" + guard + ")")
-                except re.error as exc:
-                    warnings.warn(
-                        f"词表 guards 正则非法，已忽略：{entry.get('correct')}/{variant}"
-                        f"（{guard!r}: {exc}）", stacklevel=2)
-                    continue
-                valid[str(variant)] = guard
-            entry["guards"] = valid
+        # guards（右邻）/ left_guards（左邻）都做正则预校验：非法时丢弃并告警，
+        # 避免运行时在 correct() 里抛 re.error 把整条流水线打断。
+        entry["guards"] = Lexicon._sanitize_guards(entry, "guards", "(?!{})")
+        entry["left_guards"] = Lexicon._sanitize_guards(entry, "left_guards", "(?<!{})")
+        for key in ("guards", "left_guards"):
+            if not entry[key]:
+                entry.pop(key)
         return entry
+
+    @staticmethod
+    def _sanitize_guards(entry: dict[str, Any], key: str, template: str) -> dict[str, str]:
+        """校验 guard 正则：包进 template 后能编译才保留，否则告警丢弃。"""
+        raw = entry.get(key)
+        if not isinstance(raw, dict):
+            return {}
+        valid: dict[str, str] = {}
+        for variant, guard in raw.items():
+            guard = str(guard or "")
+            if not guard:
+                continue
+            try:
+                re.compile(template.format(guard))
+            except re.error as exc:
+                warnings.warn(
+                    f"词表 {key} 正则非法，已忽略：{entry.get('correct')}/{variant}"
+                    f"（{guard!r}: {exc}）", stacklevel=2)
+                continue
+            valid[str(variant)] = guard
+        return valid
 
     @staticmethod
     def _merge_entries(

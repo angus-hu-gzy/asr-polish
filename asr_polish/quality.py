@@ -99,9 +99,10 @@ def _detect_suspicious_variants(
     spans: List[Tuple[int, int, str]] = []
     occupied: List[Tuple[int, int]] = []
     cat_terms = lexicon.category_terms
-    pairs: List[Tuple[str, str, str, str, List[str], List[str]]] = []
+    pairs: List[Tuple[str, str, str, str, str, List[str], List[str]]] = []
     for entry in lexicon.entries:
         guards = entry.get("guards") or {}
+        left_guards = entry.get("left_guards") or {}
         category = entry.get("category", "")
         strong = lexicon.strong_context(entry)
         weak = lexicon.context_words(entry) or cat_terms.get(category, [])
@@ -110,11 +111,11 @@ def _detect_suspicious_variants(
             if confidence not in ("high", "medium"):
                 continue
             pairs.append((variant, entry["correct"], guards.get(variant, ""),
-                          confidence, strong, weak))
+                          left_guards.get(variant, ""), confidence, strong, weak))
     pairs.sort(key=lambda x: len(x[0]), reverse=True)  # 长词优先
 
-    for variant, correct, guard, confidence, strong, weak in pairs:
-        pattern, flags = variant_pattern(variant, guard)
+    for variant, correct, guard, left_guard, confidence, strong, weak in pairs:
+        pattern, flags = variant_pattern(variant, guard, left_guard)
         for m in re.finditer(pattern, text, flags):
             start, end = m.span()
             if any(not (end <= s or start >= e) for s, e in occupied):

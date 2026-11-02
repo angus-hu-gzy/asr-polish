@@ -148,6 +148,16 @@ class TestNoFalsePositive(unittest.TestCase):
         # 「PASS/FAIL」是测试结果，不是 Python
         self._assert_untouched("PASS/FAIL 测试")
 
+    def test_pass_in_test_log(self):
+        # 测试日志里 PASS 前有空白（6/6、80%、「全部 」）→ 英文用法，不订正
+        for text in ("测试结果 6/6 PASS", "6/6 PASS", "全部 PASS", "80% PASS"):
+            self._assert_untouched(text)
+
+    def test_pass_adjacent_cjk_still_corrected(self):
+        # 反向保护：中文紧邻的 PASS 仍是 ASR 把 Python 念错，要订正
+        for text in ("学PASS语言第一课", "用PASS写个爬虫", "PASS的缩进规则"):
+            self.assertIn("Python", correct_text(text).text)
+
 
 class TestMediumConfidence(unittest.TestCase):
     """medium 变体在强相关上下文中才订正；high_variants 白名单无条件订正。"""

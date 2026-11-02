@@ -145,6 +145,31 @@ def test_merge_keeps_new_fields():
     assert merged[0]["strong_context"] == ["前端"]
 
 
+def test_left_guards_roundtrip():
+    """left_guards（左邻保护）也必须透传，否则「6/6 PASS」会重新被改成 Python。"""
+    entry = {"correct": "Python", "variants": ["PASS"], "left_guards": {"PASS": r"\s"}}
+    parsed = lexicon_io.parse_json(json.dumps({"entries": [entry]}, ensure_ascii=False))
+    assert parsed[0]["left_guards"] == {"PASS": r"\s"}
+
+    merged, _added, _n = lexicon_io.merge_entries(
+        [{"correct": "Python", "variants": ["PASS"]}],
+        [{"correct": "Python", "variants": ["PASS"], "left_guards": {"PASS": r"\s"}}],
+    )
+    assert merged[0]["left_guards"] == {"PASS": r"\s"}
+
+
+def test_left_guard_regex_must_compile():
+    """变长/非法左邻正则在加载时丢弃并告警（lookbehind 必须定长）。"""
+    import warnings as _warnings
+    from asr_polish.lexicon import Lexicon
+    entry = {"correct": "测试", "variants": ["甲"], "left_guards": {"甲": "a|ab"}}
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        clean = Lexicon._sanitize(entry)
+    assert "left_guards" not in clean
+    assert any("left_guards" in str(w.message) for w in caught)
+
+
 def test_invalid_guard_is_dropped():
     """guards 里的非法正则应在加载时丢弃并告警，而不是运行时崩在 correct()。"""
     import warnings as _warnings
