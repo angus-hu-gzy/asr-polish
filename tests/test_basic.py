@@ -355,6 +355,58 @@ class TestAuditTool(unittest.TestCase):
         self.assertEqual(counts[("色考", "SQL")], 2)
 
 
+class TestDocEvidence(unittest.TestCase):
+    """文档级主题证据：同音词靠「整篇在讲什么」而不是「旁边的字」判定。
+
+    这批用例对应 1.03M 字真实 B 站 AI 字幕上的实测：medium 变体召回 2.3% → 72%，
+    干净语料误伤 0。四个反例（无优势、同形词、单句、搭配保护）都必须是「不改」，
+    否则等于拿误改换召回。
+    """
+
+    def test_rare_variant_fixed_by_topic(self):
+        # 「酸法」全篇只出现一次，而「算法」出现 4 次 → 该处几乎必然是转写错误
+        doc = ("今天讲算法。这个算法先排序，算法复杂度 O(n)，算法题要多练。"
+               "我用酸法处理了一下数据。")
+        r = correct_text(doc)
+        self.assertEqual([(c.original, c.corrected) for c in r.corrections],
+                         [("酸法", "算法")])
+
+    def test_no_dominance_keeps_text(self):
+        # 两种写法各出现 2 次，谁也不是「少数派」→ 没有证据，不改
+        doc = "今天讲算法。算法很重要。我用酸法处理数据，这个酸法其实挺快。"
+        self.assertEqual(correct_text(doc).count, 0)
+
+    def test_ordinary_variant_never_rescued(self):
+        # 「一部」是正常量词，即使同篇「异步」出现 5 次也不能翻案（ordinary_variants）
+        doc = ("今天讲异步。异步回调要小心，异步不是多线程，异步很常见，异步也不难。"
+               "我们看一部电影放松一下。")
+        self.assertEqual(correct_text(doc).count, 0)
+
+    def test_single_sentence_has_no_doc_evidence(self):
+        # 只传一句时没有「整篇」这个前提，行为必须退化成原判定（宁可不改）
+        self.assertEqual(correct_text("我们用酸法处理了一下数据。").count, 0)
+
+    def test_collocation_guard_beats_doc_evidence(self):
+        # 「这个兵法书里也有类似思想」出现在并发讲座里也不能改（guards 优先）
+        doc = ("今天我们聊并发。并发和并行不一样，并发的核心是调度。"
+               "这个兵法书里也有类似思想。")
+        self.assertEqual(correct_text(doc).count, 0)
+
+    def test_quality_agrees_with_correction(self):
+        # 订正与打分必须同结论，否则会出现「改了却不扣分」或反之
+        from asr_polish.quality import _detect_suspicious_variants
+        lex = Lexicon()
+        doc = ("今天讲算法。这个算法先排序，算法复杂度 O(n)，算法题要多练。"
+               "我用酸法处理了一下数据。")
+        self.assertEqual(correct_text(doc).count, 1)
+        self.assertEqual(_detect_suspicious_variants(doc, lex)[0], 1)
+
+    def test_term_count_respects_word_boundary(self):
+        # 数「SQL」时不能把 MySQL 里的 SQL 算进去，否则文档证据会被虚增
+        from asr_polish.correction import term_count
+        self.assertEqual(term_count("用MySQL和SQL", "SQL"), 1)
+
+
 class TestCLI(unittest.TestCase):
     def test_parser(self):
         from asr_polish.cli import build_parser

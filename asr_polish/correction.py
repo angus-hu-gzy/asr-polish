@@ -10,6 +10,11 @@
   `high_variants` 白名单升级。high 变体无条件订正；medium 变体（如「一部」→「异步」这类
   本身是合法中文常用词的）只有在命中位置 ±8 字内出现足够上下文佐证时才订正，
   从而避免「我们看一部电影」被改成「我们看异步电影」。
+- 文档级主题证据：中文同音错（`酸法`/`算法`、`还存`/`缓存`）在 ±8 字内根本分不开，再补一条
+  证据——整篇在讲什么。一篇讲算法的字幕里「算法」出现几十次、「酸法」只出现一两次，那几次
+  几乎必然是转写错误；反过来讲腌菜的视频里「算法」不出现，就不会改。判定口径：正确写法
+  ≥2 次且 ≥2×(变体次数+1)。只在输入为整篇文本时生效，传单句会自然退化为纯上下文判定。
+  本身是正常词的变体（`一部`/`爱的`）用 `ordinary_variants` 排除，只认局部上下文。
 - 上下文分强弱：条目可配 `strong_context`（如「虚拟机」「序列化」这类强信号，命中 1 个
   即可）与 `context`（弱信号词，需命中 ≥2 个）。避免「我们讲爪哇的虚拟机」因只有 1 个
   强词而被漏判。
@@ -35,6 +40,15 @@ _CONTEXT_WINDOW = 8
 # 术语，单元测试直接失败。单个弱词不足以佐证，维持 2。
 _MIN_CONTEXT_HITS = 2
 
+# 文档级证据：一篇字幕本身的用词分布就是它的主题。`酸法`/`算法` 同音，±8 字内看不出
+# 该用哪个；但一篇讲算法的视频里「算法」出现几十次、「酸法」只出现一两次，那几次几乎
+# 必然是转写错误；反过来讲腌菜的视频里「算法」根本不出现，就不会改。这条证据不需要
+# 任何外部语料，代价是必须先拿到整篇文本（单句调用没有这个信息，退化为原判定）。
+# 要求正确写法出现 ≥2 次（只有 1 次时无法确认这不是别的词），且不少于变体自身次数的
+# 2 倍——「一部」在一篇里出现 75 次时不会被「异步」的 12 次翻过去，正是靠这一条。
+_DOC_MIN_OCCURRENCES = 2
+_DOC_DOMINANCE = 2
+
 
 def is_ascii_variant(variant: str) -> bool:
     """变体是否为纯 ASCII（英文/缩写）。quality 与 correction 共用同一判定。"""
@@ -52,6 +66,58 @@ def has_context(text: str, start: int, end: int,
     if any(w and w in window for w in strong):
         return True
     return sum(1 for w in weak if w and w in window) >= _MIN_CONTEXT_HITS
+
+
+def term_count(text: str, term: str, cache: dict | None = None) -> int:
+    """数某个词在文本里出现几次（英文加词边界，避免 MySQL 里的 SQL 被计入）。"""
+    if not term:
+        return 0
+    if cache is not None and term in cache:
+        return cache[term]
+    pattern, flags = variant_pattern(term)
+    n = len(re.findall(pattern, text, flags)) if is_ascii_variant(term) \
+        else text.count(term)
+    if cache is not None:
+        cache[term] = n
+    return n
+
+
+def has_doc_evidence(text: str, variant: str, correct: str,
+                     cache: dict | None = None) -> bool:
+    """文档级主题证据：本篇里正确写法够多、且明显盖过这个变体。
+
+    只对 medium 变体生效，作为 ±8 字上下文之外的第二条证据。它解决的是同音词
+    在局部无从区分的问题——判断依据从「旁边的字」换成「整篇在讲什么」。
+    `variant` 是当前这一处（调用方保证），数次数时扣掉它。
+
+    领先倍数按「变体出现次数 + 1」算：本篇已经出现过一次该写法时，要求正确写法
+    的次数翻倍以对——「这个兵法书里也有类似思想」出现在并发讲座里，正是靠这一条
+    挡住的（兵法 ×1 → 需要「并发」≥4 次才算证据）。
+    """
+    n_correct = term_count(text, correct, cache)
+    if n_correct < _DOC_MIN_OCCURRENCES:
+        return False
+    n_variant = max(term_count(text, variant, cache) - 1, 0)
+    return n_correct >= _DOC_DOMINANCE * (n_variant + 1)
+
+
+def has_evidence(text: str, start: int, end: int,
+                 strong: List[str], weak: List[str],
+                 variant: str = "", correct: str = "",
+                 cache: dict | None = None,
+                 allow_doc: bool = True) -> bool:
+    """medium 变体的完整佐证：局部上下文 **或** 文档级主题证据。
+
+    两者取或：局部有强信号时直接成立（快、准）；局部无从判断时再看整篇的用词分布。
+    `allow_doc=False` 用于条目声明了 `ordinary_variants` 的同形词（如「一部」）——
+    它在任何一篇里都可能是正常用词，主题证据不足以翻案，只认局部上下文。
+    correction 与 quality 都走这里，保持判定一致。
+    """
+    if has_context(text, start, end, strong, weak):
+        return True
+    if allow_doc and variant and correct:
+        return has_doc_evidence(text, variant, correct, cache)
+    return False
 
 
 def variant_pattern(variant: str, guard: str = "", left_guard: str = "") -> Tuple[str, int]:
@@ -139,8 +205,9 @@ class Corrector:
                 confidence = self.lexicon.resolve_confidence(entry, variant)
                 guard = guards.get(variant, "")
                 left_guard = left_guards.get(variant, "")
+                allow_doc = not self.lexicon.is_ordinary_variant(entry, variant)
                 patterns.append((variant, correct, category, confidence,
-                                 strong, weak, guard, left_guard))
+                                 strong, weak, guard, left_guard, allow_doc))
         patterns.sort(key=lambda x: len(x[0]), reverse=True)
         return patterns
 
@@ -169,26 +236,37 @@ class Corrector:
         return mapping
 
     def _has_context(self, text: str, start: int, end: int,
-                     strong: List[str], weak: List[str]) -> bool:
-        """medium 变体的上下文佐证（实现见模块级 has_context）。"""
-        return has_context(text, start, end, strong, weak)
+                     strong: List[str], weak: List[str],
+                     variant: str = "", correct: str = "",
+                     cache: dict | None = None,
+                     allow_doc: bool = True) -> bool:
+        """medium 变体的佐证（实现见模块级 has_evidence）。"""
+        return has_evidence(text, start, end, strong, weak, variant, correct,
+                            cache, allow_doc)
 
     def correct(self, text: str) -> CorrectionResult:
-        """对文本执行订正，返回订正结果。"""
+        """对文本执行订正，返回订正结果。
+
+        传入的 `text` 应当是一整篇转写文本。文档级证据依赖它——只传单句时该证据
+        自动失效（正文里出现的正确写法次数必然不足 2），行为退化为纯上下文判定。
+        """
         # (start, end, correct, original, category, confidence)
         hits: List[Tuple[int, int, str, str, str, str]] = []
         occupied: List[Tuple[int, int]] = []              # 已占用的区间，避免重叠替换
+        freq: dict[str, int] = {}                         # 词频缓存，一次调用内复用
 
-        for variant, correct, category, confidence, strong, weak, guard, left_guard in self._patterns:
+        for (variant, correct, category, confidence, strong, weak,
+             guard, left_guard, allow_doc) in self._patterns:
             pattern, flags = variant_pattern(variant, guard, left_guard)
             for m in re.finditer(pattern, text, flags):
                 start, end = m.span()
                 # 跳过与已订正区间重叠的匹配
                 if any(not (end <= s or start >= e) for s, e in occupied):
                     continue
-                # medium 变体需要上下文佐证，否则视为正常用词跳过；low/未知不自动订正
+                # medium 变体需要佐证（局部上下文或整篇用词分布），否则视为正常用词跳过
                 if confidence == "medium" and not self._has_context(
-                        text, start, end, strong, weak):
+                        text, start, end, strong, weak, variant, correct,
+                        freq, allow_doc):
                     continue
                 if confidence not in ("high", "medium"):
                     continue

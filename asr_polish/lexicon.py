@@ -17,6 +17,20 @@ from typing import Any, Optional
 DEFAULT_LEXICON_PATH = Path(__file__).parent / "data" / "corrections.json"
 
 
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """json 解析钩子：发现重复键时告警（后者会静默覆盖前者）。
+
+    词表是手写 JSON，`guards` 这类字典字段很容易在同一条里写两遍——第二遍会把
+    第一遍整块顶掉，且不报错。之前「兵法」的搭配保护就是这样丢的，所以显式检查。
+    """
+    seen: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in seen:
+            warnings.warn(f"词表里出现重复键「{key}」，后一个会覆盖前一个", stacklevel=3)
+        seen[key] = value
+    return seen
+
+
 def _user_config_dir() -> Path:
     """用户词表所在目录：Windows 用 %APPDATA%，POSIX 尊重 XDG_CONFIG_HOME。"""
     if sys.platform == "win32":
@@ -64,7 +78,7 @@ class Lexicon:
     def _load(self, path: str | Path) -> list[dict[str, Any]]:
         # utf-8-sig 兼容 Windows 记事本「UTF-8 带 BOM」的常见情况
         with open(path, encoding="utf-8-sig") as f:
-            data = json.load(f)
+            data = json.load(f, object_pairs_hook=_reject_duplicate_keys)
         version = data.get("version", 1)
         if isinstance(version, int) and version > _SUPPORTED_LEXICON_VERSION:
             warnings.warn(
@@ -76,13 +90,15 @@ class Lexicon:
     def _sanitize(entry: dict[str, Any]) -> dict[str, Any]:
         """规范化单条词目：列表字段容错、guards 正则预校验。
 
-        - `context` / `strong_context` / `high_variants` / `medium_variants` 若被写成
+        - `context` / `strong_context` / `high_variants` / `medium_variants` /
+          `ordinary_variants` 若被写成
           字符串，按常见分隔符拆成列表（否则会被逐字迭代，导致上下文误命中）；
         - `guards` 里的正则非法时丢弃并告警，避免运行时在 `correct()` 里抛
           `re.error` 把整条流水线打断。
         """
         entry = dict(entry)
-        for key in ("high_variants", "medium_variants", "context", "strong_context"):
+        for key in ("high_variants", "medium_variants", "ordinary_variants",
+                    "context", "strong_context"):
             val = entry.get(key)
             if isinstance(val, str):
                 entry[key] = [p.strip() for p in re.split(r"[,，、;；|]", val) if p.strip()]
@@ -203,6 +219,16 @@ class Lexicon:
                 return "medium"
             return conf
         return "high" if self._is_ascii(variant) else "medium"
+
+    def is_ordinary_variant(self, entry: dict[str, Any], variant: str) -> bool:
+        """该变体本身是不是一个正常的中文常用词（`ordinary_variants` 白名单）。
+
+        对这类变体禁用「文档级主题证据」：`一部` 在任何一篇里都可能是量词，即使
+        同篇「异步」出现很多次也不能翻案，只能靠 ±8 字的局部上下文判定。
+        与 `high_variants` 对称——那个是「确认安全可以无条件改」，这个是
+        「确认是同形词，不能靠主题推断」。
+        """
+        return variant in (entry.get("ordinary_variants") or [])
 
     @property
     def all_variants_with_confidence(self) -> list[tuple[str, str, str]]:

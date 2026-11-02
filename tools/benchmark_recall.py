@@ -6,7 +6,7 @@
 1. 扫语料，定位每个**正确术语**的出现位置（语料是 ASR 原始输出，术语本身是对的，
    错字在术语周围）；
 2. 在每个位置把正确术语**替换成它的某个变体**，模拟 ASR 听错；
-3. 用 ±WINDOW 字的切片跑订正器，判定该处：
+3. 用 ±WINDOW 字的切片（`--window 0` 为整篇）跑订正器，判定该处：
       hit    改回正确术语
       miss   一处没改（漏改）
       wrong  改成了别的词（改错）
@@ -16,6 +16,8 @@
 
 为什么用切片而不是整篇：整篇里多处扰动会互相干扰，无法归因到具体变体；
 WINDOW 取 250 字足够覆盖 ±8 字的上下文判定窗口，又不会让相邻用例串味。
+但文档级证据（整篇用词分布）需要更大的输入才对得上 CLI 的真实调用方式，
+所以需要评估它时请用 `--window 0`。
 
 变体轮转采样：每个变体分到的样本数尽量均等，否则 `一部` 这种超高频变体
 会主导总体召回率，掩盖真正抓不回来的低频变体。
@@ -88,7 +90,12 @@ def find_occurrences(docs, term: str, cap_per_doc: int = 6) -> list[tuple[int, i
 
 
 def make_slice(text: str, start: int, end: int, window: int = WINDOW):
-    """切出 (左文, 右文)，替换时拼回 左文 + 变体 + 右文。向行边界对齐，避免切断句子。"""
+    """切出 (左文, 右文)，替换时拼回 左文 + 变体 + 右文。向行边界对齐，避免切断句子。
+
+    window <= 0 表示整篇（CLI 处理整个文件时的真实输入），用于让文档级证据生效。
+    """
+    if window <= 0:
+        return text[:start], text[end:]
     lo = max(0, start - window)
     hi = min(len(text), end + window)
     nl = text.rfind("\n", lo, start)
@@ -125,7 +132,8 @@ class Tally:
         return self.hit / self.samples if self.samples else 0.0
 
 
-def build_samples(corrector: Corrector, docs, per_entry: int, seed: int) -> list[Sample]:
+def build_samples(corrector: Corrector, docs, per_entry: int, seed: int,
+                  window: int = WINDOW) -> list[Sample]:
     rng = random.Random(seed)
     samples: list[Sample] = []
     for entry in corrector.lexicon.entries:
@@ -139,7 +147,7 @@ def build_samples(corrector: Corrector, docs, per_entry: int, seed: int) -> list
         rng.shuffle(occ)
         for i, (doc_idx, start, end) in enumerate(occ[:per_entry]):
             variant = variants[i % len(variants)]          # 变体轮转，样本均摊
-            left, right = make_slice(docs[doc_idx][1], start, end)
+            left, right = make_slice(docs[doc_idx][1], start, end, window)
             samples.append(Sample(
                 variant=variant, correct=correct,
                 category=entry.get("category", ""),
@@ -264,6 +272,8 @@ def report(docs, samples, overall, by_variant, by_conf, by_cat,
 def main() -> None:
     ap = argparse.ArgumentParser(description="真实 ASR 语料上的术语召回率基准")
     ap.add_argument("corpus", nargs="+", help="语料目录（含 .txt）")
+    ap.add_argument("--window", type=int, default=WINDOW,
+                    help="切片字数；0 = 整篇（与 CLI 处理整篇文件时一致，文档级证据才完整）")
     ap.add_argument("--clean", nargs="*", default=None,
                     help="干净语料目录（人写对了的文本），用于统计误伤；不给则跳过")
     ap.add_argument("--lexicon", default=None, help="词表路径（默认内置）")
@@ -279,7 +289,8 @@ def main() -> None:
     docs = load_corpus(args.corpus)
     lexicon = Lexicon(args.lexicon) if args.lexicon else Lexicon()
     corrector = Corrector(lexicon)
-    samples = build_samples(corrector, docs, args.per_entry, args.seed)
+    samples = build_samples(corrector, docs, args.per_entry, args.seed,
+                            args.window)
     if not samples:
         raise SystemExit("没有采到样本：语料里没有出现词表中的正确术语")
 
