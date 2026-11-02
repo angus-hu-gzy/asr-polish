@@ -72,6 +72,8 @@ class FetchResult:
     duration: int                                  # 秒
     source: str                                    # "字幕轨" 或 "必剪云端ASR"
     text: str
+    subtitle_lan: str = ""                         # 字幕轨语言码，ai-zh = B站自动生成（ASR 产物）
+    page: int = 1                                  # 多 P 视频实际取的分 P 序号
     warnings: list[str] = field(default_factory=list)
 
 
@@ -167,6 +169,16 @@ def _pick_subtitle(subs: list[dict]) -> Optional[dict]:
 
 def fetch_subtitle(video: dict, cookie_path: Optional[str] = None) -> Optional[str]:
     """用 wbi 签名从 player/wbi/v2 取字幕轨，返回纯文本（无字幕返回 None）。"""
+    return (_fetch_subtitle_detail(video, cookie_path) or {}).get("text")
+
+
+def _fetch_subtitle_detail(video: dict,
+                           cookie_path: Optional[str] = None) -> Optional[dict]:
+    """取字幕轨，返回 {"text": str, "lan": str}；无字幕返回 None。
+
+    lan 为 B站字幕语言码：ai-zh 表示自动生成（ASR 产物，天然带错字），
+    zh-CN 等表示人工上传字幕（文本本身基本正确）。
+    """
     nav = _http_json("https://api.bilibili.com/x/web-interface/nav",
                      cookie_path=cookie_path)
     wbi = ((nav.get("data") or {}).get("wbi_img") or {})
@@ -195,7 +207,9 @@ def fetch_subtitle(video: dict, cookie_path: Optional[str] = None) -> Optional[s
     body = (_http_json(sub_url, cookie_path=cookie_path) or {}).get("body") or []
     lines = [it.get("content", "").strip()
              for it in body if (it.get("content") or "").strip()]
-    return "\n".join(lines) if lines else None
+    if not lines:
+        return None
+    return {"text": "\n".join(lines), "lan": pick.get("lan") or ""}
 
 
 # ── 必剪云端 ASR ─────────────────────────────────────────────
@@ -292,8 +306,11 @@ def transcribe_bcut(video: dict, cookie_path: Optional[str] = None,
 # ── 主入口 ───────────────────────────────────────────────────
 
 def fetch(url: str, cookie_path: Optional[str] = None,
-          prefer_subtitle: bool = True) -> FetchResult:
-    """从 B站链接获取视频文本。字幕轨优先，无字幕走必剪云端 ASR。"""
+          prefer_subtitle: bool = True, page: int = 1) -> FetchResult:
+    """从 B站链接获取视频文本。字幕轨优先，无字幕走必剪云端 ASR。
+
+    page 指定多 P 视频的分 P 序号（从 1 开始），默认第 1 P。
+    """
     bvid = extract_bvid(url)
     if not bvid:
         raise BiliError(f"未能从输入识别 bvid：{url}")
@@ -312,14 +329,28 @@ def fetch(url: str, cookie_path: Optional[str] = None,
         duration=video["duration"], source="", text="")
     if auto_cookie:
         result.warnings.append("已自动加载本机 Cookie（用于获取更完整的字幕）")
-    if len(video["pages"]) > 1:
-        result.warnings.append(f"多 P 视频（共 {len(video['pages'])} P），仅处理第一 P")
+
+    pages = video["pages"]
+    if len(pages) > 1:
+        if 1 <= page <= len(pages):
+            chosen = pages[page - 1]
+            video = dict(video, cid=chosen.get("cid"),
+                         duration=chosen.get("duration", 0))
+            result.duration = video["duration"]
+            result.page = page
+            result.warnings.append(
+                f"多 P 视频（共 {len(pages)} P），已取第 {page} P"
+                f"「{chosen.get('part', '')}」；用 --page 切换")
+        else:
+            result.warnings.append(
+                f"多 P 视频（共 {len(pages)} P），page={page} 越界，回退到第 1 P")
 
     if prefer_subtitle:
-        text = fetch_subtitle(video, cookie_path=cookie_path)
-        if text:
+        detail = _fetch_subtitle_detail(video, cookie_path=cookie_path)
+        if detail and detail["text"]:
             result.source = "字幕轨"
-            result.text = text
+            result.subtitle_lan = detail["lan"]
+            result.text = detail["text"]
             return result
 
     result.warnings.append("无字幕轨，音频将上传至 B站必剪服务做云端转写（公开视频音轨，风险低）")

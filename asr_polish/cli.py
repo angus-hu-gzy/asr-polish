@@ -82,7 +82,7 @@ def _cmd_fetch(args: argparse.Namespace) -> None:
     from .bili import fetch, BiliError
 
     try:
-        result = fetch(args.url, cookie_path=args.cookie)
+        result = fetch(args.url, cookie_path=args.cookie, page=args.page)
     except BiliError as e:
         print(f"错误：{e}", file=sys.stderr)
         sys.exit(1)
@@ -154,6 +154,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_fetch = sub.add_parser("fetch", help="从 B站视频链接获取文本（字幕轨优先，无字幕走必剪 ASR）")
     p_fetch.add_argument("url", help="B站视频链接或 bvid")
     p_fetch.add_argument("--cookie", default=None, help="cookies.txt 路径（可选，用于取 AI 字幕）")
+    p_fetch.add_argument("-p", "--page", type=int, default=1,
+                         help="多 P 视频取第几分 P（默认 1）")
     p_fetch.add_argument("--no-correct", action="store_true", help="不做术语订正")
     p_fetch.add_argument("--no-assess", action="store_true", help="不做质量打分")
     p_fetch.add_argument("-v", "--verbose", action="store_true", help="输出订正明细")
