@@ -110,9 +110,55 @@ def test_variant_level_confidence():
     e2 = {"correct": "异步", "variants": ["一部", "易步"], "high_variants": ["易步"]}
     assert lex.resolve_confidence(e2, "一部") == "medium"
     assert lex.resolve_confidence(e2, "易步") == "high"
-    # 条目级 confidence 整体覆盖
-    e3 = {"correct": "SQL", "confidence": "high", "variants": ["色考"]}
-    assert lex.resolve_confidence(e3, "色考") == "high"
+    # 条目级 confidence 对 ASCII / 长中文变体生效
+    e3 = {"correct": "SQL", "confidence": "high", "variants": ["色考", "seq l"]}
+    assert lex.resolve_confidence(e3, "seq l") == "high"
+    # 但 ≤2 字中文变体不允许被顺带升级，必须写 high_variants（安全优先）
+    assert lex.resolve_confidence(e3, "色考") == "medium"
+    e4 = {"correct": "SQL", "confidence": "high",
+          "high_variants": ["色考"], "variants": ["色考", "色口"]}
+    assert lex.resolve_confidence(e4, "色考") == "high"
+    assert lex.resolve_confidence(e4, "色口") == "medium"
+
+
+def test_json_roundtrip_keeps_new_fields():
+    """JSON 导入必须透传 guards / strong_context，否则保护会静默失效。"""
+    entry = {
+        "correct": "全栈", "variants": ["全占"], "high_variants": ["全占"],
+        "guards": {"全占": "满"}, "strong_context": ["前端"], "context": ["后端"],
+    }
+    parsed = lexicon_io.parse_json(json.dumps({"entries": [entry]}, ensure_ascii=False))
+    assert parsed[0]["guards"] == {"全占": "满"}
+    assert parsed[0]["strong_context"] == ["前端"]
+    assert parsed[0]["high_variants"] == ["全占"]
+    assert parsed[0]["context"] == ["后端"]
+
+
+def test_merge_keeps_new_fields():
+    merged, added, merged_n = lexicon_io.merge_entries(
+        [{"correct": "全栈", "variants": ["全占"]}],
+        [{"correct": "全栈", "variants": ["全战"],
+          "guards": {"全战": "满"}, "strong_context": ["前端"]}],
+    )
+    assert added == 0 and merged_n == 1
+    assert merged[0]["guards"] == {"全战": "满"}
+    assert merged[0]["strong_context"] == ["前端"]
+
+
+def test_invalid_guard_is_dropped():
+    """guards 里的非法正则应在加载时丢弃并告警，而不是运行时崩在 correct()。"""
+    import warnings as _warnings
+    from asr_polish.lexicon import Lexicon
+    entry = {"correct": "测试", "variants": ["甲"], "guards": {"甲": "(", "甲好": "满"}}
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        clean = Lexicon._sanitize(entry)
+    # 非法 guard 被丢弃，合法 guard 保留
+    assert clean["guards"] == {"甲好": "满"}
+    assert any("guards" in str(w.message) for w in caught)
+    # 列表字段写成字符串时应被拆分，避免逐字迭代导致上下文误命中
+    clean2 = Lexicon._sanitize({"correct": "X", "variants": ["某"], "context": "线程, 协程"})
+    assert clean2["context"] == ["线程", "协程"]
 
 
 if __name__ == "__main__":

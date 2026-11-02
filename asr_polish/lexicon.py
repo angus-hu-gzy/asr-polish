@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import warnings
 from pathlib import Path
@@ -69,7 +70,42 @@ class Lexicon:
             warnings.warn(
                 f"词表版本 v{version} 高于当前支持的 v{_SUPPORTED_LEXICON_VERSION}，"
                 f"部分字段可能被忽略：{path}", stacklevel=3)
-        return data.get("entries", [])
+        return [self._sanitize(e) for e in data.get("entries", [])]
+
+    @staticmethod
+    def _sanitize(entry: dict[str, Any]) -> dict[str, Any]:
+        """规范化单条词目：列表字段容错、guards 正则预校验。
+
+        - `context` / `strong_context` / `high_variants` / `medium_variants` 若被写成
+          字符串，按常见分隔符拆成列表（否则会被逐字迭代，导致上下文误命中）；
+        - `guards` 里的正则非法时丢弃并告警，避免运行时在 `correct()` 里抛
+          `re.error` 把整条流水线打断。
+        """
+        entry = dict(entry)
+        for key in ("high_variants", "medium_variants", "context", "strong_context"):
+            val = entry.get(key)
+            if isinstance(val, str):
+                entry[key] = [p.strip() for p in re.split(r"[,，、;；|]", val) if p.strip()]
+            elif isinstance(val, (list, tuple)):
+                entry[key] = [str(v).strip() for v in val if str(v).strip()]
+
+        guards = entry.get("guards")
+        if isinstance(guards, dict):
+            valid: dict[str, str] = {}
+            for variant, guard in guards.items():
+                guard = str(guard or "")
+                if not guard:
+                    continue
+                try:
+                    re.compile("(?!" + guard + ")")
+                except re.error as exc:
+                    warnings.warn(
+                        f"词表 guards 正则非法，已忽略：{entry.get('correct')}/{variant}"
+                        f"（{guard!r}: {exc}）", stacklevel=2)
+                    continue
+                valid[str(variant)] = guard
+            entry["guards"] = valid
+        return entry
 
     @staticmethod
     def _merge_entries(
@@ -125,12 +161,23 @@ class Lexicon:
     def _is_ascii(variant: str) -> bool:
         return all(ord(ch) < 128 for ch in variant)
 
+    @classmethod
+    def _is_short_cjk(cls, variant: str) -> bool:
+        """短中文变体（≤2 字）。
+
+        这类变体与正常中文词的碰撞率极高（全占/给特/色口 都能出现在日常句子里），
+        因此**不允许**被条目级 `confidence: high` 顺带升级，必须在 `high_variants`
+        里逐个显式声明「确认安全」。
+        """
+        return len(variant) <= 2 and not cls._is_ascii(variant)
+
     def resolve_confidence(self, entry: dict[str, Any], variant: str) -> str:
         """解析单个变体的置信度：变体级白名单 > 条目级 > 规则默认。
 
         规则默认：ASCII 变体（有词边界保护）→ high；中文变体 → medium。
-        中文变体常与合法中文词同形，默认按 medium 处理，只在命中位置附近出现
-        强相关上下文词时才订正；「不可能独立成词」的安全变体用 high_variants 白名单升级。
+        条目级 `confidence: high` 只对 ASCII 变体与 3 字及以上中文变体生效；
+        ≤2 字的中文变体即使条目写了 high，也按 medium 处理——安全的中文短变体
+        （如「色考」）必须用 `high_variants` 逐个升级。
         """
         high = entry.get("high_variants") or []
         if variant in high:
@@ -140,6 +187,8 @@ class Lexicon:
             return "medium"
         conf = str(entry.get("confidence") or "").strip().lower()
         if conf in ("high", "medium", "low"):
+            if conf == "high" and self._is_short_cjk(variant):
+                return "medium"
             return conf
         return "high" if self._is_ascii(variant) else "medium"
 
@@ -155,8 +204,25 @@ class Lexicon:
         return pairs
 
     def context_words(self, entry: dict[str, Any]) -> list[str]:
-        """medium 变体的强相关上下文佐证词；未配置时返回空列表（由调用方回退到类别）。"""
+        """medium 变体的弱上下文佐证词；未配置时返回空列表（由调用方回退到类别）。"""
         return [str(w) for w in (entry.get("context") or []) if str(w)]
+
+    def strong_context(self, entry: dict[str, Any]) -> list[str]:
+        """medium 变体的强上下文佐证词（命中 1 个即可）。"""
+        return [str(w) for w in (entry.get("strong_context") or []) if str(w)]
+
+    @property
+    def category_terms(self) -> dict[str, list[str]]:
+        """类别 → 该类别下的正确术语（去重）。medium 变体的弱上下文回退来源。"""
+        mapping: dict[str, list[str]] = {}
+        for entry in self.entries:
+            cat = entry.get("category", "")
+            if not cat:
+                continue
+            mapping.setdefault(cat, [])
+            if entry["correct"] not in mapping[cat]:
+                mapping[cat].append(entry["correct"])
+        return mapping
 
     def lookup_variant(self, text: str) -> Optional[str]:
         """若 text 是某个变体，返回对应正确词；否则 None。"""

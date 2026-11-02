@@ -37,6 +37,19 @@ def is_ascii_variant(variant: str) -> bool:
     return all(ord(ch) < 128 for ch in variant)
 
 
+def has_context(text: str, start: int, end: int,
+                strong: List[str], weak: List[str]) -> bool:
+    """medium 变体的上下文佐证：±8 字窗口内强词命中 1 个、或弱词命中 ≥2 个。
+
+    correction 与 quality 共用同一判定，保证「订正」与「打分」对同一处变体
+    给出同一个结论，不会出现「correct 不动、assess 却扣分」的分裂。
+    """
+    window = text[max(0, start - _CONTEXT_WINDOW): end + _CONTEXT_WINDOW]
+    if any(w and w in window for w in strong):
+        return True
+    return sum(1 for w in weak if w and w in window) >= _MIN_CONTEXT_HITS
+
+
 def variant_pattern(variant: str, guard: str = "") -> Tuple[str, int]:
     """返回 (正则, flags)。correction 与 quality 共用，避免两侧判定分裂。
 
@@ -46,7 +59,7 @@ def variant_pattern(variant: str, guard: str = "") -> Tuple[str, int]:
       例如 guard="满" 让「全占满了」不命中「全占」。
     """
     if is_ascii_variant(variant) and any(c.isalpha() for c in variant):
-        pattern = r"(?<![A-Za-z])" + re.escape(variant) + r"(?![A-Za-z])"
+        pattern = r"(?<![A-Za-z0-9])" + re.escape(variant) + r"(?![A-Za-z0-9])"
         has_lower = any(c.islower() for c in variant)
         has_upper = any(c.isupper() for c in variant)
         # 全大写（如 PASS）→ 大小写敏感，避免把小写英文词「pass」误判
@@ -145,12 +158,8 @@ class Corrector:
 
     def _has_context(self, text: str, start: int, end: int,
                      strong: List[str], weak: List[str]) -> bool:
-        """medium 变体的上下文佐证：±8 字窗口内强词命中 1 个、或弱词命中 ≥2 个。"""
-        window = text[max(0, start - _CONTEXT_WINDOW): end + _CONTEXT_WINDOW]
-        if any(w and w in window for w in strong):
-            return True
-        hits = sum(1 for w in weak if w and w in window)
-        return hits >= _MIN_CONTEXT_HITS
+        """medium 变体的上下文佐证（实现见模块级 has_context）。"""
+        return has_context(text, start, end, strong, weak)
 
     def correct(self, text: str) -> CorrectionResult:
         """对文本执行订正，返回订正结果。"""

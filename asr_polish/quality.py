@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 from .lexicon import Lexicon
-from .correction import variant_pattern
+from .correction import variant_pattern, has_context
 
 
 @dataclass
@@ -90,28 +90,36 @@ def _detect_suspicious_variants(
     """返回 (可疑变体次数, 位置列表)。
 
     与 `correct_text` 严格一致的判定，避免「correct 不动、assess 却扣分」的分裂：
-    - 只统计 high 置信度变体（medium 无技术语境时不订正，也不应标成疑似错字）；
-    - 复用 `variant_pattern`（英文加词边界、全大写敏感），不再自己写一套正则，
-      因此 `pass`/`compass` 不会被误判为 Python；
+    - 复用 `variant_pattern`（英文加词边界、全大写敏感、guards 邻接保护）；
     - 长词优先 + 区间占用去重，避免 `h t t p s` 同时命中 HTTP/HTTPS 被扣两次分；
-    - 应用 `guards` 邻接保护（如「全占满了」不算「全栈」）。
+    - high 变体直接计入；medium 变体只有在上下文佐证成立时才计入——与订正引擎
+      走同一个 `has_context`，因此「日常用词」不会被冤枉，「技术语境里的错别字」
+      也不会被漏掉（否则 medium 级错误对评分完全不可见）。
     """
     spans: List[Tuple[int, int, str]] = []
     occupied: List[Tuple[int, int]] = []
-    pairs: List[Tuple[str, str, str]] = []  # (变体, 正确词, guard)
+    cat_terms = lexicon.category_terms
+    pairs: List[Tuple[str, str, str, str, List[str], List[str]]] = []
     for entry in lexicon.entries:
         guards = entry.get("guards") or {}
+        category = entry.get("category", "")
+        strong = lexicon.strong_context(entry)
+        weak = lexicon.context_words(entry) or cat_terms.get(category, [])
         for variant in entry.get("variants", []):
-            if lexicon.resolve_confidence(entry, variant) != "high":
+            confidence = lexicon.resolve_confidence(entry, variant)
+            if confidence not in ("high", "medium"):
                 continue
-            pairs.append((variant, entry["correct"], guards.get(variant, "")))
+            pairs.append((variant, entry["correct"], guards.get(variant, ""),
+                          confidence, strong, weak))
     pairs.sort(key=lambda x: len(x[0]), reverse=True)  # 长词优先
 
-    for variant, correct, guard in pairs:
+    for variant, correct, guard, confidence, strong, weak in pairs:
         pattern, flags = variant_pattern(variant, guard)
         for m in re.finditer(pattern, text, flags):
             start, end = m.span()
             if any(not (end <= s or start >= e) for s, e in occupied):
+                continue
+            if confidence == "medium" and not has_context(text, start, end, strong, weak):
                 continue
             occupied.append((start, end))
             spans.append((start, end, f"疑似「{correct}」"))

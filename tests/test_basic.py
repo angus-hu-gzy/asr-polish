@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from asr_polish import correct_text, cross_check, assess  # noqa: E402
+from asr_polish import correct_text, cross_check, assess, Lexicon  # noqa: E402
 
 
 class TestCorrection(unittest.TestCase):
@@ -132,6 +132,22 @@ class TestNoFalsePositive(unittest.TestCase):
         # 「买色口红色号」是「买+口红色号」，guards 应阻止误判为 MySQL/SQL
         self._assert_untouched("买色口红色号")
 
+    def test_proust_not_rust(self):
+        # 「普鲁斯特」里含「鲁斯特」，不是 Rust
+        self._assert_untouched("普鲁斯特的小说")
+
+    def test_ringgit_not_git(self):
+        # 「马来西亚林吉特」是货币名，里含「吉特」，不是 Git
+        self._assert_untouched("马来西亚林吉特汇率")
+
+    def test_ascii_boundary_with_digits(self):
+        # 「a i18next」里含「a i」，词边界要连数字一起挡掉
+        self._assert_untouched("a i18next language")
+
+    def test_pass_slash_fail(self):
+        # 「PASS/FAIL」是测试结果，不是 Python
+        self._assert_untouched("PASS/FAIL 测试")
+
 
 class TestMediumConfidence(unittest.TestCase):
     """medium 变体在强相关上下文中才订正；high_variants 白名单无条件订正。"""
@@ -152,11 +168,15 @@ class TestMediumConfidence(unittest.TestCase):
         self.assertEqual(r.text, "我们讲一部和并发")
 
     def test_whitelisted_variant_fires_unconditionally(self):
-        # 「易步」「病发」被 high_variants 白名单升为 high，无技术语境也应订正
+        # 「易步」被 high_variants 白名单升为 high，无技术语境也应订正
         r1 = correct_text("请用易步的方式处理")
         self.assertIn("异步", r1.text)
-        r2 = correct_text("这属于病发场景")
-        self.assertIn("并发", r2.text)
+
+    def test_bingfa_needs_context(self):
+        # 「病发」与「疾病发生」同形，已降为 medium：无技术语境不动，有强上下文才订正
+        self.assertEqual(correct_text("这属于病发场景").text, "这属于病发场景")
+        self.assertEqual(correct_text("对疾病发生与发展的认识").text, "对疾病发生与发展的认识")
+        self.assertIn("并发", correct_text("病发导致死锁，需要加锁").text)
 
     def test_strong_context_single_word_suffices(self):
         # 强上下文词（虚拟机）命中 1 个即可订正「爪哇」→ Java
@@ -239,6 +259,90 @@ class TestQuality(unittest.TestCase):
         r = assess("h t t p s 协议", duration_seconds=2)
         dim = next(d for d in r.dimensions if d.name == "可疑同音字")
         self.assertEqual(dim.metric, 1)
+
+
+class TestShortCjkPolicy(unittest.TestCase):
+    """≤2 字中文变体：条目级 confidence 不再顺带升级，必须 high_variants 显式声明。"""
+
+    def test_entry_level_high_downgraded(self):
+        lex = Lexicon()
+        sql = next(e for e in lex.entries if e["correct"] == "SQL")
+        self.assertEqual(lex.resolve_confidence(sql, "色口"), "medium")
+        self.assertEqual(lex.resolve_confidence(sql, "色考"), "high")  # 白名单显式升级
+
+    def test_quanzhan_collisions(self):
+        # 「全占」与「完全占领 / 全占了 / 全占满」同形，不能无条件替换
+        for t in ["完全占领了市场", "我军全占领了高地", "这台机器全占了吧"]:
+            self.assertEqual(correct_text(t).text, t, f"误伤：{t!r}")
+
+    def test_geite_collision(self):
+        self.assertEqual(correct_text("给特别的人留个位置").text, "给特别的人留个位置")
+
+    def test_sekou_collision(self):
+        self.assertEqual(correct_text("买色口腔的检查").text, "买色口腔的检查")
+
+    def test_tuili_collision(self):
+        self.assertEqual(correct_text("推里面").text, "推里面")
+
+
+class TestAssessSeesMedium(unittest.TestCase):
+    """medium 变体按上下文计入评分：技术语境里的错别字不能被评分无视。"""
+
+    def test_medium_with_context_penalized(self):
+        # 「杰森」+「数据格式」→ 判为可疑「JSON」，应有扣分
+        r = assess("杰森这种数据格式很常见", duration_seconds=6)
+        dim = next(d for d in r.dimensions if d.name == "可疑同音字")
+        self.assertEqual(dim.metric, 1)
+        self.assertLess(r.score, 100)
+
+    def test_medium_without_context_clean(self):
+        # 无技术语境的合法用词，不应扣分
+        for t in ["我们看一部电影", "完全占领了市场", "添砖加瓦"]:
+            dim = next(d for d in assess(t, duration_seconds=6).dimensions
+                       if d.name == "可疑同音字")
+            self.assertEqual(dim.metric, 0, f"{t!r} 不应被标为可疑")
+
+
+class TestBiliHelpers(unittest.TestCase):
+    """bili.py 里不依赖网络的纯函数。"""
+
+    def test_extract_bvid(self):
+        from asr_polish.bili import extract_bvid
+        self.assertEqual(extract_bvid("https://www.bilibili.com/video/BV1xx411c7mD?p=1"),
+                         "BV1xx411c7mD")
+        self.assertEqual(extract_bvid("BV1xx411c7mD"), "BV1xx411c7mD")
+        self.assertIsNone(extract_bvid("这不是链接"))
+
+    def test_pick_subtitle_preference(self):
+        from asr_polish.bili import _pick_subtitle
+        subs = [{"lan": "en", "subtitle_url": "u1"},
+                {"lan": "zh-CN", "subtitle_url": "u2"},
+                {"lan": "ai-zh", "subtitle_url": "u3"}]
+        self.assertEqual(_pick_subtitle(subs)["lan"], "ai-zh")
+        self.assertEqual(_pick_subtitle([{"lan": "en", "subtitle_url": "u1"}])["lan"], "en")
+        self.assertIsNone(_pick_subtitle([]))
+
+
+class TestAuditTool(unittest.TestCase):
+    """tools/audit_corrections.py：语料审计能标出「变体被夹在更长中文词里」的疑似误伤。"""
+
+    def test_audit_embedded_flag(self):
+        from tools.audit_corrections import audit_text
+        # 正常词不再被订正
+        self.assertEqual(audit_text("完全占领了市场"), [])
+        # 词边界干净的真实错字：不算嵌入
+        rec = audit_text("请用色考 查询")[0]
+        self.assertEqual(rec.corrected, "SQL")
+        self.assertFalse(rec.embedded)
+        # 前后都是汉字 → 标记为疑似嵌入
+        self.assertTrue(audit_text("我们今天讲色考和PASS")[0].embedded)
+
+    def test_audit_grouping(self):
+        from tools.audit_corrections import audit_text, group_records
+        records = audit_text("色考 和 PASS 都错了") + audit_text("再讲一次色考 ")
+        groups = group_records(records)
+        counts = {(g.original, g.corrected): g.count for g in groups}
+        self.assertEqual(counts[("色考", "SQL")], 2)
 
 
 class TestCLI(unittest.TestCase):

@@ -43,6 +43,19 @@ def _clean_variants(raw: str) -> list[str]:
     return seen
 
 
+# 需要原样透传的条目字段（导入/合并时不能丢，否则 guards/强上下文会静默失效）
+_ENTRY_LIST_FIELDS = ("high_variants", "medium_variants", "context", "strong_context")
+
+
+def _clean_list(val: Any) -> list[str]:
+    """把可能是字符串或列表的字段统一成去空白的字符串列表。"""
+    if isinstance(val, str):
+        return [p.strip() for p in re.split(r"[,，、;；|]", val) if p.strip()]
+    if isinstance(val, (list, tuple)):
+        return [str(x).strip() for x in val if str(x).strip()]
+    return []
+
+
 def normalize_entry(item: Any) -> Optional[dict[str, Any]]:
     """把一条原始条目规范化为标准结构；无效则返回 None。"""
     if not isinstance(item, dict):
@@ -68,13 +81,16 @@ def normalize_entry(item: Any) -> Optional[dict[str, Any]]:
     confidence = str(item.get("confidence") or "").strip().lower()
     if confidence in ("high", "medium", "low"):
         entry["confidence"] = confidence
-    # 变体级分级 / 上下文佐证字段透传（JSON 导入可用）
-    for key in ("high_variants", "medium_variants", "context"):
-        val = item.get(key)
-        if isinstance(val, list):
-            cleaned = [str(x).strip() for x in val if str(x).strip()]
-            if cleaned:
-                entry[key] = cleaned
+    # 变体级分级 / 上下文佐证 / 邻接保护字段透传（JSON 导入可用）
+    for key in _ENTRY_LIST_FIELDS:
+        cleaned = _clean_list(item.get(key))
+        if cleaned:
+            entry[key] = cleaned
+    guards = item.get("guards")
+    if isinstance(guards, dict):
+        cleaned_guards = {str(k): str(v) for k, v in guards.items() if str(v).strip()}
+        if cleaned_guards:
+            entry["guards"] = cleaned_guards
     return entry
 
 
@@ -174,8 +190,7 @@ def merge_entries(
                     vset.append(v)
             if vset:
                 base["variants"] = vset
-            for key in ("category", "note", "confidence",
-                        "high_variants", "medium_variants", "context"):
+            for key in ("category", "note", "confidence", "guards") + _ENTRY_LIST_FIELDS:
                 if inc.get(key):
                     base[key] = inc[key]
             merged += 1

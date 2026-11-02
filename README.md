@@ -36,9 +36,9 @@ print(result.summary())  # 订正 3 处：色考 → SQL；PASS → Python；福
 
 - **长词优先**：`Aging Decoding` 整体订正为 `Agentic Coding`，不会被子串抢先误替换
 - **英文变体加词边界**：`PASS`（全大写）命中 `Python`，但英文常用词 `pass`、`compass` 不受影响（订正与打分用同一套判定）
-- **变体级置信分级**：置信度标在「变体」上，而非整条词目。规则默认 ASCII 变体 high、中文变体 medium；「不可能独立成词」的安全中文变体用 `high_variants` 白名单升级。medium 变体（如 `一部`→`异步`）需要上下文佐证才订正，`我们看一部电影` 不会被误改成 `我们看异步电影`
+- **变体级置信分级**：置信度标在「变体」上，而非整条词目。规则默认 ASCII 变体 high、中文变体 medium；**≤2 字的中文变体即使条目写了 `confidence: high` 也按 medium 处理**，确认安全的必须用 `high_variants` 逐个升级（两字中文与日常词碰撞率太高，`全占`/`给特`/`色口` 都会出现在正常句子里）。medium 变体（如 `一部`→`异步`）需要上下文佐证才订正，`我们看一部电影` 不会被误改成 `我们看异步电影`
 - **上下文分强弱**：`strong_context`（如「虚拟机」「序列化」）命中 1 个即可，`context` 弱词需命中 ≥2 个——`我们讲爪哇的虚拟机` 能订正为 Java，而 `杰森·斯坦森主演的动作片` 不会误判为 JSON
-- **邻接保护 `guards`**：给「会被更长正常词包含」的变体加负向前瞻，`这台机器全占满了`、`请给特写镜头`、`买色口红色号` 都不会被误订正
+- **邻接保护 `guards`**：给「会被更长正常词包含」的变体加负向前瞻。注意它只覆盖词表里已登记的搭配（如 `全占(?!满|领|了)`、`给特(?!写|别)`、`买色口(?!红|腔)`），不是通用分词，未登记的新搭配仍可能误伤
 - **每处订正可追溯**：返回原文、位置、类别、置信度；`summary()` 会给 medium 改动标注「待确认」，方便只审这类改动
 
 ### ② 多引擎交叉验证 `crosscheck`
@@ -156,6 +156,9 @@ python examples/demo.py
 # 运行测试（两个测试文件需分别执行）
 python tests/test_basic.py
 python tests/test_lexicon_io.py
+
+# 用语料审计词表误伤（开发工具，不随包安装）
+python tools/audit_corrections.py 语料.txt 或/语料目录
 ```
 
 ## 自定义词表
@@ -179,11 +182,11 @@ python tests/test_lexicon_io.py
 ```
 
 字段说明：
-- `confidence`：整体指定 `high`/`medium`；中文变体默认 medium（安全优先），ASCII 变体默认 high。
-- `high_variants`：把「不可能独立成词」的安全中文变体升级为 high（无条件订正）。
+- `confidence`：整体指定 `high`/`medium`；中文变体默认 medium（安全优先），ASCII 变体默认 high。**≤2 字中文变体不受条目级 `high` 影响**，需在 `high_variants` 里逐个声明。
+- `high_variants`：把确认「不会独立成词」的安全中文变体升级为 high（无条件订正），如 `色考`、`易步`。
 - `strong_context`：medium 变体的强上下文词，±8 字内命中 **1 个**即订正（如「虚拟机」对「爪哇」）。
 - `context`：medium 变体的弱上下文词，±8 字内需命中 **≥2 个**才订正。
-- `guards`：`{变体: 正则}`，给变体加负向前瞻做邻接保护——如 `"色口": "红"` 让「买色口红色号」不被误判为 SQL。
+- `guards`：`{变体: 正则}`，给变体加负向前瞻做邻接保护——如 `"色口": "红|腔"` 让「买色口红色号」「买色口腔」不被误判。列表字段与 `guards` 都会在 `lexicon import` 时透传并做正则预校验，非法 guard 会告警后丢弃。
 
 按你的领域增删条目即可，也支持加载外部词表：
 
@@ -252,6 +255,8 @@ asr-polish/
 │   ├── demo.py            # 演示
 │   ├── import_sample.txt  # 批量导入示例（TXT）
 │   └── import_sample.csv  # 批量导入示例（CSV）
+├── tools/
+│   └── audit_corrections.py  # 语料审计：暴露「变体只是更长正常词的一部分」的误伤
 └── tests/
     ├── test_basic.py      # 核心能力 + 误伤回归 + medium 用例测试
     └── test_lexicon_io.py # 词表导入/导出测试
@@ -259,6 +264,7 @@ asr-polish/
 
 ## 变更记录
 
+- **0.5.0 → 0.5.1**：`lexicon import`/合并透传 `guards` 与 `strong_context`（此前会被静默丢弃，导致导入后保护失效）；词表加载时预校验 `guards` 正则（非法即告警丢弃，不再运行时崩在 `correct()`）、列表字段容错；≤2 字中文变体不再被条目级 `confidence: high` 顺带升级（`全占`/`给特`/`色口`/`推里` 改回 medium 并补 guards 与上下文，`完全占领`、`给特别`、`买色口腔` 不再误伤）；`assess` 对 medium 变体改用与订正引擎相同的上下文判定，技术语境里的 medium 级错别字重新计入评分。新增 `tools/audit_corrections.py` 用语料审计误伤，按 11M 字符语料又修掉一批：`病发`（疾病发生）、`吉特`（林吉特）、`鲁斯特`（普鲁斯特）、`PASS/FAIL`、`a i18next`（ASCII 词边界现在连数字一起挡）；补了 `bili` 纯函数测试，测试数 46 → 62。
 - **0.4.0 → 0.5.0**：修复 CLI `--out` help 中 `%APPDATA%` 未转义导致 argparse 崩溃的 P0 回归（该版本 CLI 全不可用，请直接升到本版）；`quality` 与 `correction` 统一匹配逻辑（英文词边界 + 长词优先去重），`pass`/`compass` 不再被误标、重叠变体不再双重计数；medium 上下文分强弱（`strong_context` 命中 1 个即可，`context` 弱词需 ≥2）；新增 `guards` 邻接保护；`Correction` 增加 `confidence` 字段并在 `summary()` 标注 medium 改动；`cross_check` 剔除空引擎；CI 补充 editable 安装冒烟、wheel 内容校验、Windows job 与 ruff。
 - **0.3.0 → 0.4.0**：中文变体默认改为 `medium`（安全优先），引入 `high_variants` 白名单与 `context` 窄词表上下文；`USER_LEXICON_PATH` 改为平台感知（Windows `%APPDATA%`，POSIX 尊重 `XDG_CONFIG_HOME`）；交叉验证报告由「整体置信度」更名为「字符一致率」，两引擎冲突（0.5）现计入低置信片段。
 - **0.2.0 → 0.3.0**：`CrossCheckResult.merged` 由 dataclass 字段改为只读属性（等价于 `base_text`），直接以 `CrossCheckResult(merged=...)` 构造的调用会报 `TypeError`，请改用 `base_text=`。
