@@ -1,0 +1,99 @@
+{"id": "h-neg-01", "group": "holdout_neg", "input": "第一部队就驻扎在城外", "expect": "第一部队就驻扎在城外", "note": "一部 被 第一部队 包含"}
+{"id": "h-neg-02", "group": "holdout_neg", "input": "他一部书都没读完", "expect": "他一部书都没读完", "note": "一部 量词"}
+{"id": "h-neg-03", "group": "holdout_neg", "input": "兵法讲究以逸待劳", "expect": "兵法讲究以逸待劳", "note": "兵法 正常词"}
+{"id": "h-neg-04", "group": "holdout_neg", "input": "刀客与剑客的对决", "expect": "刀客与剑客的对决", "note": "刀客 正常词"}
+{"id": "h-neg-05", "group": "holdout_neg", "input": "多克特先生来了", "expect": "多克特先生来了", "note": "多克 被 多克特 包含"}
+{"id": "h-neg-06", "group": "holdout_neg", "input": "向农村捐款的渠道", "expect": "向农村捐款的渠道", "note": "向农 被 向农村 包含"}
+{"id": "h-neg-07", "group": "holdout_neg", "input": "开园仪式在上午十点", "expect": "开园仪式在上午十点", "note": "开园 正常词"}
+{"id": "h-neg-08", "group": "holdout_neg", "input": "这个调式转换很自然", "expect": "这个调式转换很自然", "note": "调式 音乐术语"}
+{"id": "h-neg-09", "group": "holdout_neg", "input": "他全占着座位不让", "expect": "他全占着座位不让", "note": "全占+着，guard 未覆盖着"}
+{"id": "h-neg-10", "group": "holdout_neg", "input": "请给特别的人多一点耐心", "expect": "请给特别的人多一点耐心", "note": "给特 被 给特别 包含"}
+{"id": "h-neg-11", "group": "holdout_neg", "input": "给特困户发补贴", "expect": "给特困户发补贴", "note": "给特+困，guard 未覆盖困"}
+{"id": "h-neg-12", "group": "holdout_neg", "input": "吉特巴舞跳得好", "expect": "吉特巴舞跳得好", "note": "吉特 被 吉特巴 包含"}
+{"id": "h-neg-13", "group": "holdout_neg", "input": "他还存了一点钱", "expect": "他还存了一点钱", "note": "还存 是还+存"}
+{"id": "h-neg-14", "group": "holdout_neg", "input": "爪哇猿人的化石", "expect": "爪哇猿人的化石", "note": "爪哇 生物学名词"}
+{"id": "h-neg-15", "group": "holdout_neg", "input": "酸法造纸的工艺", "expect": "酸法造纸的工艺", "note": "酸法 是造纸工艺"}
+{"id": "h-neg-16", "group": "holdout_neg", "input": "医生建议复查度数与视力", "expect": "医生建议复查度数与视力", "note": "复查度 是复查+度数"}
+{"id": "h-neg-17", "group": "holdout_neg", "input": "数据库及接口都要改", "expect": "数据库及接口都要改", "note": "数据及 连接词用法"}
+{"id": "h-neg-18", "group": "holdout_neg", "input": "全战三国是款游戏", "expect": "全战三国是款游戏", "note": "全战 是游戏名"}
+{"id": "h-neg-19", "group": "holdout_neg", "input": "西普路是条老街", "expect": "西普路是条老街", "note": "西普 被街道名包含"}
+{"id": "h-neg-20", "group": "holdout_neg", "input": "杰森博士的论文", "expect": "杰森博士的论文", "note": "杰森 人名"}
+{"id": "h-neg-21", "group": "holdout_neg", "input": "助产士正在接生", "expect": "助产士正在接生", "note": "接生 正常词"}
+{"id": "h-neg-22", "group": "holdout_neg", "input": "色口红试色很好看", "expect": "色口红试色很好看", "note": "色口 后接红，guard 生效"}
+{"id": "h-neg-23", "group": "holdout_neg", "input": "把数据及结论一起发我", "expect": "把数据及结论一起发我", "note": "数据及 连接词用法"}
+{"id": "h-neg-24", "group": "holdout_neg", "input": "这块地全占了", "expect": "这块地全占了", "note": "全占+了，guard 生效"}
+{"id": "h-neg-25", "group": "holdout_neg", "input": "我爱的书就这几本", "expect": "我爱的书就这几本", "note": "爱的 日常表达"}
+{"id": "h-neg-26", "group": "holdout_neg", "input": "加瓦片的工人很辛苦", "expect": "加瓦片的工人很辛苦", "note": "加瓦 是加瓦片"}
+{"id": "h-neg-27", "group": "holdout_neg", "input": "香农熵与信息量", "expect": "香农熵与信息量", "note": "正确写法，不应改动"}
+{"id": "h-neg-28", "group": "holdout_neg", "input": "分布式事务很难", "expect": "分布式事务很难", "note": "正确写法，不应改动"}
+{"id": "h-neg-29", "group": "holdout_neg", "input": "缓存命中率提升", "expect": "缓存命中率提升", "note": "正确写法，不应改动"}
+
+{"id": "h-pos-01", "group": "holdout_pos", "input": "色考注入漏洞要防", "expect": "SQL注入漏洞要防", "edits": [["色考", "SQL"]], "note": "色考 白名单"}
+{"id": "h-pos-02", "group": "holdout_pos", "input": "色考语句写错了", "expect": "SQL语句写错了", "edits": [["色考", "SQL"]], "note": "色考 白名单"}
+{"id": "h-pos-03", "group": "holdout_pos", "input": "用派森写爬虫", "expect": "用Python写爬虫", "edits": [["派森", "Python"]], "note": "派森 白名单"}
+{"id": "h-pos-04", "group": "holdout_pos", "input": "加瓦的字节码", "expect": "Java的字节码", "edits": [["加瓦", "Java"]], "note": "加瓦 + 强词 字节码"}
+{"id": "h-pos-05", "group": "holdout_pos", "input": "杰森的解析库很慢", "expect": "JSON的解析库很慢", "edits": [["杰森", "JSON"]], "note": "杰森 + 弱词 解析，只有一个"}
+{"id": "h-pos-06", "group": "holdout_pos", "input": "围服务的网关配置", "expect": "微服务的网关配置", "edits": [["围服务", "微服务"]], "note": "围服务 高置信"}
+{"id": "h-pos-07", "group": "holdout_pos", "input": "用环存降低延迟", "expect": "用缓存降低延迟", "edits": [["环存", "缓存"]], "note": "环存 白名单"}
+{"id": "h-pos-08", "group": "holdout_pos", "input": "编义器报错信息", "expect": "编译器报错信息", "edits": [["编义器", "编译器"]], "note": "编义器"}
+{"id": "h-pos-09", "group": "holdout_pos", "input": "数据苦连接池", "expect": "数据库连接池", "edits": [["数据苦", "数据库"]], "note": "数据苦"}
+{"id": "h-pos-10", "group": "holdout_pos", "input": "数剧库迁移方案", "expect": "数据库迁移方案", "edits": [["数剧库", "数据库"]], "note": "数剧库"}
+{"id": "h-pos-11", "group": "holdout_pos", "input": "服雾气宕机了", "expect": "服务器宕机了", "edits": [["服雾气", "服务器"]], "note": "服雾气"}
+{"id": "h-pos-12", "group": "holdout_pos", "input": "调式时看断点", "expect": "调试时看断点", "edits": [["调式", "调试"]], "note": "调式 + 强词 断点"}
+{"id": "h-pos-13", "group": "holdout_pos", "input": "踢度裁剪", "expect": "梯度裁剪", "edits": [["踢度", "梯度"]], "note": "踢度 白名单"}
+{"id": "h-pos-14", "group": "holdout_pos", "input": "过拟和现象", "expect": "过拟合现象", "edits": [["过拟和", "过拟合"]], "note": "过拟和"}
+{"id": "h-pos-15", "group": "holdout_pos", "input": "损失寒数曲线", "expect": "损失函数曲线", "edits": [["损失寒数", "损失函数"]], "note": "损失寒数"}
+{"id": "h-pos-16", "group": "holdout_pos", "input": "自注意力机智", "expect": "自注意力机制", "edits": [["注意力机智", "注意力机制"]], "note": "注意力机智"}
+{"id": "h-pos-17", "group": "holdout_pos", "input": "机器血洗的评估指标", "expect": "机器学习的评估指标", "edits": [["机器血洗", "机器学习"]], "note": "机器血洗"}
+{"id": "h-pos-18", "group": "holdout_pos", "input": "深度血洗框架", "expect": "深度学习框架", "edits": [["深度血洗", "深度学习"]], "note": "深度血洗"}
+{"id": "h-pos-19", "group": "holdout_pos", "input": "神精网络训练", "expect": "神经网络训练", "edits": [["神精网络", "神经网络"]], "note": "神精网络"}
+{"id": "h-pos-20", "group": "holdout_pos", "input": "达模型推理慢", "expect": "大模型推理慢", "edits": [["达模型", "大模型"]], "note": "达模型"}
+{"id": "h-pos-21", "group": "holdout_pos", "input": "推里耗时太长", "expect": "推理耗时太长", "edits": [["推里", "推理"]], "note": "推里 是 medium，看能否靠上下文"}
+{"id": "h-pos-22", "group": "holdout_pos", "input": "阿珍特框架", "expect": "Agent框架", "edits": [["阿珍特", "Agent"]], "note": "阿珍特"}
+{"id": "h-pos-23", "group": "holdout_pos", "input": "全练路追踪", "expect": "全链路追踪", "edits": [["全练路", "全链路"]], "note": "全练路"}
+{"id": "h-pos-24", "group": "holdout_pos", "input": "键子数据库设计", "expect": "键值数据库设计", "edits": [["键子数据库", "键值数据库"]], "note": "键子数据库"}
+{"id": "h-pos-25", "group": "holdout_pos", "input": "分布市事务", "expect": "分布式事务", "edits": [["分布市", "分布式"]], "note": "分布市"}
+{"id": "h-pos-26", "group": "holdout_pos", "input": "复载均衡器", "expect": "负载均衡器", "edits": [["复载均衡", "负载均衡"]], "note": "复载均衡"}
+{"id": "h-pos-27", "group": "holdout_pos", "input": "微福务治理", "expect": "微服务治理", "edits": [["微福务", "微服务"]], "note": "微福务"}
+{"id": "h-pos-28", "group": "holdout_pos", "input": "迪江哥的ORM", "expect": "Django的ORM", "edits": [["迪江哥", "Django"]], "note": "迪江哥 白名单"}
+{"id": "h-pos-29", "group": "holdout_pos", "input": "瑞艾克特组件", "expect": "React组件", "edits": [["瑞艾克特", "React"]], "note": "瑞艾克特"}
+{"id": "h-pos-30", "group": "holdout_pos", "input": "福拉斯克的路由", "expect": "Flask的路由", "edits": [["福拉斯克", "Flask"]], "note": "福拉斯克"}
+{"id": "h-pos-31", "group": "holdout_pos", "input": "诺德杰艾斯版本", "expect": "Node.js版本", "edits": [["诺德杰艾斯", "Node.js"]], "note": "诺德杰艾斯"}
+{"id": "h-pos-32", "group": "holdout_pos", "input": "库伯内特斯集群", "expect": "Kubernetes集群", "edits": [["库伯内特斯", "Kubernetes"]], "note": "库伯内特斯"}
+{"id": "h-pos-33", "group": "holdout_pos", "input": "蒙戈迪比的副本集", "expect": "MongoDB的副本集", "edits": [["蒙戈迪比", "MongoDB"]], "note": "蒙戈迪比"}
+{"id": "h-pos-34", "group": "holdout_pos", "input": "波斯特格瑞斯的扩展", "expect": "PostgreSQL的扩展", "edits": [["波斯特格瑞斯", "PostgreSQL"]], "note": "波斯特格瑞斯"}
+{"id": "h-pos-35", "group": "holdout_pos", "input": "派托奇的自动求导", "expect": "PyTorch的自动求导", "edits": [["派托奇", "PyTorch"]], "note": "派托奇"}
+{"id": "h-pos-36", "group": "holdout_pos", "input": "坦瑟弗洛的静态图", "expect": "TensorFlow的静态图", "edits": [["坦瑟弗洛", "TensorFlow"]], "note": "坦瑟弗洛"}
+{"id": "h-pos-37", "group": "holdout_pos", "input": "给特哈布的Actions", "expect": "GitHub的Actions", "edits": [["给特哈布", "GitHub"]], "note": "给特哈布"}
+{"id": "h-pos-38", "group": "holdout_pos", "input": "苏格啦底的申辩", "expect": "苏格拉底的申辩", "edits": [["苏格啦底", "苏格拉底"]], "note": "苏格啦底"}
+{"id": "h-pos-39", "group": "holdout_pos", "input": "卡巴西的访谈", "expect": "卡帕西的访谈", "edits": [["卡巴西", "卡帕西"]], "note": "卡巴西"}
+{"id": "h-pos-40", "group": "holdout_pos", "input": "西普的习题", "expect": "SICP的习题", "edits": [["西普", "SICP"]], "note": "西普 是 medium，看是否漏改"}
+{"id": "h-pos-41", "group": "holdout_pos", "input": "埃去提提屁请求", "expect": "HTTP请求", "edits": [["埃去提提屁", "HTTP"]], "note": "字母拼读 HTTP"}
+{"id": "h-pos-42", "group": "holdout_pos", "input": "提西皮握手", "expect": "TCP握手", "edits": [["提西皮", "TCP"]], "note": "字母拼读 TCP"}
+{"id": "h-pos-43", "group": "holdout_pos", "input": "友阿尔艾地址", "expect": "URL地址", "edits": [["友阿尔艾", "URL"]], "note": "字母拼读 URL"}
+{"id": "h-pos-44", "group": "holdout_pos", "input": "西皮优占用高", "expect": "CPU占用高", "edits": [["西皮优", "CPU"]], "note": "字母拼读 CPU"}
+{"id": "h-pos-45", "group": "holdout_pos", "input": "鸡皮优训练", "expect": "GPU训练", "edits": [["鸡皮优", "GPU"]], "note": "字母拼读 GPU"}
+{"id": "h-pos-46", "group": "holdout_pos", "input": "泰普斯克里普特的类型", "expect": "TypeScript的类型", "edits": [["泰普斯克里普特", "TypeScript"]], "note": "泰普斯克里普特"}
+{"id": "h-pos-47", "group": "holdout_pos", "input": "维优的组件", "expect": "Vue的组件", "edits": [["维优", "Vue"]], "note": "维优 白名单"}
+{"id": "h-pos-48", "group": "holdout_pos", "input": "加瓦斯奎特的闭包", "expect": "JavaScript的闭包", "edits": [["加瓦斯奎特", "JavaScript"]], "note": "加瓦斯奎特"}
+{"id": "h-pos-49", "group": "holdout_pos", "input": "西艾斯艾斯的样式", "expect": "CSS的样式", "edits": [["西艾斯艾斯", "CSS"]], "note": "字母拼读 CSS"}
+{"id": "h-pos-50", "group": "holdout_pos", "input": "狗语言的并发模型", "expect": "Go语言的并发模型", "edits": [["狗语言", "Go语言"]], "note": "狗语言"}
+{"id": "h-pos-51", "group": "holdout_pos", "input": "拉斯特的所有权", "expect": "Rust的所有权", "edits": [["拉斯特", "Rust"]], "note": "拉斯特 是 medium，看是否漏改"}
+{"id": "h-pos-52", "group": "holdout_pos", "input": "瑞迪斯的过期策略", "expect": "Redis的过期策略", "edits": [["瑞迪斯", "Redis"]], "note": "瑞迪斯"}
+{"id": "h-pos-53", "group": "holdout_pos", "input": "林纳克斯内核", "expect": "Linux内核", "edits": [["林纳克斯", "Linux"]], "note": "林纳克斯"}
+{"id": "h-pos-54", "group": "holdout_pos", "input": "麦色口的主从", "expect": "MySQL的主从", "edits": [["麦色口", "MySQL"]], "note": "麦色口"}
+{"id": "h-pos-55", "group": "holdout_pos", "input": "爱珍特的工具调用", "expect": "Agent的工具调用", "edits": [["爱珍特", "Agent"]], "note": "爱珍特"}
+{"id": "h-pos-56", "group": "holdout_pos", "input": "Aging Decoding 的说法", "expect": "Agentic Coding 的说法", "edits": [["Aging Decoding", "Agentic Coding"]], "note": "长词优先"}
+{"id": "h-pos-57", "group": "holdout_pos", "input": "数据解构的遍历", "expect": "数据结构的遍历", "edits": [["数据解构", "数据结构"]], "note": "数据解构"}
+{"id": "h-pos-58", "group": "holdout_pos", "input": "正字表达式匹配", "expect": "正则表达式匹配", "edits": [["正字表达式", "正则表达式"]], "note": "正字表达式"}
+{"id": "h-pos-59", "group": "holdout_pos", "input": "单元侧试覆盖", "expect": "单元测试覆盖", "edits": [["单元侧试", "单元测试"]], "note": "单元侧试"}
+{"id": "h-pos-60", "group": "holdout_pos", "input": "反向转播的链式法则", "expect": "反向传播的链式法则", "edits": [["反向转播", "反向传播"]], "note": "反向转播"}
+{"id": "h-pos-61", "group": "holdout_pos", "input": "大语言魔形", "expect": "大语言模型", "edits": [["大语言魔形", "大语言模型"]], "note": "大语言魔形"}
+{"id": "h-pos-62", "group": "holdout_pos", "input": "夹密传输", "expect": "加密传输", "edits": [["夹密", "加密"]], "note": "夹密 白名单"}
+{"id": "h-pos-63", "group": "holdout_pos", "input": "价构设计", "expect": "架构设计", "edits": [["价构", "架构"]], "note": "价构 白名单"}
+{"id": "h-pos-64", "group": "holdout_pos", "input": "叠代器", "expect": "迭代器", "edits": [["叠代", "迭代"]], "note": "叠代 白名单"}
+{"id": "h-pos-65", "group": "holdout_pos", "input": "布署文档", "expect": "部署文档", "edits": [["布署", "部署"]], "note": "布署 白名单"}
+{"id": "h-pos-66", "group": "holdout_pos", "input": "讯练集", "expect": "训练集", "edits": [["讯练", "训练"]], "note": "讯练 白名单"}
+{"id": "h-pos-67", "group": "holdout_pos", "input": "循练轮数", "expect": "训练轮数", "edits": [["循练", "训练"]], "note": "循练 白名单"}
+{"id": "h-pos-68", "group": "holdout_pos", "input": "埃去艾替艾姆艾标签", "expect": "HTML标签", "edits": [["埃去艾替艾姆艾", "HTML"]], "note": "字母拼读 HTML"}
+{"id": "h-pos-69", "group": "holdout_pos", "input": "色依思皮的习题", "expect": "SICP的习题", "edits": [["色依思皮", "SICP"]], "note": "色依思皮 白名单"}

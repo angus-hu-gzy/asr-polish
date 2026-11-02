@@ -1,0 +1,106 @@
+{"id": "daily-01", "group": "daily", "input": "我们看一部电影", "expect": "我们看一部电影", "note": "一部是日常量词"}
+{"id": "daily-02", "group": "daily", "input": "我看了一部关于数据库优化的视频", "expect": "我看了一部关于数据库优化的视频", "note": "一部 附近出现数据库也不该改"}
+{"id": "daily-03", "group": "daily", "input": "这是一部讲微服务的书", "expect": "这是一部讲微服务的书", "note": "一部 附近出现微服务也不该改"}
+{"id": "daily-04", "group": "daily", "input": "他讲的兵法在分布式系统里也能用", "expect": "他讲的兵法在分布式系统里也能用", "note": "兵法 是正常词"}
+{"id": "daily-05", "group": "daily", "input": "孙子兵法是一部古老的兵书", "expect": "孙子兵法是一部古老的兵书", "note": "兵法 书名"}
+{"id": "daily-06", "group": "daily", "input": "他突然病发被送进医院", "expect": "他突然病发被送进医院", "note": "病发 是正常词"}
+{"id": "daily-07", "group": "daily", "input": "江湖上的刀客来去无踪", "expect": "江湖上的刀客来去无踪", "note": "刀客 是正常词"}
+{"id": "daily-08", "group": "daily", "input": "多克是一个人名", "expect": "多克是一个人名", "note": "多克 人名"}
+{"id": "daily-09", "group": "daily", "input": "杰森·斯坦森主演的动作片", "expect": "杰森·斯坦森主演的动作片", "note": "杰森 人名"}
+{"id": "daily-10", "group": "daily", "input": "产科医生正在接生", "expect": "产科医生正在接生", "note": "接生 是正常词"}
+{"id": "daily-11", "group": "daily", "input": "买色口红色号要挑很久", "expect": "买色口红色号要挑很久", "note": "色口 被红色号包含"}
+{"id": "daily-12", "group": "daily", "input": "西普公司发布了新品", "expect": "西普公司发布了新品", "note": "西普 公司名"}
+{"id": "daily-13", "group": "daily", "input": "向农是一位老支书", "expect": "向农是一位老支书", "note": "向农 人名"}
+{"id": "daily-14", "group": "daily", "input": "那个庙会开园了，门口贴着开源海报", "expect": "那个庙会开园了，门口贴着开源海报", "note": "开园 附近出现开源也不该改"}
+{"id": "daily-15", "group": "daily", "input": "大调式和小调式的区别", "expect": "大调式和小调式的区别", "note": "调式 是音乐术语"}
+{"id": "daily-16", "group": "daily", "input": "这台机器全占满了", "expect": "这台机器全占满了", "note": "全占 被全占满包含"}
+{"id": "daily-17", "group": "daily", "input": "请给特写镜头", "expect": "请给特写镜头", "note": "给特 被给特写包含"}
+{"id": "daily-18", "group": "daily", "input": "马来西亚林吉特汇率今天走低", "expect": "马来西亚林吉特汇率今天走低", "note": "吉特 被林吉特包含"}
+{"id": "daily-19", "group": "daily", "input": "我爱的家人都在老家", "expect": "我爱的家人都在老家", "note": "爱的 是日常表达"}
+{"id": "daily-20", "group": "daily", "input": "统计数据及分析结果已整理好", "expect": "统计数据及分析结果已整理好", "note": "数据及 是数据+及"}
+{"id": "daily-21", "group": "daily", "input": "合同里涉及数据及隐私的条款", "expect": "合同里涉及数据及隐私的条款", "note": "数据及 连接词用法"}
+{"id": "daily-22", "group": "daily", "input": "给屋顶加瓦需要两天", "expect": "给屋顶加瓦需要两天", "note": "加瓦 是正常词"}
+{"id": "daily-23", "group": "daily", "input": "爪哇岛上的火山很壮观", "expect": "爪哇岛上的火山很壮观", "note": "爪哇 是地名，不该改成 Java"}
+{"id": "daily-24", "group": "daily", "input": "传统酸法腌制的泡菜更脆", "expect": "传统酸法腌制的泡菜更脆", "note": "酸法 是食品工艺"}
+{"id": "daily-25", "group": "daily", "input": "这笔钱还存着没花", "expect": "这笔钱还存着没花", "note": "还存 是还+存"}
+{"id": "daily-26", "group": "daily", "input": "电影被解救的姜戈很好看", "expect": "电影被解救的姜戈很好看", "note": "姜戈 是片名"}
+{"id": "daily-27", "group": "daily", "input": "先不加吧，明天再说", "expect": "先不加吧，明天再说", "note": "加吧 是加+语气词"}
+{"id": "daily-28", "group": "daily", "input": "普鲁斯特的小说很长", "expect": "普鲁斯特的小说很长", "note": "鲁斯特 被普鲁斯特包含"}
+{"id": "daily-29", "group": "daily", "input": "进行复查度数是否稳定", "expect": "进行复查度数是否稳定", "note": "复查度 是复查+度数"}
+{"id": "daily-30", "group": "daily", "input": "这张图的分辨率太低", "expect": "这张图的分辨率太低", "note": "无变体命中的普通句"}
+
+{"id": "asr-01", "group": "asr", "input": "今天讲色考和PASS，还有福拉斯克框架", "expect": "今天讲SQL和Python，还有Flask框架", "note": "三个高置信变体", "edits": [["色考", "SQL"], ["PASS", "Python"], ["福拉斯克", "Flask"]]}
+{"id": "asr-02", "group": "asr", "input": "我们用杰森做数据序列化", "expect": "我们用JSON做数据序列化", "note": "杰森 + 强词 序列化", "edits": [["杰森", "JSON"]]}
+{"id": "asr-03", "group": "asr", "input": "我们讲爪哇的虚拟机", "expect": "我们讲Java的虚拟机", "note": "爪哇 + 强词 虚拟机", "edits": [["爪哇", "Java"]]}
+{"id": "asr-04", "group": "asr", "input": "线程和一部配合回调处理", "expect": "线程和异步配合回调处理", "note": "一部 + 强词 回调", "edits": [["一部", "异步"]]}
+{"id": "asr-05", "group": "asr", "input": "发生竞态时要注意病发问题", "expect": "发生竞态时要注意并发问题", "note": "病发 + 强词 竞态", "edits": [["病发", "并发"]]}
+{"id": "asr-06", "group": "asr", "input": "讲前端和后端的全占开发", "expect": "讲前端和后端的全栈开发", "note": "全占 + 弱词 前端后端两个", "edits": [["全占", "全栈"]]}
+{"id": "asr-07", "group": "asr", "input": "把代码提交到吉特仓库", "expect": "把代码提交到Git仓库", "note": "吉特 + 强词 提交仓库", "edits": [["吉特", "Git"]]}
+{"id": "asr-08", "group": "asr", "input": "学鲁斯特的编译器", "expect": "学Rust的编译器", "note": "鲁斯特 + 强词 编译器", "edits": [["鲁斯特", "Rust"]]}
+{"id": "asr-09", "group": "asr", "input": "用刀客部署容器镜像", "expect": "用Docker部署容器镜像", "note": "刀客 + 强词 容器镜像", "edits": [["刀客", "Docker"]]}
+{"id": "asr-10", "group": "asr", "input": "迪江哥框架的路由配置", "expect": "Django框架的路由配置", "note": "迪江哥 白名单", "edits": [["迪江哥", "Django"]]}
+{"id": "asr-11", "group": "asr", "input": "瑞阿克特组件复用", "expect": "React组件复用", "note": "瑞阿克特 高置信", "edits": [["瑞阿克特", "React"]]}
+{"id": "asr-12", "group": "asr", "input": "买色口数据库的索引优化", "expect": "MySQL数据库的索引优化", "note": "色口 + 数据库语境", "edits": [["买色口", "MySQL"]]}
+{"id": "asr-13", "group": "asr", "input": "用环存加速数据库查询", "expect": "用缓存加速数据库查询", "note": "环存 白名单", "edits": [["环存", "缓存"]]}
+{"id": "asr-14", "group": "asr", "input": "用布署脚本上线", "expect": "用部署脚本上线", "note": "布署 白名单", "edits": [["布署", "部署"]]}
+{"id": "asr-15", "group": "asr", "input": "这个叠代周期太长", "expect": "这个迭代周期太长", "note": "叠代 白名单", "edits": [["叠代", "迭代"]]}
+{"id": "asr-16", "group": "asr", "input": "服务气的价构设计", "expect": "服务器的架构设计", "note": "两个高置信变体", "edits": [["服务气", "服务器"], ["价构", "架构"]]}
+{"id": "asr-17", "group": "asr", "input": "正则表答式匹配字符串", "expect": "正则表达式匹配字符串", "note": "正则表答式", "edits": [["正则表答式", "正则表达式"]]}
+{"id": "asr-18", "group": "asr", "input": "先做单元侧试再合并", "expect": "先做单元测试再合并", "note": "单元侧试", "edits": [["单元侧试", "单元测试"]]}
+{"id": "asr-19", "group": "asr", "input": "反向转播算法推导", "expect": "反向传播算法推导", "note": "反向转播", "edits": [["反向转播", "反向传播"]]}
+{"id": "asr-20", "group": "asr", "input": "训练时踢度消失", "expect": "训练时梯度消失", "note": "踢度 白名单", "edits": [["踢度", "梯度"]]}
+{"id": "asr-21", "group": "asr", "input": "这个模型过你和现象严重", "expect": "这个模型过拟合现象严重", "note": "过你和", "edits": [["过你和", "过拟合"]]}
+{"id": "asr-22", "group": "asr", "input": "损失寒数怎么选", "expect": "损失函数怎么选", "note": "损失寒数", "edits": [["损失寒数", "损失函数"]]}
+{"id": "asr-23", "group": "asr", "input": "注意力机智的原理", "expect": "注意力机制的原理", "note": "注意力机智", "edits": [["注意力机智", "注意力机制"]]}
+{"id": "asr-24", "group": "asr", "input": "达语言模型的上下文窗口", "expect": "大语言模型的上下文窗口", "note": "达语言模型", "edits": [["达语言模型", "大语言模型"]]}
+{"id": "asr-25", "group": "asr", "input": "卷肌神经网络的结构", "expect": "卷积神经网络的结构", "note": "卷肌神经网络", "edits": [["卷肌神经网络", "卷积神经网络"]]}
+{"id": "asr-26", "group": "asr", "input": "传斯佛默结构很吃显存", "expect": "Transformer结构很吃显存", "note": "传斯佛默", "edits": [["传斯佛默", "Transformer"]]}
+{"id": "asr-27", "group": "asr", "input": "深度血洗的入门路径", "expect": "深度学习的入门路径", "note": "深度血洗", "edits": [["深度血洗", "深度学习"]]}
+{"id": "asr-28", "group": "asr", "input": "机器血洗的基础是数学", "expect": "机器学习的基础是数学", "note": "机器血洗", "edits": [["机器血洗", "机器学习"]]}
+{"id": "asr-29", "group": "asr", "input": "神经网路的层数怎么定", "expect": "神经网络的层数怎么定", "note": "神经网路", "edits": [["神经网路", "神经网络"]]}
+{"id": "asr-30", "group": "asr", "input": "大魔形的参数规模", "expect": "大模型的参数规模", "note": "大魔形", "edits": [["大魔形", "大模型"]]}
+{"id": "asr-31", "group": "asr", "input": "讯练模型需要多少显存", "expect": "训练模型需要多少显存", "note": "讯练 白名单", "edits": [["讯练", "训练"]]}
+{"id": "asr-32", "group": "asr", "input": "推礼阶段的延迟", "expect": "推理阶段的延迟", "note": "推礼 白名单", "edits": [["推礼", "推理"]]}
+{"id": "asr-33", "group": "asr", "input": "阿珍特的工作流", "expect": "Agent的工作流", "note": "阿珍特", "edits": [["阿珍特", "Agent"]]}
+{"id": "asr-34", "group": "asr", "input": "全链录监控怎么做", "expect": "全链路监控怎么做", "note": "全链录", "edits": [["全链录", "全链路"]]}
+{"id": "asr-35", "group": "asr", "input": "键子数据库的选型", "expect": "键值数据库的选型", "note": "键子数据库", "edits": [["键子数据库", "键值数据库"]]}
+{"id": "asr-36", "group": "asr", "input": "预写日子的作用", "expect": "预写日志的作用", "note": "预写日子", "edits": [["预写日子", "预写日志"]]}
+{"id": "asr-37", "group": "asr", "input": "数据解构与算法复杂度", "expect": "数据结构与算法复杂度", "note": "数据解构", "edits": [["数据解构", "数据结构"]]}
+{"id": "asr-38", "group": "asr", "input": "服雾气的内存不够", "expect": "服务器的内存不够", "note": "服雾气", "edits": [["服雾气", "服务器"]]}
+{"id": "asr-39", "group": "asr", "input": "复载均衡要配几台机器", "expect": "负载均衡要配几台机器", "note": "复载均衡", "edits": [["复载均衡", "负载均衡"]]}
+{"id": "asr-40", "group": "asr", "input": "编义器的优化选项", "expect": "编译器的优化选项", "note": "编义器", "edits": [["编义器", "编译器"]]}
+{"id": "asr-41", "group": "asr", "input": "调式代码时要看断点", "expect": "调试代码时要看断点", "note": "调式 + 强词 断点", "edits": [["调式", "调试"]]}
+{"id": "asr-42", "group": "asr", "input": "微福务拆分的粒度", "expect": "微服务拆分的粒度", "note": "微福务", "edits": [["微福务", "微服务"]]}
+{"id": "asr-43", "group": "asr", "input": "分布市系统的共识算法", "expect": "分布式系统的共识算法", "note": "分布市", "edits": [["分布市", "分布式"]]}
+{"id": "asr-44", "group": "asr", "input": "爱屁爱接口怎么设计", "expect": "API接口怎么设计", "note": "爱屁爱", "edits": [["爱屁爱", "API"]]}
+{"id": "asr-45", "group": "asr", "input": "维优框架的响应式", "expect": "Vue框架的响应式", "note": "维优 白名单", "edits": [["维优", "Vue"]]}
+{"id": "asr-46", "group": "asr", "input": "诺德杰艾斯的包管理", "expect": "Node.js的包管理", "note": "诺德杰艾斯", "edits": [["诺德杰艾斯", "Node.js"]]}
+{"id": "asr-47", "group": "asr", "input": "库伯内特斯的调度策略", "expect": "Kubernetes的调度策略", "note": "库伯内特斯", "edits": [["库伯内特斯", "Kubernetes"]]}
+{"id": "asr-48", "group": "asr", "input": "引擎克斯的反向代理", "expect": "Nginx的反向代理", "note": "引擎克斯", "edits": [["引擎克斯", "Nginx"]]}
+{"id": "asr-49", "group": "asr", "input": "蒙戈迪比的文档模型", "expect": "MongoDB的文档模型", "note": "蒙戈迪比", "edits": [["蒙戈迪比", "MongoDB"]]}
+{"id": "asr-50", "group": "asr", "input": "波斯特格瑞斯的索引类型", "expect": "PostgreSQL的索引类型", "note": "波斯特格瑞斯", "edits": [["波斯特格瑞斯", "PostgreSQL"]]}
+{"id": "asr-51", "group": "asr", "input": "给特哈布上的开源项目", "expect": "GitHub上的开源项目", "note": "给特哈布", "edits": [["给特哈布", "GitHub"]]}
+{"id": "asr-52", "group": "asr", "input": "派托奇的张量操作", "expect": "PyTorch的张量操作", "note": "派托奇", "edits": [["派托奇", "PyTorch"]]}
+{"id": "asr-53", "group": "asr", "input": "坦瑟弗洛的图模式", "expect": "TensorFlow的图模式", "note": "坦瑟弗洛", "edits": [["坦瑟弗洛", "TensorFlow"]]}
+{"id": "asr-54", "group": "asr", "input": "卡帕细讲的课程", "expect": "卡帕西讲的课程", "note": "卡帕细", "edits": [["卡帕细", "卡帕西"]]}
+{"id": "asr-55", "group": "asr", "input": "苏格拉低的追问法", "expect": "苏格拉底的追问法", "note": "苏格拉低", "edits": [["苏格拉低", "苏格拉底"]]}
+{"id": "asr-56", "group": "asr", "input": "色依思皮这本书很难", "expect": "SICP这本书很难", "note": "色依思皮 白名单", "edits": [["色依思皮", "SICP"]]}
+{"id": "asr-57", "group": "asr", "input": "埃去艾替艾姆艾的标签", "expect": "HTML的标签", "note": "字母拼读", "edits": [["埃去艾替艾姆艾", "HTML"]]}
+{"id": "asr-58", "group": "asr", "input": "训练数据及需要清洗", "expect": "训练数据集需要清洗", "note": "数据及 目前无上下文词，用来暴露召回缺口", "edits": [["数据及", "数据集"]]}
+{"id": "asr-59", "group": "asr", "input": "西语言和西佳佳哪个先学", "expect": "C语言和C++哪个先学", "note": "两个字母拼读变体", "edits": [["西语言", "C语言"], ["西佳佳", "C++"]]}
+{"id": "asr-60", "group": "asr", "input": "狗语言适合写服务", "expect": "Go语言适合写服务", "note": "狗语言", "edits": [["狗语言", "Go语言"]]}
+
+{"id": "boundary-01", "group": "boundary", "input": "PASS/FAIL 测试结果", "expect": "PASS/FAIL 测试结果", "note": "测试结果用法，右邻 /"}
+{"id": "boundary-02", "group": "boundary", "input": "测试结果 6/6 PASS", "expect": "测试结果 6/6 PASS", "note": "左邻空白，不该改成 Python"}
+{"id": "boundary-03", "group": "boundary", "input": "全部 PASS", "expect": "全部 PASS", "note": "左邻空白"}
+{"id": "boundary-04", "group": "boundary", "input": "请 pass 这个参数", "expect": "请 pass 这个参数", "note": "英文单词 pass"}
+{"id": "boundary-05", "group": "boundary", "input": "这是 compass 指南针", "expect": "这是 compass 指南针", "note": "pass 是 compass 子串"}
+{"id": "boundary-06", "group": "boundary", "input": "学PASS语言第一课", "expect": "学Python语言第一课", "note": "中文紧邻 → 仍订正", "edits": [["PASS", "Python"]]}
+{"id": "boundary-07", "group": "boundary", "input": "PASS的缩进规则", "expect": "Python的缩进规则", "note": "中文紧邻 → 仍订正", "edits": [["PASS", "Python"]]}
+{"id": "boundary-08", "group": "boundary", "input": "h t t p s 协议要证书", "expect": "HTTPS 协议要证书", "note": "长词优先，只改 HTTPS 不改 HTTP；原有空格保留，空格规范化不在本项目范围", "edits": [["h t t p s", "HTTPS"]]}
+{"id": "boundary-09", "group": "boundary", "input": "a i18next 的多语言配置", "expect": "a i18next 的多语言配置", "note": "ASCII 词边界要挡数字"}
+{"id": "boundary-10", "group": "boundary", "input": "讲全占开发", "expect": "讲全栈开发", "note": "全占 后接开发 → 应订正", "edits": [["全占", "全栈"]]}
+{"id": "boundary-11", "group": "boundary", "input": "用给特管理代码", "expect": "用Git管理代码", "note": "给特 后接管理 → 应订正", "edits": [["给特", "Git"]]}
+{"id": "boundary-12", "group": "boundary", "input": "买色口数据库的授权", "expect": "MySQL数据库的授权", "note": "买色口 整体是 MySQL 的误读，订正后不再保留买字", "edits": [["买色口", "MySQL"]]}
+{"id": "boundary-13", "group": "boundary", "input": "用 a i 做摘要", "expect": "用 AI 做摘要", "note": "字母拼读 AI；原有空格保留", "edits": [["a i", "AI"]]}
+{"id": "boundary-14", "group": "boundary", "input": "g p u 显存不够", "expect": "GPU 显存不够", "note": "字母拼读 GPU；原有空格保留", "edits": [["g p u", "GPU"]]}

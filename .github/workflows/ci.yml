@@ -67,6 +67,26 @@ jobs:
           print("wheel 内容校验通过")
           PY
 
+  eval:
+    name: 准确性评测
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package
+        run: python -m pip install -e .
+
+      - name: 开发集（调参用的回归门禁）
+        run: python tools/eval_corrections.py --min-precision 0.98 --min-recall 0.95
+
+      - name: 留出集（未参与调参，衡量泛化）
+        run: python tools/eval_corrections.py --cases eval/holdout.jsonl --min-precision 0.98 --min-recall 0.90
+
   lint:
     name: ruff
     runs-on: ubuntu-latest
