@@ -1,8 +1,10 @@
 # asr-polish
 
+[![CI](https://github.com/angus-hu-gzy/asr-polish/actions/workflows/ci.yml/badge.svg)](https://github.com/angus-hu-gzy/asr-polish/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green)](./LICENSE)
 [![Zero deps](https://img.shields.io/badge/dependencies-0-brightgreen)]()
+[![Tag](https://img.shields.io/github/v/tag/angus-hu-gzy/asr-polish?label=version&color=blue)](https://github.com/angus-hu-gzy/asr-polish/releases)
 [![Author](https://img.shields.io/badge/author-angus--hu--gzy-555555)](https://github.com/angus-hu-gzy)
 
 中文语音转写（ASR）**质量打磨**工具 —— 把「转写出来的文字」变得可信，也能直接**从 B站视频取文本**。
@@ -118,6 +120,9 @@ asr-polish subs --up 329954990 --limit 20 -j 3
 
 # 某个合集/系列
 asr-polish subs --season 329954990 12345
+
+# 按关键词搜一批再抓（--search-pages 控制搜几页，每页约 42 条）
+asr-polish subs --search "Python教程" --search-pages 2 --limit 30
 ```
 
 输出（`-f txt`）：
@@ -146,7 +151,7 @@ B站只向**登录态**下发字幕列表——游客请求 `player/wbi/v2` 拿�
 ```
 ~/.workbuddy/data/bilibili-video-summary/bilibili_cookies.txt
 ~/Downloads/www.bilibili.com_cookies.txt
-~/.config/bili-subs/cookies.txt
+~/.config/asr-polish/cookies.txt
 ```
 
 或用 `--cookie /path/to/cookies.txt` 指定。
@@ -208,9 +213,14 @@ asr-polish lexicon export --out out.json   # 导出
 # 直接运行示例（无需安装）
 python examples/demo.py
 
-# 运行测试（两个测试文件需分别执行）
+# 运行全部测试（89 项）
+python -m unittest discover -s tests -v
+# 或直接跑单个文件
 python tests/test_basic.py
-python tests/test_lexicon_io.py
+
+# 准确性门禁（CI 里跑的就是这两条）
+python tools/eval_corrections.py --min-precision 0.98 --min-recall 0.95
+python tools/eval_corrections.py --cases eval/holdout.jsonl --min-precision 0.98 --min-recall 0.90
 
 # 用语料审计词表误伤（开发工具，不随包安装）
 python tools/audit_corrections.py 语料.txt 或/语料目录
@@ -294,44 +304,66 @@ asr-polish lexicon import my.csv --out my_lexicon.json # 导入到指定文件
 ```
 asr-polish/
 ├── pyproject.toml         # 打包配置（pip install 可装，提供 asr-polish 命令）
+├── CHANGELOG.md           # 逐版本变更记录（含每版的实测数字）
+├── CONTRIBUTING.md        # 怎么跑测试、怎么改词表、怎么发版
 ├── LICENSE                # MIT
 ├── NOTICE                 # 第三方声明（bcut-asr 参考）
 ├── asr_polish/
 │   ├── __init__.py        # 统一入口
 │   ├── __main__.py        # 支持 python -m asr_polish
 │   ├── py.typed           # PEP 561 类型标记
-│   ├── cli.py             # 命令行入口
+│   ├── cli.py             # 命令行入口（fetch / subs / correct / assess / crosscheck / lexicon）
 │   ├── correction.py      # 术语订正引擎
 │   ├── crosscheck.py      # 多引擎交叉验证
 │   ├── quality.py         # 转写质量自评
-│   ├── bili.py            # B站视频取文本（字幕轨 → 必剪云端 ASR）
+│   ├── bili.py            # B站字幕抓取 + 取文本（字幕轨 → 必剪云端 ASR）
+│   ├── export.py          # txt / srt / json / md 四种导出
 │   ├── lexicon.py         # 词表加载
 │   ├── lexicon_io.py      # 词表批量导入/导出
 │   └── data/
 │       └── corrections.json   # 默认术语词表
+├── eval/
+│   ├── cases.jsonl        # 开发集（调参用）
+│   └── holdout.jsonl      # 留出集（不参与调参，衡量泛化）
+├── docs/
+│   ├── 召回基准报告.md       # 召回率怎么测的、为什么四个反证实验被否掉
+│   └── 真实字幕错误分析.md   # 人工字幕当真值，真实错误长什么样
 ├── examples/
 │   ├── demo.py            # 演示
 │   ├── import_sample.txt  # 批量导入示例（TXT）
 │   └── import_sample.csv  # 批量导入示例（CSV）
-├── tools/
-│   └── audit_corrections.py  # 语料审计：暴露「变体只是更长正常词的一部分」的误伤
+├── tools/                 # 开发工具，不随包安装
+│   ├── eval_corrections.py    # 精确率/召回率门禁（CI 用）
+│   ├── benchmark_recall.py    # 人造扰动召回基准
+│   ├── eval_against_human.py  # 人工字幕 vs AI 字幕，算真实 CER
+│   ├── collect_corpus.py      # 采集 AI 字幕语料（给上面两个基准用）
+│   ├── audit_corrections.py   # 语料审计：误伤
+│   └── audit_variants.py      # 语料审计：哪些变体其实是常用词
 └── tests/
     ├── test_basic.py      # 核心能力 + 误伤回归 + medium 用例测试
-    └── test_lexicon_io.py # 词表导入/导出测试
+    ├── test_lexicon_io.py # 词表导入/导出测试
+    └── test_export.py     # 四种导出格式 + 文件名清洗
 ```
 
 ## 变更记录
 
-- **0.5.4 → 0.5.5**：中文同音错终于能订正了。新增**文档级主题证据**：medium 变体除了 ±8 字上下文，还可以靠「整篇的正确写法出现得够多」来判定（要求 ≥2 次且 ≥2×(变体次数+1)）。1.03M 字真实 B 站 AI 字幕上（人造扰入口径，非真实覆盖率），medium 变体召回 **2.3% → 72%**，整体召回 76.7% → 93.0%，干净语料误伤仍为 0；自然语料实测 103 万字新增 7 处改动，全部是真错（`刀客`×3、`多克`×4 → Docker）。配套：`ordinary_variants` 字段（`一部`/`爱的` 这类正常词禁止靠主题翻案）、`tools/audit_variants.py`（在语料上量出哪些变体其实是常用词）、词表重复键检测（`guards` 写两遍会被静默覆盖，`兵法` 的保护就是这样丢的）、`兵法书`/`蒙提派森` 搭配保护。`benchmark_recall.py` 新增 `--window 0`（整篇输入，对得上 CLI 的真实调用方式）。测试 64 → 71。
-- **0.5.1 → 0.5.2**：新增 `left_guards`（左邻负向后顾），修掉 `6/6 PASS`、`全部 PASS`、`80% PASS` 被改成 Python 的问题，同时中文紧邻的 `学PASS语言`、`PASS的缩进规则` 仍正常订正；`correct` 与 `assess` 共用同一套左邻判定，不会出现「订正不动、评分却扣分」。`left_guards` 与 `guards` 一样在导入时透传并做正则预校验（lookbehind 必须定长，非法即告警丢弃）。测试 62 → 64，词表测试 11 → 13。
-- **0.5.0 → 0.5.1**：`lexicon import`/合并透传 `guards` 与 `strong_context`（此前会被静默丢弃，导致导入后保护失效）；词表加载时预校验 `guards` 正则（非法即告警丢弃，不再运行时崩在 `correct()`）、列表字段容错；≤2 字中文变体不再被条目级 `confidence: high` 顺带升级（`全占`/`给特`/`色口`/`推里` 改回 medium 并补 guards 与上下文，`完全占领`、`给特别`、`买色口腔` 不再误伤）；`assess` 对 medium 变体改用与订正引擎相同的上下文判定，技术语境里的 medium 级错别字重新计入评分。新增 `tools/audit_corrections.py` 用语料审计误伤，按 11M 字符语料又修掉一批：`病发`（疾病发生）、`吉特`（林吉特）、`鲁斯特`（普鲁斯特）、`PASS/FAIL`、`a i18next`（ASCII 词边界现在连数字一起挡）；补了 `bili` 纯函数测试，测试数 46 → 62。
-- **0.4.0 → 0.5.0**：修复 CLI `--out` help 中 `%APPDATA%` 未转义导致 argparse 崩溃的 P0 回归（该版本 CLI 全不可用，请直接升到本版）；`quality` 与 `correction` 统一匹配逻辑（英文词边界 + 长词优先去重），`pass`/`compass` 不再被误标、重叠变体不再双重计数；medium 上下文分强弱（`strong_context` 命中 1 个即可，`context` 弱词需 ≥2）；新增 `guards` 邻接保护；`Correction` 增加 `confidence` 字段并在 `summary()` 标注 medium 改动；`cross_check` 剔除空引擎；CI 补充 editable 安装冒烟、wheel 内容校验、Windows job 与 ruff。
-- **0.3.0 → 0.4.0**：中文变体默认改为 `medium`（安全优先），引入 `high_variants` 白名单与 `context` 窄词表上下文；`USER_LEXICON_PATH` 改为平台感知（Windows `%APPDATA%`，POSIX 尊重 `XDG_CONFIG_HOME`）；交叉验证报告由「整体置信度」更名为「字符一致率」，两引擎冲突（0.5）现计入低置信片段。
-- **0.2.0 → 0.3.0**：`CrossCheckResult.merged` 由 dataclass 字段改为只读属性（等价于 `base_text`），直接以 `CrossCheckResult(merged=...)` 构造的调用会报 `TypeError`，请改用 `base_text=`。
+完整逐版本记录见 [CHANGELOG.md](./CHANGELOG.md)，每个版本都写明实测数字与判断依据。最近三版：
+
+| 版本 | 一句话 |
+|---|---|
+| **0.6.1** | 补齐工程面：`CHANGELOG` / `CONTRIBUTING` / `docs` 入仓，CI 加标签一致性校验；新增 `subs --search` 与语料采集工具 |
+| **0.6.0** | 新增 `subs`，一条命令批量抓字幕导出 txt/srt/json/md；修掉 cookie 导致的 UP 主接口风控失败、必剪 `model_id` 失效 |
+| **0.5.6** | 用人工字幕当真值，量出真实错误率 2.35%、本工具净修正 **0 字**，据此改写边界说明 |
+
+> 0.5.0 有一个 P0 回归（`--out` 帮助文本里 `%APPDATA%` 未转义，argparse 崩溃，CLI 全不可用），
+> 已在 0.5.1 修复。装到 0.5.0 的请直接升级。
+
 
 ## 许可证
 
 [MIT](./LICENSE) · 作者 [angus-hu-gzy](https://github.com/angus-hu-gzy)
+
+其他文档：[变更记录](./CHANGELOG.md) · [参与贡献](./CONTRIBUTING.md) · [测量报告](./docs)
 
 ## 诚实说明（边界）
 
@@ -366,6 +398,9 @@ asr-polish/
 
 所以本项目的定位是**高置信、可解释、可离线的那一小块**（术语与专名），
 而不是「字幕纠错」。要覆盖标点、同音词、漏句，需要语言模型。
+
+两份测量报告在 [`docs/`](./docs)：[召回基准报告](./docs/召回基准报告.md)（怎么测、四个反证实验为什么被否掉）、
+[真实字幕错误分析](./docs/真实字幕错误分析.md)（真实错误长什么样、为什么规则方案够不着）。
 
 - **交叉验证基于 token 级对齐**。它衡量「多引擎是否一致」，而非「是否正确」——两个引擎可能同时错成同一个词。它回答的是「这段可不可信」，不是「这段绝对正确」。
 - **质量评分是启发式的**，用于同一段内容的横向对比和快速筛查，不是绝对标准。

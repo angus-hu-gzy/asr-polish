@@ -8,6 +8,13 @@ env/
 build/
 dist/
 *.egg-info/
+.ruff_cache/
+.pytest_cache/
+
+# 抓取/采集产物（本地生成，不进仓库：体积 + 版权）
+subs/
+corpus_asr/
+manifest.json
 
 # 个人数据 / 凭证
 cookies.txt

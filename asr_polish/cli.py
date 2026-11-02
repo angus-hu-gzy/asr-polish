@@ -10,6 +10,7 @@
     asr-polish fetch <B站链接>                     # 从 B站视频取文本（字幕轨→必剪ASR）
     asr-polish subs <链接> -f txt,srt -o ./subs    # 批量抓字幕导出文件
     asr-polish subs --up 12345 --limit 20          # 抓 UP 主最新 20 条
+    asr-polish subs --search "Python教程" --limit 10  # 搜关键词再抓
     asr-polish version                             # 显示版本
 
 核心能力纯标准库实现（argparse），无第三方依赖；
@@ -119,7 +120,8 @@ def _cmd_subs(args: argparse.Namespace) -> None:
 
     from . import export
     from .bili import (BiliError, expand_pages, extract_bvid, extract_mid,
-                       fetch, get_video_info, list_season, list_up_videos)
+                       fetch, get_video_info, list_season, list_up_videos,
+                       search_videos)
 
     try:
         formats = export.parse_formats(args.format)
@@ -142,6 +144,11 @@ def _cmd_subs(args: argparse.Namespace) -> None:
             targets = [x["bvid"] for x in
                        list_season(int(mid), int(sid), args.cookie, args.limit)]
             print(f"合集 {sid}：发现 {len(targets)} 个视频", file=sys.stderr)
+        elif args.search:
+            found = search_videos(args.search, args.cookie, args.search_pages)
+            targets = [x["bvid"] for x in found]
+            print(f"搜索「{args.search}」：发现 {len(targets)} 个视频",
+                  file=sys.stderr)
         else:
             for t in args.targets:
                 bv = extract_bvid(t)
@@ -156,6 +163,10 @@ def _cmd_subs(args: argparse.Namespace) -> None:
     if not targets:
         print("没有可处理的视频", file=sys.stderr)
         sys.exit(2)
+
+    if args.limit and len(targets) > args.limit:
+        # --up / --season 已在取列表时截断，--search 与显式 targets 在这里截
+        targets = targets[:args.limit]
 
     outdir = Path(args.out)
     want: Optional[set] = None
@@ -297,6 +308,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="抓该 UP 主的全部投稿（mid 或空间链接）")
     p_subs.add_argument("--season", nargs=2, metavar=("MID", "SID"),
                         help="抓合集/系列：--season <mid> <season_id>")
+    p_subs.add_argument("--search", metavar="关键词",
+                        help="按关键词搜视频后抓（与 --limit 搭配使用）")
+    p_subs.add_argument("--search-pages", type=int, default=1,
+                        help="搜索取前几页，每页约 42 条（默认 1）")
     p_subs.add_argument("--limit", type=int, default=0,
                         help="批量模式最多抓几个视频（0 = 不限）")
     p_subs.add_argument("-o", "--out", default="./subs",

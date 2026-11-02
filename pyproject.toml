@@ -30,6 +30,8 @@ Repository = "https://github.com/angus-hu-gzy/asr-polish"
 
 [project.optional-dependencies]
 bilibili = ["yt-dlp"]
+# 开发用：ruff 做静态检查，build 打 sdist/wheel（CI 里跑的就是这些）
+dev = ["ruff>=0.6", "build>=1.0"]
 
 [project.scripts]
 asr-polish = "asr_polish.cli:main"

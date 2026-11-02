@@ -9,7 +9,7 @@ import datetime as _dt
 import json
 import re
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable
 
 from . import __version__
 from .bili import FetchResult

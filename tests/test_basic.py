@@ -332,6 +332,28 @@ class TestBiliHelpers(unittest.TestCase):
         self.assertEqual(_pick_subtitle([{"lan": "en", "subtitle_url": "u1"}])["lan"], "en")
         self.assertIsNone(_pick_subtitle([]))
 
+    def test_strip_em(self):
+        """搜索结果的标题带 <em> 高亮，写进文件名前必须去掉。"""
+        from asr_polish.bili import _strip_em
+        self.assertEqual(_strip_em('【<em class="keyword">Python</em>教程】入门'),
+                         "【Python教程】入门")
+        self.assertEqual(_strip_em("没有高亮"), "没有高亮")
+        self.assertEqual(_strip_em(""), "")
+
+    def test_collect_corpus_pick_page(self):
+        """语料采集挑「最接近 20 分钟」的那一 P，且跳过过短的分 P。"""
+        import importlib.util
+        from pathlib import Path
+        path = Path(__file__).parent.parent / "tools" / "collect_corpus.py"
+        spec = importlib.util.spec_from_file_location("collect_corpus", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.assertEqual(mod.pick_page({"pages": []}), 1)
+        self.assertEqual(mod.pick_page({"pages": [{"duration": 300}]}), 1)
+        # 60 秒的预告不算，选 1200 秒那集
+        info = {"pages": [{"duration": 60}, {"duration": 1200}, {"duration": 2400}]}
+        self.assertEqual(mod.pick_page(info), 2)
+
 
 class TestAuditTool(unittest.TestCase):
     """tools/audit_corrections.py：语料审计能标出「变体被夹在更长中文词里」的疑似误伤。"""

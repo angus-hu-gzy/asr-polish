@@ -58,6 +58,8 @@ _BCUT_MODEL_ID = 8
 # 默认 cookies.txt 查找路径（兼容 WorkBuddy skill 的既有位置）
 _DEFAULT_COOKIE_PATHS = (
     Path.home() / ".workbuddy" / "data" / "bilibili-video-summary" / "bilibili_cookies.txt",
+    Path.home() / "Downloads" / "www.bilibili.com_cookies.txt",
+    Path.home() / ".config" / "asr-polish" / "cookies.txt",
 )
 
 _BVID_RE = re.compile(r"BV[0-9A-Za-z]+")
@@ -358,6 +360,44 @@ def list_season(mid: int, season_id: int, cookie_path: Optional[str] = None,
         if len(archives) < 30:
             break
         pn += 1
+    return out
+
+
+def _strip_em(text: str) -> str:
+    """去掉搜索结果标题里的高亮标签 <em class="keyword">…</em>。"""
+    return re.sub(r"</?em[^>]*>", "", text or "")
+
+
+def search_videos(keyword: str, cookie_path: Optional[str] = None,
+                  pages: int = 1, page_size: int = 42) -> list[dict]:
+    """按关键词搜视频，返回 [{bvid,title,duration,author}]（按相关度排序）。
+
+    duration 是接口给的 "mm:ss" 字符串，保留原始形态。
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+    for pn in range(1, max(1, pages) + 1):
+        q = _signed_query({"search_type": "video", "keyword": keyword,
+                           "page": pn, "page_size": page_size},
+                          cookie_path)
+        data = _http_json(
+            "https://api.bilibili.com/x/web-interface/wbi/search/type?" + q,
+            cookie_path=cookie_path)
+        if data.get("code") != 0:
+            raise BiliError(f"搜索失败：{data.get('message')}")
+        result = ((data.get("data") or {}).get("result")) or []
+        if not result:
+            break
+        for v in result:
+            if v.get("type") != "video" or not v.get("bvid"):
+                continue
+            if v["bvid"] in seen:
+                continue
+            seen.add(v["bvid"])
+            out.append({"bvid": v["bvid"],
+                        "title": _strip_em(v.get("title") or ""),
+                        "duration": v.get("duration") or "",
+                        "author": v.get("author") or ""})
     return out
 
 
