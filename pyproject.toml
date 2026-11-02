@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "asr-polish"
-description = "中文 ASR 转写质量打磨 + B站视频取文本：术语订正、多引擎交叉验证、转写质量自评、一条命令抓 B站字幕/语音转写，核心零依赖"
+description = "中文 ASR 转写质量打磨 + B站字幕抓取：术语订正、多引擎交叉验证、质量自评，批量抓字幕导出 txt/srt/json/md，核心零依赖"
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"

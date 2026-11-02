@@ -51,6 +51,9 @@ _BCUT_REQ_UPLOAD = "https://member.bilibili.com/x/bcut/rubick-interface/resource
 _BCUT_COMMIT_UPLOAD = "https://member.bilibili.com/x/bcut/rubick-interface/resource/create/complete"
 _BCUT_CREATE_TASK = "https://member.bilibili.com/x/bcut/rubick-interface/task"
 _BCUT_QUERY_RESULT = "https://member.bilibili.com/x/bcut/rubick-interface/task/result"
+# 必剪 ASR 模型版本。7 已于 2026-11 失效（resource/create 直接返回
+# 139201 第三方服务异常），线上可用版本为 8。
+_BCUT_MODEL_ID = 8
 
 # 默认 cookies.txt 查找路径（兼容 WorkBuddy skill 的既有位置）
 _DEFAULT_COOKIE_PATHS = (
@@ -58,6 +61,7 @@ _DEFAULT_COOKIE_PATHS = (
 )
 
 _BVID_RE = re.compile(r"BV[0-9A-Za-z]+")
+_MID_RE = re.compile(r"space\.bilibili\.com/(\d+)")
 
 
 class BiliError(Exception):
@@ -74,17 +78,36 @@ class FetchResult:
     text: str
     subtitle_lan: str = ""                         # 字幕轨语言码，ai-zh = B站自动生成（ASR 产物）
     page: int = 1                                  # 多 P 视频实际取的分 P 序号
+    segments: list[dict] = field(default_factory=list)  # [{start,end,text}]，字幕轨才有
     warnings: list[str] = field(default_factory=list)
 
 
 # ── 基础 HTTP ────────────────────────────────────────────────
 
 def _opener(cookie_path: Optional[str] = None):
-    if cookie_path and Path(cookie_path).exists():
-        jar = http.cookiejar.MozillaCookieJar(str(cookie_path))
+    """构造带 Cookie 的 opener。
+
+    未显式指定时按 _DEFAULT_COOKIE_PATHS 自动查找——UP 主投稿、合集这类
+    接口对未登录请求会直接返回「风控校验失败」，必须带登录态。
+    """
+    path: Optional[Path] = None
+    if cookie_path:
+        cand = Path(cookie_path).expanduser()
+        if cand.exists():
+            path = cand
+    if path is None:
+        for p in _DEFAULT_COOKIE_PATHS:
+            if p.exists():
+                path = p
+                break
+    if path is None:
+        return urllib.request.build_opener()
+    jar = http.cookiejar.MozillaCookieJar(str(path))
+    try:
         jar.load(ignore_discard=True, ignore_expires=True)
-        return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
-    return urllib.request.build_opener()
+    except (OSError, http.cookiejar.LoadError):
+        return urllib.request.build_opener()
+    return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
 
 
 def _http_json(url: str, cookie_path: Optional[str] = None,
@@ -135,6 +158,15 @@ def extract_bvid(text: str) -> Optional[str]:
     """从链接或纯 bvid 中提取 BV 号。"""
     m = _BVID_RE.search(text)
     return m.group(0) if m else None
+
+
+def extract_mid(text: str) -> Optional[int]:
+    """从 UP 主空间链接或纯数字中提取 mid。"""
+    m = _MID_RE.search(text or "")
+    if m:
+        return int(m.group(1))
+    s = (text or "").strip()
+    return int(s) if s.isdigit() else None
 
 
 def get_video_info(bvid: str, cookie_path: Optional[str] = None) -> dict:
@@ -205,11 +237,128 @@ def _fetch_subtitle_detail(video: dict,
     if sub_url.startswith("//"):
         sub_url = "https:" + sub_url
     body = (_http_json(sub_url, cookie_path=cookie_path) or {}).get("body") or []
-    lines = [it.get("content", "").strip()
-             for it in body if (it.get("content") or "").strip()]
-    if not lines:
+    segments = [
+        {"start": float(it.get("from") or 0),
+         "end": float(it.get("to") or 0),
+         "text": (it.get("content") or "").strip()}
+        for it in body if (it.get("content") or "").strip()
+    ]
+    if not segments:
         return None
-    return {"text": "\n".join(lines), "lan": pick.get("lan") or ""}
+    return {"text": "\n".join(s["text"] for s in segments),
+            "lan": pick.get("lan") or "",
+            "segments": segments}
+
+
+# ── 多 P 展开 / 批量列表 ─────────────────────────────────────
+
+_wbi_cache: dict = {}
+
+
+def _wbi_mixin_key(cookie_path: Optional[str] = None) -> str:
+    """取 wbi 的 mixin_key。B站每天轮换，进程内缓存。"""
+    key = cookie_path or ""
+    if key in _wbi_cache:
+        return _wbi_cache[key]
+    nav = _http_json("https://api.bilibili.com/x/web-interface/nav",
+                     cookie_path=cookie_path)
+    wbi = ((nav.get("data") or {}).get("wbi_img") or {})
+    img_key = Path(wbi.get("img_url") or "").stem
+    sub_key = Path(wbi.get("sub_url") or "").stem
+    if not img_key or not sub_key:
+        raise BiliError("取不到 wbi 签名密钥（nav 接口异常）")
+    raw = img_key + sub_key
+    mixin = "".join(raw[i] for i in _WBI_MIXIN_TAB)[:32]
+    _wbi_cache[key] = mixin
+    return mixin
+
+
+def _signed_query(params: dict, cookie_path: Optional[str] = None) -> str:
+    """返回已签名的 query string（含 wts / w_rid）。"""
+    mixin = _wbi_mixin_key(cookie_path)
+    clean = {k: "".join(ch for ch in str(v) if ch not in "!'()*")
+             for k, v in params.items()}
+    clean["wts"] = int(time.time())
+    q = urllib.parse.urlencode(sorted(clean.items()))
+    w_rid = hashlib.md5((q + mixin).encode()).hexdigest()
+    return f"{q}&w_rid={w_rid}"
+
+
+def expand_pages(video: dict) -> list[dict]:
+    """展开多 P；无分 P 时返回单条。每项含 index/cid/title/duration。"""
+    pages = video.get("pages") or []
+    if not pages:
+        return [{"index": 1, "cid": video.get("cid"),
+                 "title": video.get("title") or "",
+                 "duration": video.get("duration") or 0}]
+    return [{"index": i, "cid": p.get("cid"),
+             "title": p.get("part") or video.get("title") or "",
+             "duration": p.get("duration") or 0}
+            for i, p in enumerate(pages, 1)]
+
+
+def list_up_videos(mid: int, cookie_path: Optional[str] = None,
+                   max_count: int = 0) -> list[dict]:
+    """遍历 UP 主投稿（按发布时间倒序），返回 [{bvid,title,duration}]。
+
+    duration 是接口给的 "mm:ss" 字符串，保留原始形态。
+    """
+    out: list[dict] = []
+    pn = 1
+    while True:
+        q = _signed_query({"mid": mid, "ps": 30, "pn": pn,
+                           "order": "pubdate", "platform": "web"}, cookie_path)
+        data = _http_json(
+            f"https://api.bilibili.com/x/space/wbi/arc/search?{q}",
+            cookie_path=cookie_path)
+        if data.get("code") != 0:
+            raise BiliError(f"取 UP 主投稿失败：{data.get('message')}")
+        d = data.get("data") or {}
+        vlist = ((d.get("list") or {}).get("vlist")) or []
+        if not vlist:
+            break
+        for v in vlist:
+            if not v.get("bvid"):
+                continue
+            out.append({"bvid": v["bvid"],
+                        "title": v.get("title") or "",
+                        "duration": v.get("length") or ""})
+            if max_count and len(out) >= max_count:
+                return out
+        total = (d.get("page") or {}).get("count") or 0
+        if len(out) >= total:
+            break
+        pn += 1
+    return out
+
+
+def list_season(mid: int, season_id: int, cookie_path: Optional[str] = None,
+                max_count: int = 0) -> list[dict]:
+    """遍历合集/系列，返回 [{bvid,title,duration}]（该接口不需要 wbi 签名）。"""
+    out: list[dict] = []
+    pn = 1
+    while True:
+        url = ("https://api.bilibili.com/x/polymer/web-space/"
+               "seasons_archives_list"
+               f"?mid={mid}&season_id={season_id}&page_num={pn}&page_size=30")
+        data = _http_json(url, cookie_path=cookie_path)
+        if data.get("code") != 0:
+            raise BiliError(f"取合集失败：{data.get('message')}")
+        archives = (data.get("data") or {}).get("archives") or []
+        if not archives:
+            break
+        for a in archives:
+            if not a.get("bvid"):
+                continue
+            out.append({"bvid": a["bvid"],
+                        "title": a.get("title") or "",
+                        "duration": a.get("duration") or 0})
+            if max_count and len(out) >= max_count:
+                return out
+        if len(archives) < 30:
+            break
+        pn += 1
+    return out
 
 
 # ── 必剪云端 ASR ─────────────────────────────────────────────
@@ -251,7 +400,7 @@ def transcribe_bcut(video: dict, cookie_path: Optional[str] = None,
 
         r = _bcut_http(_BCUT_REQ_UPLOAD, method="POST", form={
             "type": 2, "name": name, "size": len(sound),
-            "resource_file_type": fmt, "model_id": 7})
+            "resource_file_type": fmt, "model_id": _BCUT_MODEL_ID})
         if r.get("code"):
             return None
         d = r["data"]
@@ -262,7 +411,7 @@ def transcribe_bcut(video: dict, cookie_path: Optional[str] = None,
 
         r = _bcut_http(_BCUT_COMMIT_UPLOAD, method="POST", form={
             "in_boss_key": d["in_boss_key"], "resource_id": d["resource_id"],
-            "etags": ",".join(etags), "upload_id": d["upload_id"], "model_id": 7})
+            "etags": ",".join(etags), "upload_id": d["upload_id"], "model_id": _BCUT_MODEL_ID})
         if r.get("code"):
             return None
         download_url = r["data"]["download_url"]
@@ -270,7 +419,7 @@ def transcribe_bcut(video: dict, cookie_path: Optional[str] = None,
         task_id = None
         for attempt in range(3):
             r = _bcut_http(_BCUT_CREATE_TASK, method="POST",
-                           json_body={"resource": download_url, "model_id": "7"})
+                           json_body={"resource": download_url, "model_id": str(_BCUT_MODEL_ID)})
             if r.get("code") == 0:
                 task_id = r["data"]["task_id"]
                 break
@@ -284,7 +433,7 @@ def transcribe_bcut(video: dict, cookie_path: Optional[str] = None,
         deadline = time.time() + max_wait
         while time.time() < deadline:
             r = _bcut_http(_BCUT_QUERY_RESULT + "?" + urllib.parse.urlencode(
-                {"model_id": 7, "task_id": task_id}))
+                {"model_id": _BCUT_MODEL_ID, "task_id": task_id}))
             if r.get("code"):
                 return None
             data = r["data"]
@@ -306,10 +455,13 @@ def transcribe_bcut(video: dict, cookie_path: Optional[str] = None,
 # ── 主入口 ───────────────────────────────────────────────────
 
 def fetch(url: str, cookie_path: Optional[str] = None,
-          prefer_subtitle: bool = True, page: int = 1) -> FetchResult:
+          prefer_subtitle: bool = True, page: int = 1,
+          allow_asr: bool = True) -> FetchResult:
     """从 B站链接获取视频文本。字幕轨优先，无字幕走必剪云端 ASR。
 
     page 指定多 P 视频的分 P 序号（从 1 开始），默认第 1 P。
+    allow_asr=False 时，无字幕轨直接返回空文本结果，不触发音频上传
+    （批量抓字幕场景应当关掉，避免为无字幕视频白传音频）。
     """
     bvid = extract_bvid(url)
     if not bvid:
@@ -351,7 +503,13 @@ def fetch(url: str, cookie_path: Optional[str] = None,
             result.source = "字幕轨"
             result.subtitle_lan = detail["lan"]
             result.text = detail["text"]
+            result.segments = detail.get("segments") or []
             return result
+
+    if not allow_asr:
+        result.source = "无字幕"
+        result.warnings.append("该视频没有可用字幕轨（未启用必剪 ASR 兜底）")
+        return result
 
     result.warnings.append("无字幕轨，音频将上传至 B站必剪服务做云端转写（公开视频音轨，风险低）")
     text = transcribe_bcut(video, cookie_path=cookie_path)

@@ -8,6 +8,8 @@
     asr-polish lexicon list                        # 列出词表
     asr-polish lexicon export --out out.json       # 导出词表
     asr-polish fetch <B站链接>                     # 从 B站视频取文本（字幕轨→必剪ASR）
+    asr-polish subs <链接> -f txt,srt -o ./subs    # 批量抓字幕导出文件
+    asr-polish subs --up 12345 --limit 20          # 抓 UP 主最新 20 条
     asr-polish version                             # 显示版本
 
 核心能力纯标准库实现（argparse），无第三方依赖；
@@ -111,6 +113,131 @@ def _cmd_fetch(args: argparse.Namespace) -> None:
         print(text)
 
 
+def _cmd_subs(args: argparse.Namespace) -> None:
+    """批量抓字幕到文件：单视频 / 多 P / UP 主 / 合集。"""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from . import export
+    from .bili import (BiliError, expand_pages, extract_bvid, extract_mid,
+                       fetch, get_video_info, list_season, list_up_videos)
+
+    try:
+        formats = export.parse_formats(args.format)
+    except ValueError as e:
+        print(f"错误：{e}", file=sys.stderr)
+        sys.exit(2)
+
+    targets: list[str] = []
+    try:
+        if args.up:
+            mid = extract_mid(args.up)
+            if not mid:
+                print(f"错误：无法识别 UP 主 mid：{args.up}", file=sys.stderr)
+                sys.exit(2)
+            targets = [x["bvid"] for x in
+                       list_up_videos(mid, args.cookie, args.limit)]
+            print(f"UP {mid}：发现 {len(targets)} 个投稿", file=sys.stderr)
+        elif args.season:
+            mid, sid = args.season
+            targets = [x["bvid"] for x in
+                       list_season(int(mid), int(sid), args.cookie, args.limit)]
+            print(f"合集 {sid}：发现 {len(targets)} 个视频", file=sys.stderr)
+        else:
+            for t in args.targets:
+                bv = extract_bvid(t)
+                if bv:
+                    targets.append(bv)
+                else:
+                    print(f"跳过无法识别：{t}", file=sys.stderr)
+    except (BiliError, ValueError) as e:
+        print(f"错误：{e}", file=sys.stderr)
+        sys.exit(1)
+
+    if not targets:
+        print("没有可处理的视频", file=sys.stderr)
+        sys.exit(2)
+
+    outdir = Path(args.out)
+    want: Optional[set] = None
+    if args.pages.strip().lower() != "all":
+        want = {int(x) for x in args.pages.split(",") if x.strip().isdigit()}
+
+    def grab(bvid: str) -> dict:
+        row = {"bvid": bvid, "title": "", "ok": 0, "nosub": 0, "fail": 0,
+               "err": ""}
+        try:
+            info = get_video_info(bvid, cookie_path=args.cookie)
+        except BiliError as e:
+            row["fail"], row["err"] = 1, str(e)
+            return row
+        row["title"] = info["title"]
+        total_pages = len(info.get("pages") or []) or 1
+        pages = expand_pages(info)
+        if want is not None:
+            pages = [p for p in pages if p["index"] in want]
+        for p in pages:
+            try:
+                res = fetch(bvid, cookie_path=args.cookie, page=p["index"],
+                            allow_asr=args.asr)
+            except BiliError as e:
+                row["fail"] += 1
+                row["err"] = str(e)
+                continue
+            if not res.segments:
+                row["nosub"] += 1
+                continue
+            if args.correct:
+                fixed = [correct_text(s["text"]).text for s in res.segments]
+                for seg, txt in zip(res.segments, fixed):
+                    seg["text"] = txt
+                res.text = "\n".join(fixed)
+            part = p["title"] if total_pages > 1 else ""
+            stem = export.base_name(res, p["title"], total_pages)
+            export.write_all(outdir, stem, formats, res, part,
+                             skip_existing=args.skip_existing)
+            row["ok"] += 1
+        return row
+
+    def show(i: int, total: int, row: dict) -> None:
+        if args.quiet:
+            return
+        if row["ok"]:
+            mark = "✓"
+        elif row["fail"]:
+            mark = "✗"
+        else:
+            mark = "○"
+        extra = (f"{row['ok']} 段" if row["ok"]
+                 else (row["err"][:60] or "无字幕轨"))
+        print(f"[{i}/{total}] {mark} {row['bvid']} {row['title'][:34]}  {extra}",
+              file=sys.stderr, flush=True)
+
+    rows: list[dict] = []
+    total = len(targets)
+    if args.jobs > 1 and total > 1:
+        with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+            futs = {pool.submit(grab, bv): bv for bv in targets}
+            for i, fut in enumerate(as_completed(futs), 1):
+                row = fut.result()
+                rows.append(row)
+                show(i, total, row)
+    else:
+        for i, bv in enumerate(targets, 1):
+            row = grab(bv)
+            rows.append(row)
+            show(i, total, row)
+
+    ok = sum(r["ok"] for r in rows)
+    nosub = sum(r["nosub"] for r in rows)
+    fail = sum(r["fail"] for r in rows)
+    done = sum(1 for r in rows if r["ok"])
+    print(f"\n视频 {total} 个：有字幕 {done}，无字幕 {nosub} 段，失败 {fail} 次",
+          file=sys.stderr)
+    print(f"输出目录：{outdir.resolve()}", file=sys.stderr)
+    if fail and not ok:
+        sys.exit(2)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="asr-polish",
@@ -161,6 +288,35 @@ def build_parser() -> argparse.ArgumentParser:
     p_fetch.add_argument("-v", "--verbose", action="store_true", help="输出订正明细")
     p_fetch.add_argument("--out", default=None, help="把文本写入文件而非 stdout")
     p_fetch.set_defaults(func=_cmd_fetch)
+
+    p_subs = sub.add_parser(
+        "subs", help="批量抓 B站字幕并导出文件（txt/srt/json/md）")
+    p_subs.add_argument("targets", nargs="*", metavar="链接或BV号",
+                        help="视频链接或 bvid，可多个")
+    p_subs.add_argument("--up", metavar="MID",
+                        help="抓该 UP 主的全部投稿（mid 或空间链接）")
+    p_subs.add_argument("--season", nargs=2, metavar=("MID", "SID"),
+                        help="抓合集/系列：--season <mid> <season_id>")
+    p_subs.add_argument("--limit", type=int, default=0,
+                        help="批量模式最多抓几个视频（0 = 不限）")
+    p_subs.add_argument("-o", "--out", default="./subs",
+                        help="输出目录（默认 ./subs）")
+    p_subs.add_argument("-f", "--format", default="txt",
+                        help="导出格式，逗号分隔：txt,srt,json,md（默认 txt）")
+    p_subs.add_argument("--pages", default="all",
+                        help="多 P 视频取哪几集，如 1,2,5 或 all（默认 all）")
+    p_subs.add_argument("-j", "--jobs", type=int, default=3,
+                        help="并发数（默认 3，过高易触发风控）")
+    p_subs.add_argument("--cookie", default=None,
+                        help="cookies.txt 路径（默认自动查找）")
+    p_subs.add_argument("--asr", action="store_true",
+                        help="无字幕时上传音频走必剪 ASR 兜底（慢，默认关闭）")
+    p_subs.add_argument("--correct", action="store_true",
+                        help="对抓到的文本做术语订正（默认保留字幕原文）")
+    p_subs.add_argument("--skip-existing", action="store_true",
+                        help="输出文件已存在则跳过（增量抓取）")
+    p_subs.add_argument("-q", "--quiet", action="store_true", help="不打印逐条进度")
+    p_subs.set_defaults(func=_cmd_subs)
 
     return parser
 

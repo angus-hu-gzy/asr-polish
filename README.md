@@ -17,9 +17,9 @@
 2. **多引擎结果互相矛盾** —— 云端 ASR 和本地 whisper 各说各话，不知道该信谁
 3. **转写完不知道质量** —— 不敢直接拿去总结，担心错字误导结论
 
-`asr-polish` 补上这一层，提供三个能力：
+`asr-polish` 补上这一层，提供下面四个能力，外加一个批量抓字幕的入口：
 
-## 三个核心能力
+## 核心能力
 
 ### ① 术语订正 `correction`
 
@@ -102,6 +102,55 @@ print(result.text)    # 转写文本（可直接接 correct_text / assess）
 - **有 Cookie 能取到 AI 字幕**：传入 cookies.txt 路径可多取到 B站 AI 字幕轨
 - **隐私**：无字幕时音频会上传至 B站服务器（公开视频音轨，风险低）
 
+### ⑤ 批量抓字幕 `subs`
+
+把字幕**取下来**，落到文件里。这条路径不承诺修正内容——它的目标是完整、快速、可批量。
+
+```bash
+# 单个视频，一次导出四种格式
+asr-polish subs BV1xx411c7mD -f txt,srt,json,md -o ./subs
+
+# 多 P 视频只取其中三集
+asr-polish subs BV1xx411c7mD --pages 1,2,3
+
+# 某个 UP 主最新的 20 条投稿
+asr-polish subs --up 329954990 --limit 20 -j 3
+
+# 某个合集/系列
+asr-polish subs --season 329954990 12345
+```
+
+输出（`-f txt`）：
+
+```
+subs/
+├── BV1RXx169Exu-P1-【前言】Python从零入门到精通系统学习大纲.txt
+├── BV1RXx169Exu-P2-【基础篇】Python解释器的安装.txt
+└── BV1RXx169Exu-P3-【基础篇】PyCharm编辑器的安装.txt
+```
+
+- **四种格式**：`txt` 纯文本、`srt` 带时间轴字幕、`json` 结构化（含每句起止时间）、`md` 带标题/UP主/来源的笔记
+- **多 P 命名**：自动带上 `P{n}` 和分 P 标题，不会因为总标题太长而一堆文件重名
+- **默认不走 ASR**：无字幕就直接记为「无字幕」跳过，不会给每个视频白传一遍音频（需要兜底时加 `--asr`）
+- **默认不订正**：抓下来的是字幕原文，保持忠实；要顺手做术语订正加 `--correct`
+- **并发可调**：`-j 3` 默认，过高容易触发风控
+
+`fetch` 与 `subs` 的分工：`fetch` 是「取一篇到 stdout，接订正和打分」；`subs` 是「按批取下来，落成文件」。
+
+#### 必须配 Cookie
+
+B站只向**登录态**下发字幕列表——游客请求 `player/wbi/v2` 拿到的是空数组，不是报错，很容易误判成「这个视频没字幕」。
+
+把浏览器导出的 `cookies.txt`（Netscape 格式）放到以下任一位置即可自动加载：
+
+```
+~/.workbuddy/data/bilibili-video-summary/bilibili_cookies.txt
+~/Downloads/www.bilibili.com_cookies.txt
+~/.config/bili-subs/cookies.txt
+```
+
+或用 `--cookie /path/to/cookies.txt` 指定。
+
 ## 实测效果
 
 用一段 22 分钟的真实技术视频，对比「本地 faster-whisper」与「必剪云端 ASR」两份转写：
@@ -140,6 +189,10 @@ asr-polish crosscheck cloud.txt local.txt
 # 从 B站视频取文本（字幕轨优先，无字幕走必剪云端 ASR）
 asr-polish fetch "https://www.bilibili.com/video/BVxxxxxxxxxx"
 asr-polish fetch BVxxxxxxxxxx --out transcript.txt   # 文本存文件
+
+# 批量抓字幕到文件（txt / srt / json / md）
+asr-polish subs BVxxxxxxxxxx -f txt,srt -o ./subs
+asr-polish subs --up 329954990 --limit 20 -j 3       # 某 UP 主最新 20 条
 
 # 词表管理
 asr-polish lexicon list                    # 列出词表
