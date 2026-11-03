@@ -156,6 +156,41 @@ B站只向**登录态**下发字幕列表——游客请求 `player/wbi/v2` 拿�
 
 或用 `--cookie /path/to/cookies.txt` 指定。
 
+### ⑥ 服务化：抓取变成任务队列 `serve`
+
+批量抓 100 个 UP 主投稿要几分钟，同步接口扛不住：网关 30 秒就掐断连接，页面一关任务也废了。所以给同一个抓取能力加了一层**任务队列**：
+
+```bash
+asr-polish serve --port 8040          # 起服务（内含 2 个 worker）
+asr-polish submit up:12345 --limit 50 --wait   # 提交并按进度等它跑完
+asr-polish status                     # 看队列与最近任务
+```
+
+浏览器打开 `http://127.0.0.1:8040` 就是任务面板，每 3 秒刷新。
+
+| 接口 | 说明 |
+|---|---|
+| `POST /api/tasks` | 提交任务，立刻返回 `202` 和任务 id（不等执行） |
+| `GET /api/tasks/{id}` | 查状态、进度、结果、失败原因 |
+| `GET /api/tasks?status=&limit=` | 列表 |
+| `POST /api/tasks/{id}/retry` | 把 failed / running 的任务重新排队 |
+| `GET /api/health` | 存活与 worker 占用 |
+
+三件事决定了它的可靠性，都在 `asr_polish/server/` 里：
+
+- **请求只登记，执行交给 worker**。接口写一行 `pending` 就返回，长活跟请求彻底解耦。
+- **状态在 SQLite，不在内存**。进程重启、页面关掉，任务都还在；失败可重试、能查卡在哪一条。
+- **抢任务用 CAS，不靠运气**。`BEGIN IMMEDIATE` 先拿写锁再 `SELECT + UPDATE`，两个 worker 不可能领到同一行；再加心跳与僵尸回收，进程被 `kill -9` 留下的 `running` 也能被放回队列。
+
+```python
+# asr_polish/server/store.py：抢任务的原子写法
+conn.execute("BEGIN IMMEDIATE")
+row = conn.execute("SELECT id FROM tasks WHERE status='pending' ORDER BY created_at LIMIT 1")
+conn.execute("UPDATE tasks SET status='running', worker=?, started_at=? WHERE id=? AND status='pending'", ...)
+```
+
+**边界**：单机、单库、无鉴权，默认只监听 `127.0.0.1`——要对外必须先自己套反向代理。它不是分布式队列，多机部署得换 PostgreSQL 或 Redis。写它是为了让你看清这套骨架，不是为了替代 Celery。
+
 ## 实测效果
 
 用一段 22 分钟的真实技术视频，对比「本地 faster-whisper」与「必剪云端 ASR」两份转写：
@@ -213,7 +248,7 @@ asr-polish lexicon export --out out.json   # 导出
 # 直接运行示例（无需安装）
 python examples/demo.py
 
-# 运行全部测试（89 项）
+# 运行全部测试（115 项）
 python -m unittest discover -s tests -v
 # 或直接跑单个文件
 python tests/test_basic.py
@@ -312,7 +347,7 @@ asr-polish/
 │   ├── __init__.py        # 统一入口
 │   ├── __main__.py        # 支持 python -m asr_polish
 │   ├── py.typed           # PEP 561 类型标记
-│   ├── cli.py             # 命令行入口（fetch / subs / correct / assess / crosscheck / lexicon）
+│   ├── cli.py             # 命令行入口（fetch / subs / serve / submit / status / correct …）
 │   ├── correction.py      # 术语订正引擎
 │   ├── crosscheck.py      # 多引擎交叉验证
 │   ├── quality.py         # 转写质量自评
@@ -320,6 +355,11 @@ asr-polish/
 │   ├── export.py          # txt / srt / json / md 四种导出
 │   ├── lexicon.py         # 词表加载
 │   ├── lexicon_io.py      # 词表批量导入/导出
+│   ├── server/            # 服务化：任务队列 + HTTP（零依赖）
+│   │   ├── store.py       #   SQLite 任务表 + 状态机（CAS 抢任务）
+│   │   ├── worker.py      #   worker 池 + 心跳 + 僵尸回收
+│   │   ├── jobs.py        #   任务执行器（把抓取包装成可调度的 job）
+│   │   └── app.py         #   HTTP 路由 + 面板
 │   └── data/
 │       └── corrections.json   # 默认术语词表
 ├── eval/
@@ -342,7 +382,8 @@ asr-polish/
 └── tests/
     ├── test_basic.py      # 核心能力 + 误伤回归 + medium 用例测试
     ├── test_lexicon_io.py # 词表导入/导出测试
-    └── test_export.py     # 四种导出格式 + 文件名清洗
+    ├── test_export.py     # 四种导出格式 + 文件名清洗
+    └── test_server.py     # 状态机 / 并发抢任务 / 重试 / 僵尸回收 / HTTP
 ```
 
 ## 变更记录
@@ -351,9 +392,9 @@ asr-polish/
 
 | 版本 | 一句话 |
 |---|---|
+| **0.7.0** | 服务化：抓取变成任务队列 + HTTP，CAS 抢任务、心跳、僵尸回收，全部零依赖 |
 | **0.6.1** | 补齐工程面：`CHANGELOG` / `CONTRIBUTING` / `docs` 入仓，CI 加标签一致性校验；新增 `subs --search` 与语料采集工具 |
 | **0.6.0** | 新增 `subs`，一条命令批量抓字幕导出 txt/srt/json/md；修掉 cookie 导致的 UP 主接口风控失败、必剪 `model_id` 失效 |
-| **0.5.6** | 用人工字幕当真值，量出真实错误率 2.35%、本工具净修正 **0 字**，据此改写边界说明 |
 
 > 0.5.0 有一个 P0 回归（`--out` 帮助文本里 `%APPDATA%` 未转义，argparse 崩溃，CLI 全不可用），
 > 已在 0.5.1 修复。装到 0.5.0 的请直接升级。

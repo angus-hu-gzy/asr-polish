@@ -11,6 +11,9 @@
     asr-polish subs <链接> -f txt,srt -o ./subs    # 批量抓字幕导出文件
     asr-polish subs --up 12345 --limit 20          # 抓 UP 主最新 20 条
     asr-polish subs --search "Python教程" --limit 10  # 搜关键词再抓
+    asr-polish serve --port 8040                   # 起 HTTP 服务 + 任务队列
+    asr-polish submit up:12345 --wait              # 把任务交给服务去跑
+    asr-polish status                              # 看队列和最近的任务
     asr-polish version                             # 显示版本
 
 核心能力纯标准库实现（argparse），无第三方依赖；
@@ -249,6 +252,106 @@ def _cmd_subs(args: argparse.Namespace) -> None:
         sys.exit(2)
 
 
+def _api(server: str, path: str, payload: Optional[dict] = None,
+         timeout: float = 20.0) -> dict:
+    """调用本地服务。只依赖 urllib，保持零依赖。"""
+    import json
+    import urllib.error
+    import urllib.request
+
+    url = server.rstrip("/") + path
+    data = None
+    headers = {}
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers,
+                                 method="POST" if data else "GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace")
+        try:
+            msg = json.loads(body).get("error") or body
+        except ValueError:
+            msg = body
+        raise SystemExit(f"服务返回 {e.code}：{msg}")
+    except urllib.error.URLError as e:
+        raise SystemExit(f"连不上 {server}（{e.reason}）。先跑 asr-polish serve")
+
+
+def _cmd_serve(args: argparse.Namespace) -> None:
+    from .server import serve
+    serve(host=args.host, port=args.port, db=args.db,
+          workers=args.workers, stale_after=args.stale_after)
+
+
+def _cmd_submit(args: argparse.Namespace) -> None:
+    import json
+    import time
+
+    payload = {
+        "kind": "subs",
+        "target": args.target,
+        "formats": [x.strip() for x in args.format.split(",") if x.strip()],
+        "outdir": args.out,
+        "asr": args.asr,
+        "correct": args.correct,
+    }
+    if args.limit:
+        payload["limit"] = args.limit
+    if args.pages.strip().lower() != "all":
+        payload["pages"] = args.pages
+
+    task = _api(args.server, "/api/tasks", payload)
+    print(f"已提交 {task['id']}（{task['status']}）", file=sys.stderr)
+    if not args.wait:
+        print(task["id"])
+        return
+
+    seen = -1
+    while True:
+        t = _api(args.server, "/api/tasks/" + task["id"])
+        pct = int(t["progress"] * 100)
+        if not args.quiet and pct != seen:
+            print(f"  {pct:3d}%  {t['status']:<8} {t['message'][:56]}",
+                  file=sys.stderr, flush=True)
+            seen = pct
+        if t["status"] in ("done", "failed"):
+            break
+        time.sleep(1.0)
+
+    if t["status"] == "failed":
+        print(f"失败：{t['error']}", file=sys.stderr)
+        sys.exit(1)
+    print(json.dumps(t["result"], ensure_ascii=False, indent=2))
+
+
+def _cmd_status(args: argparse.Namespace) -> None:
+    import json
+
+    if args.task_id:
+        print(json.dumps(_api(args.server, "/api/tasks/" + args.task_id),
+                         ensure_ascii=False, indent=2))
+        return
+
+    q = f"/api/tasks?limit={args.limit}"
+    if args.state:
+        q += "&status=" + args.state
+    d = _api(args.server, q)
+    s = d["stats"]
+    print(f"排队 {s['pending']}  进行中 {s['running']}  "
+          f"完成 {s['done']}  失败 {s['failed']}  共 {s['total']}")
+    if not d["tasks"]:
+        return
+    print(f"{'任务':<14}{'状态':<10}{'进度':<7}目标")
+    for t in d["tasks"]:
+        target = (t.get("payload") or {}).get("target") or ""
+        print(f"{t['id']:<14}{t['status']:<10}{t['progress'] * 100:>5.0f}%  "
+              f"{target[:44]}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="asr-polish",
@@ -332,6 +435,54 @@ def build_parser() -> argparse.ArgumentParser:
                         help="输出文件已存在则跳过（增量抓取）")
     p_subs.add_argument("-q", "--quiet", action="store_true", help="不打印逐条进度")
     p_subs.set_defaults(func=_cmd_subs)
+
+    p_serve = sub.add_parser(
+        "serve", help="启动 HTTP 服务 + 任务队列（零依赖，长任务走异步）")
+    p_serve.add_argument("--host", default="127.0.0.1",
+                         help="监听地址（默认只监听本机，对外请自己套反向代理）")
+    p_serve.add_argument("-p", "--port", type=int, default=8040,
+                         help="端口（默认 8040）")
+    p_serve.add_argument("--db", default="tasks.db",
+                         help="任务库路径（默认 tasks.db）")
+    p_serve.add_argument("-w", "--workers", type=int, default=2,
+                         help="worker 数量（默认 2）")
+    p_serve.add_argument("--stale-after", type=float, default=600.0,
+                         help="任务多久没心跳就判定僵尸并回收，单位秒（默认 600）")
+    p_serve.set_defaults(func=_cmd_serve)
+
+    p_submit = sub.add_parser(
+        "submit", help="把抓取任务提交给运行中的服务（不进命令行直接跑）")
+    p_submit.add_argument("target",
+                          help="BV 号/链接，或 up:123、season:mid:sid、search:关键词")
+    p_submit.add_argument("--server", default="http://127.0.0.1:8040",
+                          help="服务地址（默认 http://127.0.0.1:8040）")
+    p_submit.add_argument("-o", "--out", default="./subs", help="输出目录")
+    p_submit.add_argument("-f", "--format", default="txt",
+                          help="导出格式，逗号分隔（默认 txt）")
+    p_submit.add_argument("--limit", type=int, default=0,
+                          help="批量模式最多几个视频（0 = 不限）")
+    p_submit.add_argument("--pages", default="all",
+                          help="多 P 视频取哪几集，如 1,2,5 或 all")
+    p_submit.add_argument("--asr", action="store_true",
+                          help="无字幕时走必剪 ASR 兜底")
+    p_submit.add_argument("--correct", action="store_true",
+                          help="对文本做术语订正（默认保留原文）")
+    p_submit.add_argument("--wait", action="store_true",
+                          help="阻塞到任务结束，打印进度与结果")
+    p_submit.add_argument("-q", "--quiet", action="store_true",
+                          help="不打印进度")
+    p_submit.set_defaults(func=_cmd_submit)
+
+    p_status = sub.add_parser(
+        "status", help="查看任务状态（不给 id 就列最近的）")
+    p_status.add_argument("task_id", nargs="?", default=None, help="任务 id")
+    p_status.add_argument("--server", default="http://127.0.0.1:8040",
+                          help="服务地址（默认 http://127.0.0.1:8040）")
+    p_status.add_argument("--state", default=None,
+                          choices=["pending", "running", "done", "failed"],
+                          help="只看某个状态的")
+    p_status.add_argument("--limit", type=int, default=15, help="列多少条")
+    p_status.set_defaults(func=_cmd_status)
 
     return parser
 
