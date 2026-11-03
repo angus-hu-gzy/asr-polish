@@ -248,7 +248,7 @@ asr-polish lexicon export --out out.json   # 导出
 # 直接运行示例（无需安装）
 python examples/demo.py
 
-# 运行全部测试（115 项）
+# 运行全部测试（117 项）
 python -m unittest discover -s tests -v
 # 或直接跑单个文件
 python tests/test_basic.py
@@ -392,9 +392,9 @@ asr-polish/
 
 | 版本 | 一句话 |
 |---|---|
+| **0.7.1** | 修僵尸回收不看重试上限导致任务无限重跑；状态输出统一中文 |
 | **0.7.0** | 服务化：抓取变成任务队列 + HTTP，CAS 抢任务、心跳、僵尸回收，全部零依赖 |
 | **0.6.1** | 补齐工程面：`CHANGELOG` / `CONTRIBUTING` / `docs` 入仓，CI 加标签一致性校验；新增 `subs --search` 与语料采集工具 |
-| **0.6.0** | 新增 `subs`，一条命令批量抓字幕导出 txt/srt/json/md；修掉 cookie 导致的 UP 主接口风控失败、必剪 `model_id` 失效 |
 
 > 0.5.0 有一个 P0 回归（`--out` 帮助文本里 `%APPDATA%` 未转义，argparse 崩溃，CLI 全不可用），
 > 已在 0.5.1 修复。装到 0.5.0 的请直接升级。

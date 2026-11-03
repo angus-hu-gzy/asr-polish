@@ -7,8 +7,28 @@
 
 ---
 
----
+## [0.7.1] - 2026-11-03
 
+修一个能让任务无限重跑的 bug。**这一版没有新增功能。**
+
+### 修复
+
+- **僵尸回收不检查重试上限。** `reclaim_stale()` 把心跳超时的任务放回队列时
+  只做 `retries = retries + 1`，从不和 `max_retries` 比较。后果是：一个
+  「一跑就把 worker 搞死」的任务（比如批量太大把内存撑爆、被 OOM killer 干掉）
+  会被无限回收、无限重跑，**永远落不到 `failed`**。用户看到的是「一直在排队」，
+  和真正卡死的僵尸任务一样查不出原因——正好是这一版想要消灭的那种故障。
+
+  现在分两步走：还有重试预算的才回队列，预算用完的直接判 `failed`，
+  `error` 写明「心跳超时且重试次数已用尽」。
+
+### 变更
+
+- `status` 表格里的状态值改为中文（`排队`/`进行中`/`完成`/`失败`），
+  与中文表头一致；`submit --wait` 的进度行同样。
+- 删掉 `worker.run_once()`。它的 docstring 说「给测试和 `submit --wait` 用」，
+  但 `submit --wait` 走的是 HTTP 轮询，测试里也没有调用——是死代码，注释还在误导人。
+- 测试 115 → 117（僵尸回收上限、零预算立即失败）
 
 ## [0.7.0] - 2026-11-03
 
@@ -307,6 +327,7 @@ medium 变体召回 2.3% → 72.1%，整体 76.7% → 93.0%，干净语料误伤
 
 首个版本：术语订正、多引擎交叉验证、转写质量自评，词表批量导入/导出、CLI 与 pip 安装支持。
 
+[0.7.1]: https://github.com/angus-hu-gzy/asr-polish/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/angus-hu-gzy/asr-polish/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/angus-hu-gzy/asr-polish/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/angus-hu-gzy/asr-polish/compare/v0.5.5...v0.6.0

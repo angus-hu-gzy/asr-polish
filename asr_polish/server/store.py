@@ -311,16 +311,30 @@ class Store:
 
         进程被 kill -9 时来不及写任何东西，任务会永远停在 running——
         不报错、也不结束，用户永远等不到。只能靠心跳超时判定。
+
+        必须守住重试上限：否则一个「一跑就把 worker 搞死」的任务
+        （比如内存爆掉）会被无限回收、无限重跑，永远落不到 failed，
+        用户看到的是「一直在排队」，和僵尸任务一样查不出原因。
         """
         cutoff = time.time() - stale_after
+        now = time.time()
         with self._db() as conn:
+            # 还有重试预算：回队列，让下一个 worker 接着跑
             cur = conn.execute(
                 "UPDATE tasks SET status=?, retries=retries+1, worker=NULL,"
                 " started_at=NULL, message=?, updated_at=?"
-                " WHERE status=? AND updated_at < ?",
-                (PENDING, "心跳超时，已回收重新排队", time.time(), RUNNING, cutoff))
+                " WHERE status=? AND updated_at < ? AND retries < max_retries",
+                (PENDING, "心跳超时，已回收重新排队", now, RUNNING, cutoff))
+            requeued = cur.rowcount
+            # 预算用完：判定失败，把原因摆到台面上
+            conn.execute(
+                "UPDATE tasks SET status=?, worker=NULL, started_at=NULL,"
+                " error=?, message=?, finished_at=?, updated_at=?"
+                " WHERE status=? AND updated_at < ? AND retries >= max_retries",
+                (FAILED, "心跳超时且重试次数已用尽",
+                 "心跳超时且重试已用尽", now, now, RUNNING, cutoff))
             conn.commit()
-            return cur.rowcount
+            return requeued
 
     def _transition(self, task_id: str, dst: str, result: Optional[dict] = None,
                     error: Optional[str] = None, progress: Optional[float] = None,

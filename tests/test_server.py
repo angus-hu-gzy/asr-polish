@@ -164,6 +164,36 @@ class TestReclaim(_TempDB):
         self.assertEqual(self.store.reclaim_stale(stale_after=600), 0)
         self.assertEqual(self.store.get(t.id).progress, 0.5)
 
+    def test_reclaim_respects_retry_limit(self) -> None:
+        """僵尸回收必须守住重试上限。
+
+        否则「一跑就把 worker 搞死」的任务会无限回收、无限重跑，
+        永远落不到 failed——用户看到的是「一直在排队」。
+        """
+        t = self.store.create("subs", {}, max_retries=2)
+        for _ in range(5):
+            claimed = self.store.claim("w1")
+            if claimed is None:
+                break
+            with self.store._db() as conn:
+                conn.execute("UPDATE tasks SET updated_at=? WHERE id=?",
+                             (time.time() - 5000, t.id))
+            self.store.reclaim_stale(stale_after=600)
+
+        after = self.store.get(t.id)
+        self.assertEqual(after.status, FAILED)
+        self.assertEqual(after.retries, 2)              # 不再往上加
+        self.assertIn("重试", after.error or "")
+
+    def test_reclaim_with_zero_retry_budget_fails_at_once(self) -> None:
+        t = self.store.create("subs", {}, max_retries=0)
+        self.store.claim("w1")
+        with self.store._db() as conn:
+            conn.execute("UPDATE tasks SET updated_at=? WHERE id=?",
+                         (time.time() - 5000, t.id))
+        self.assertEqual(self.store.reclaim_stale(stale_after=600), 0)
+        self.assertEqual(self.store.get(t.id).status, FAILED)
+
 
 class TestJobs(unittest.TestCase):
     def test_parse_targets(self) -> None:

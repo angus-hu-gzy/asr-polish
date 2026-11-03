@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import unicodedata
 import warnings
 from pathlib import Path
 from typing import Optional
@@ -33,6 +34,24 @@ from .crosscheck import cross_check, confidence_report
 from .quality import assess
 from .lexicon import Lexicon, DEFAULT_LEXICON_PATH, USER_LEXICON_PATH
 from . import lexicon_io
+
+# 任务状态的展示名。API 里是英文常量，给人看的一律用中文，
+# 免得同一个输出里表头是「状态」、值是 done。
+_STATE_LABEL = {
+    "pending": "排队",
+    "running": "进行中",
+    "done": "完成",
+    "failed": "失败",
+}
+
+
+def _pad(text: str, width: int) -> str:
+    """按显示宽度补齐。
+
+    中文在终端里占两列，`%-10s` 按字符数算，会导致中文列整体左偏。
+    """
+    shown = sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
+    return text + " " * max(0, width - shown)
 
 
 def _cmd_correct(args: argparse.Namespace) -> None:
@@ -315,7 +334,8 @@ def _cmd_submit(args: argparse.Namespace) -> None:
         t = _api(args.server, "/api/tasks/" + task["id"])
         pct = int(t["progress"] * 100)
         if not args.quiet and pct != seen:
-            print(f"  {pct:3d}%  {t['status']:<8} {t['message'][:56]}",
+            label = _STATE_LABEL.get(t["status"], t["status"])
+            print(f"  {pct:3d}%  {label:<6} {t['message'][:56]}",
                   file=sys.stderr, flush=True)
             seen = pct
         if t["status"] in ("done", "failed"):
@@ -345,11 +365,12 @@ def _cmd_status(args: argparse.Namespace) -> None:
           f"完成 {s['done']}  失败 {s['failed']}  共 {s['total']}")
     if not d["tasks"]:
         return
-    print(f"{'任务':<14}{'状态':<10}{'进度':<7}目标")
+    print(_pad("任务", 14) + _pad("状态", 10) + _pad("进度", 7) + "目标")
     for t in d["tasks"]:
         target = (t.get("payload") or {}).get("target") or ""
-        print(f"{t['id']:<14}{t['status']:<10}{t['progress'] * 100:>5.0f}%  "
-              f"{target[:44]}")
+        label = _STATE_LABEL.get(t["status"], t["status"])
+        pct = "%4.0f%%" % (t["progress"] * 100)
+        print(_pad(t["id"], 14) + _pad(label, 10) + _pad(pct, 7) + target[:44])
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -18,7 +18,7 @@ import time
 from typing import Callable, Optional
 
 from . import jobs
-from .store import DONE, FAILED, Task, Store
+from .store import FAILED, Task, Store
 
 Event = Callable[[str], None]
 
@@ -129,21 +129,3 @@ class WorkerPool:
                 continue
             if n:
                 self._on_event("回收器放回 %d 个心跳超时的任务" % n)
-
-
-def run_once(store: Store, worker: str = "worker-1") -> Optional[str]:
-    """同步领一个任务跑完，主要给测试和 `submit --wait` 用。"""
-    task = store.claim(worker)
-    if task is None:
-        return None
-    task_id = task.id
-
-    def progress(frac: float, msg: str) -> None:
-        store.heartbeat(task_id, frac, msg)
-
-    try:
-        result = jobs.run(task.kind, task.payload, progress)
-        store.finish(task_id, result)
-        return DONE
-    except Exception as e:
-        return store.fail(task_id, "%s: %s" % (type(e).__name__, e))
