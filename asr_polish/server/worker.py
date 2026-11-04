@@ -86,36 +86,68 @@ class WorkerPool:
                 self.busy[name] = None
 
     def _run(self, name: str, task: Task) -> None:
-        self._on_event("%s 领走 %s（%s）" % (name, task.id, task.kind))
+        self._on_event("%s 领走 %s（%s，第 %d 轮）"
+                       % (name, task.id, task.kind, task.attempt))
         last = [0.0]
+        lost = [False]
 
         def progress(frac: float, msg: str) -> None:
+            if lost[0]:
+                return                                    # 已经知道没戏了，别再写
             now = time.monotonic()
             if now - last[0] < self.heartbeat and frac < 1.0:
                 return
             last[0] = now
             try:
-                self.store.heartbeat(task.id, frac, msg)
+                owned = self.store.heartbeat(task.id, frac, msg,
+                                             attempt=task.attempt)
             except Exception:
-                pass                                  # 心跳失败不能中断业务
+                return                                    # 心跳失败不能中断业务
+            if not owned:
+                # 任务被人工重试或回收器接管了。此刻起它的进度、结果、
+                # 错误信息都不该由我写——否则会盖掉接管者的真实状态。
+                lost[0] = True
+                self._on_event("%s 失去 %s 的所有权（已被接管），结果将被丢弃"
+                               % (name, task.id))
 
         try:
             result = jobs.run(task.kind, task.payload, progress)
-            self.store.finish(task.id, result)
-            self._on_event("%s 完成 %s" % (name, task.id))
         except Exception as e:
             reason = "%s: %s" % (type(e).__name__, e)
+            if lost[0]:
+                self._on_event("%s 丢弃 %s 的失败记录：任务已被接管"
+                               % (name, task.id))
+                return
             try:
-                final = self.store.fail(task.id, reason)
-            except Exception as e2:                   # 连状态都写不进去
+                final = self.store.fail(task.id, reason, attempt=task.attempt)
+            except Exception as e2:                       # 连状态都写不进去
                 self._on_event("%s 失败且无法落库 %s：%s" % (name, task.id, e2))
                 return
-            if final == FAILED:
+            if final is None:                             # 令牌过期，不是我的事
+                self._on_event("%s 丢弃 %s 的失败记录：任务已被接管"
+                               % (name, task.id))
+            elif final == FAILED:
                 self._on_event("%s 失败 %s：%s" % (name, task.id, reason[:120]))
             else:
                 self._on_event("%s 失败 %s，已重新排队（重试 %d/%d）"
                                % (name, task.id, task.retries + 1,
                                   task.max_retries))
+            return
+
+        if lost[0]:
+            # 业务层已经跑完了才走到这里——结果作废。要做到「立刻停手」得给
+            # jobs.run 传一个中断信号，那是另一件事；先把错误的写入堵住。
+            self._on_event("%s 丢弃 %s 的结果：任务已被接管" % (name, task.id))
+            return
+        try:
+            owned = self.store.finish(task.id, result, attempt=task.attempt)
+        except Exception as e:
+            self._on_event("%s 收尾失败 %s：%s" % (name, task.id, e))
+            return
+        if not owned:
+            self._on_event("%s 丢弃 %s 的结果：任务已被接管" % (name, task.id))
+            return
+        self._on_event("%s 完成 %s" % (name, task.id))
 
     # ── 僵尸回收 ────────────────────────────────────────────
 

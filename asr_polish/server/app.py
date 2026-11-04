@@ -11,7 +11,7 @@
 POST   /api/tasks            {"kind":"subs","target":"BV...", ...}  → 202 + 任务
 GET    /api/tasks/{id}       查单个任务
 GET    /api/tasks            列表，支持 ?status=&limit=
-POST   /api/tasks/{id}/retry 手动重试（failed 或 running → pending）
+POST   /api/tasks/{id}/retry 手动重试（failed 重新排队；running 强制重启）
 GET    /api/health           健康检查
 GET    /                     面板
 """
@@ -291,16 +291,25 @@ class Handler(BaseHTTPRequestHandler):
         if len(parts) == 4 and parts[:2] == ["api", "tasks"] \
                 and parts[3] == "retry":
             task_id = parts[2]
-            if not self.app.store.requeue(task_id):
-                task = self.app.store.get(task_id)
-                if task is None:
-                    self._err(404, "没有这个任务：%s" % task_id)
-                else:
-                    self._err(409, "状态 %s 不能重试" % task.status)
+            before = self.app.store.get(task_id)
+            if before is None:
+                self._err(404, "没有这个任务：%s" % task_id)
                 return
-            self.app.note("任务 %s 手动重试" % task_id)
+            if not self.app.store.requeue(task_id):
+                self._err(409, "状态 %s 不能重试（只有 failed 和 running 可以）"
+                          % before.status)
+                return
+            restart = before.status == RUNNING
+            self.app.note("任务 %s %s" % (task_id,
+                                          "强制重启" if restart else "手动重试"))
             task = self.app.store.get(task_id)
-            self._json(202, task.to_dict() if task else {})
+            body = task.to_dict() if task else {}
+            # 对 running 重试是「重启」而不是「多跑一份」：旧执行手里的所有权
+            # 令牌已经作废，它的进度、结果、错误都写不回来。但业务层不会立刻
+            # 中断（它跑完才发现令牌失效），所以已抓完的文件仍可能被它覆盖一次。
+            body["note"] = ("已强制重启，原执行的结果会被丢弃"
+                            if restart else "已重新排队")
+            self._json(202, body)
             return
 
         self._err(404, "未知路径：%s" % u.path)

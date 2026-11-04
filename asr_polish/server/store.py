@@ -9,6 +9,12 @@
    两个 worker 不可能抢到同一行。这是 CAS（比较并交换）。
 3. **进程被杀不会留下中间态**。任务保持 running、心跳停在旧时间戳，
    由 `reclaim_stale()` 判定僵尸并放回队列。
+4. **写回必须持有所有权**。每次 `claim()` 把 `attempt` 加一，worker 记住
+   自己拿到的是第几轮；之后的 `heartbeat` / `finish` / `fail` 都是
+   `UPDATE ... WHERE id=? AND attempt=?`，写不进去就说明自己被接管了。
+   没有这一条，一个被判僵尸又「复活」的 worker 会和接管者同时写同一行——
+   它甚至可能把接管者正在跑的任务直接标成完成（见下面 `finish` 的注释）。
+   这是设计模式里的 fencing token：用单调递增的号数挡掉过期的写入者。
 
 零依赖：只用标准库 `sqlite3`。
 """
@@ -48,6 +54,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     error       TEXT,
     retries     INTEGER NOT NULL DEFAULT 0,
     max_retries INTEGER NOT NULL DEFAULT 2,
+    attempt     INTEGER NOT NULL DEFAULT 0,
     worker      TEXT,
     created_at  REAL NOT NULL,
     started_at  REAL,
@@ -75,6 +82,7 @@ class Task:
     error: Optional[str] = None
     retries: int = 0
     max_retries: int = 2
+    attempt: int = 0
     worker: Optional[str] = None
     created_at: float = 0.0
     started_at: Optional[float] = None
@@ -92,6 +100,7 @@ class Task:
             "result": self.result,
             "error": self.error,
             "retries": self.retries,
+            "attempt": self.attempt,
             "worker": self.worker,
             "created_at": self.created_at,
             "started_at": self.started_at,
@@ -121,6 +130,7 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         error=row["error"],
         retries=row["retries"],
         max_retries=row["max_retries"],
+        attempt=row["attempt"],
         worker=row["worker"],
         created_at=row["created_at"],
         started_at=row["started_at"],
@@ -152,7 +162,21 @@ class Store:
         with self._db() as conn:
             conn.execute("PRAGMA journal_mode=WAL")   # 持久属性，设一次即可
             conn.executescript(_SCHEMA)
+            self._migrate(conn)
             conn.commit()
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """给老库补新列。
+
+        `CREATE TABLE IF NOT EXISTS` 对已存在的表完全不生效，所以升级到
+        0.9.0 时旧库不会自动长出新列，必须显式 ALTER。默认值 0 与语义一致：
+        历史任务从未持有过任何一轮所有权令牌。
+        """
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}
+        if "attempt" not in cols:
+            conn.execute(
+                "ALTER TABLE tasks ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0")
 
     def _conn(self) -> sqlite3.Connection:
         """每个线程复用一条连接。
@@ -222,6 +246,24 @@ class Store:
 
     # ── 写入 ────────────────────────────────────────────────
 
+    def _owned_update(self, task_id: str, sets: list[str], args: list[Any],
+                      attempt: Optional[int] = None) -> bool:
+        """带所有权条件的 UPDATE，返回「我是否还拥有这个任务」。
+
+        `attempt=None` 表示不校验，只给管理员操作和测试用；worker 的执行
+        路径一律显式传入自己领到的轮次。校验靠 WHERE 而不是「先查再判」，
+        所以和「任务正好在这一刻被接管」之间没有窗口。
+        """
+        sql = "UPDATE tasks SET %s WHERE id=?" % ", ".join(sets)
+        params: list[Any] = list(args) + [task_id]
+        if attempt is not None:
+            sql += " AND attempt=?"
+            params.append(attempt)
+        with self._db() as conn:
+            cur = conn.execute(sql, params)
+            conn.commit()
+            return cur.rowcount == 1
+
     def create(self, kind: str, payload: Optional[dict] = None,
                max_retries: int = 2) -> Task:
         now = time.time()
@@ -242,6 +284,11 @@ class Store:
 
         先 BEGIN IMMEDIATE 拿写锁，再 SELECT + UPDATE，
         所以不存在「两个 worker 同时查到同一行」的窗口。
+
+        返回的 `Task.attempt` 是**本轮的所有权令牌**：调用方必须把它传给
+        之后的 `heartbeat` / `finish` / `fail`。任务一旦被接管（人工重试或
+        僵尸回收），`attempt` 就变了，旧令牌的写入全部落空——这是防止
+        「两个 worker 同时跑同一个任务」的唯一手段。
         """
         conn = self._conn()
         try:
@@ -254,8 +301,8 @@ class Store:
                 return None
             now = time.time()
             cur = conn.execute(
-                "UPDATE tasks SET status=?, worker=?, started_at=?, updated_at=?"
-                " WHERE id=? AND status=?",
+                "UPDATE tasks SET status=?, worker=?, started_at=?, updated_at=?,"
+                " attempt=attempt+1 WHERE id=? AND status=?",
                 (RUNNING, worker, now, now, row["id"], PENDING))
             if cur.rowcount != 1:      # 写锁在手上时不该发生，防御性处理
                 conn.execute("ROLLBACK")
@@ -270,8 +317,13 @@ class Store:
             raise
 
     def heartbeat(self, task_id: str, progress: Optional[float] = None,
-                  message: Optional[str] = None) -> None:
-        """刷新时间戳。worker 活着但任务很长时靠它证明自己没死。"""
+                  message: Optional[str] = None,
+                  attempt: Optional[int] = None) -> bool:
+        """刷新时间戳。worker 活着但任务很长时靠它证明自己没死。
+
+        返回 False 意味着**任务已不归我了**（被人重试或回收），调用方应当
+        停手：此刻它的进度和结论都已经过期，继续写下去只会覆盖接管者的状态。
+        """
         sets = ["updated_at=?"]
         args: list[Any] = [time.time()]
         if progress is not None:
@@ -280,56 +332,68 @@ class Store:
         if message is not None:
             sets.append("message=?")
             args.append(message)
-        args.append(task_id)
-        with self._db() as conn:
-            conn.execute("UPDATE tasks SET %s WHERE id=?" % ", ".join(sets), args)
-            conn.commit()
+        return self._owned_update(task_id, sets, args, attempt)
 
-    def finish(self, task_id: str, result: Optional[dict] = None) -> None:
-        self._transition(task_id, DONE, result=result, progress=1.0,
-                         message="完成")
+    def finish(self, task_id: str, result: Optional[dict] = None,
+               attempt: Optional[int] = None) -> bool:
+        """标记完成。返回 False 表示写入被拒（已被接管）。
 
-    def fail(self, task_id: str, error: str) -> str:
+        为什么必须校验所有权：被误判僵尸的 worker 重新跑完后会调这里。如果
+        它此时恰好晚于接管者的 claim，状态已经是 running，`running → done`
+        完全合法——于是一个**还在跑的任务**被标成完成，接管者写了一半的
+        文件被当成最终结果，而接管者最后收尾时反而撞上「已处于终态」。
+        """
+        return self._transition(task_id, DONE, result=result, progress=1.0,
+                                message="完成", attempt=attempt)
+
+    def fail(self, task_id: str, error: str,
+             attempt: Optional[int] = None) -> Optional[str]:
         """失败。未超过重试上限就回队列，否则落成 failed。
 
-        返回最终状态（pending 或 failed）。
+        返回最终状态（pending 或 failed）；返回 None 表示**这次失败记录不该
+        由我写**——任务已被接管，或者我拿的是过期令牌。
         """
         task = self.get(task_id)
         if task is None:
             raise KeyError(task_id)
+        if attempt is not None and task.attempt != attempt:
+            return None
         if task.terminal:
             return task.status
+        now = time.time()
         if task.retries < task.max_retries:
-            with self._db() as conn:
-                conn.execute(
-                    "UPDATE tasks SET status=?, retries=retries+1, worker=NULL,"
-                    " started_at=NULL, error=?, message=?, updated_at=?"
-                    " WHERE id=?",
-                    (PENDING, error[:500], "失败，等待重试", time.time(), task_id))
-                conn.commit()
-            return PENDING
-        self._transition(task_id, FAILED, error=error[:500],
-                         message="失败", )
-        return FAILED
+            ok = self._owned_update(
+                task_id,
+                ["status=?", "retries=retries+1", "worker=NULL",
+                 "started_at=NULL", "error=?", "message=?", "updated_at=?"],
+                [PENDING, error[:500], "失败，等待重试", now], attempt)
+            return PENDING if ok else None
+        ok = self._transition(task_id, FAILED, error=error[:500],
+                              message="失败", attempt=attempt)
+        return FAILED if ok else None
 
     def requeue(self, task_id: str, reason: str = "手动重试") -> bool:
+        """人工重试。`failed` 是常规重试；`running` 是**强制重启**。
+
+        对 running 放行原本是个危险的语义：它只改数据库，管不了还在跑的
+        线程，于是同一个任务被两份执行同时跑。现在 `attempt` 加一，旧执行
+        立刻失去所有权——它的心跳写不进、结果也写不进，新执行独占任务。
+        所以对 running 的重试才是「重启」，而不是「复制」。
+        """
         task = self.get(task_id)
         if task is None:
             return False
-        if RUNNING == task.status:
-            _check_transition(RUNNING, PENDING)
-        elif FAILED == task.status:
-            _check_transition(FAILED, PENDING)
-        else:
+        if task.status not in (RUNNING, FAILED):
             return False
+        _check_transition(task.status, PENDING)
         with self._db() as conn:
-            conn.execute(
+            cur = conn.execute(
                 "UPDATE tasks SET status=?, worker=NULL, started_at=NULL,"
-                " finished_at=NULL, progress=0, message=?, error=NULL, updated_at=?"
-                " WHERE id=?",
-                (PENDING, reason, time.time(), task_id))
+                " finished_at=NULL, progress=0, message=?, error=NULL,"
+                " attempt=attempt+1, updated_at=? WHERE id=? AND status=?",
+                (PENDING, reason, time.time(), task_id, task.status))
             conn.commit()
-        return True
+            return cur.rowcount == 1
 
     def reclaim_stale(self, stale_after: float = 600.0) -> int:
         """把卡在 running 太久的任务放回队列（僵尸任务回收）。
@@ -340,6 +404,10 @@ class Store:
         必须守住重试上限：否则一个「一跑就把 worker 搞死」的任务
         （比如内存爆掉）会被无限回收、无限重跑，永远落不到 failed，
         用户看到的是「一直在排队」，和僵尸任务一样查不出原因。
+
+        两条 UPDATE 都带 `attempt=attempt+1`：被判定为僵尸的 worker 未必真的
+        死了（GC 停顿、机器休眠、退避太久都会导致心跳中断），它醒来后若还能
+        写库，就会和接管者撞车。加一轮号让它的令牌当场作废。
         """
         cutoff = time.time() - stale_after
         now = time.time()
@@ -347,14 +415,14 @@ class Store:
             # 还有重试预算：回队列，让下一个 worker 接着跑
             cur = conn.execute(
                 "UPDATE tasks SET status=?, retries=retries+1, worker=NULL,"
-                " started_at=NULL, message=?, updated_at=?"
+                " started_at=NULL, message=?, attempt=attempt+1, updated_at=?"
                 " WHERE status=? AND updated_at < ? AND retries < max_retries",
                 (PENDING, "心跳超时，已回收重新排队", now, RUNNING, cutoff))
             requeued = cur.rowcount
             # 预算用完：判定失败，把原因摆到台面上
             conn.execute(
                 "UPDATE tasks SET status=?, worker=NULL, started_at=NULL,"
-                " error=?, message=?, finished_at=?, updated_at=?"
+                " error=?, message=?, attempt=attempt+1, finished_at=?, updated_at=?"
                 " WHERE status=? AND updated_at < ? AND retries >= max_retries",
                 (FAILED, "心跳超时且重试次数已用尽",
                  "心跳超时且重试已用尽", now, now, RUNNING, cutoff))
@@ -363,10 +431,18 @@ class Store:
 
     def _transition(self, task_id: str, dst: str, result: Optional[dict] = None,
                     error: Optional[str] = None, progress: Optional[float] = None,
-                    message: Optional[str] = None) -> None:
+                    message: Optional[str] = None,
+                    attempt: Optional[int] = None) -> bool:
+        """状态迁移。返回 False 表示写入被拒（令牌过期）。
+
+        注意顺序：先查令牌，再校验迁移。过期的写入者不该收到「非法迁移」
+        这种像是自己写错代码的报错——它的处境是「我已经被接管了」。
+        """
         task = self.get(task_id)
         if task is None:
             raise KeyError(task_id)
+        if attempt is not None and task.attempt != attempt:
+            return False
         _check_transition(task.status, dst)
         now = time.time()
         sets = ["status=?", "updated_at=?"]
@@ -391,10 +467,7 @@ class Store:
         if dst in (DONE, FAILED):
             sets.append("finished_at=?")
             args.append(now)
-        args.append(task_id)
-        with self._db() as conn:
-            conn.execute("UPDATE tasks SET %s WHERE id=?" % ", ".join(sets), args)
-            conn.commit()
+        return self._owned_update(task_id, sets, args, attempt)
 
     # ── 读取 ────────────────────────────────────────────────
 

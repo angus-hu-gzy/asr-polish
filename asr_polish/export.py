@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Iterable
 
@@ -137,6 +139,28 @@ def render(fmt: str, result: FetchResult, part_title: str = "") -> str:
     return fn(result)  # type: ignore[operator]
 
 
+def _write_atomic(path: Path, text: str) -> None:
+    """先写同目录临时文件，再原子替换。
+
+    `path.write_text` 是先截断再逐块写。两个执行同时写同一个文件名时
+    （任务被重试后，新旧两份执行可能并发写同一批字幕），读的人会看到
+    一个被截断的文件。`os.replace` 在同一文件系统上是原子的：读者要么
+    看到旧完整版，要么看到新完整版。
+    """
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent),
+                               prefix="." + path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def write_all(outdir: Path, stem: str, formats: Iterable[str],
               result: FetchResult, part_title: str = "",
               skip_existing: bool = False) -> list[Path]:
@@ -146,6 +170,6 @@ def write_all(outdir: Path, stem: str, formats: Iterable[str],
         path = outdir / f"{stem}.{fmt}"
         if skip_existing and path.exists() and path.stat().st_size > 0:
             continue
-        path.write_text(render(fmt, result, part_title), encoding="utf-8")
+        _write_atomic(path, render(fmt, result, part_title))
         written.append(path)
     return written

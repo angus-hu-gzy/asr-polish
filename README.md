@@ -194,7 +194,7 @@ asr-polish status                     # 看队列与最近任务
 | `POST /api/tasks` | 提交任务，立刻返回 `202` 和任务 id（不等执行） |
 | `GET /api/tasks/{id}` | 查状态、进度、结果、失败原因 |
 | `GET /api/tasks?status=&limit=` | 列表 |
-| `POST /api/tasks/{id}/retry` | 把 failed / running 的任务重新排队 |
+| `POST /api/tasks/{id}/retry` | `failed` 重新排队；`running` 强制重启（旧执行的结果会被丢弃） |
 | `GET /api/health` | 存活与 worker 占用 |
 
 三件事决定了它的可靠性，都在 `asr_polish/server/` 里：
@@ -202,6 +202,7 @@ asr-polish status                     # 看队列与最近任务
 - **请求只登记，执行交给 worker**。接口写一行 `pending` 就返回，长活跟请求彻底解耦。
 - **状态在 SQLite，不在内存**。进程重启、页面关掉，任务都还在；失败可重试、能查卡在哪一条。
 - **抢任务用 CAS，不靠运气**。`BEGIN IMMEDIATE` 先拿写锁再 `SELECT + UPDATE`，两个 worker 不可能领到同一行；再加心跳与僵尸回收，进程被 `kill -9` 留下的 `running` 也能被放回队列。
+- **写回要持有所有权**。每次 `claim()` 把 `attempt` 加一，worker 之后的心跳和结论都带 `WHERE id=? AND attempt=?`，写不进去就说明自己已被接管。没有这一条，一个被误判僵尸、又醒过来的 worker 会和接管者同时写同一行——它甚至能把接管者**还在跑**的任务抢先标成完成。
 
 ```python
 # asr_polish/server/store.py：抢任务的原子写法
@@ -440,9 +441,9 @@ asr-polish/
 
 | 版本 | 一句话 |
 |---|---|
+| **0.9.0** | 任务写回加所有权令牌：被接管（重试 / 僵尸回收）的旧执行无法再写状态，`retry` 对 `running` 从「复制一份」变成「真重启」 |
+| **0.8.0** | 请求限速 + 风控退避 + Cookie 状态提示；批量抓不再把账号抓进风控，`cookie set` 一条命令导入登录态 |
 | **0.7.1** | 修僵尸回收不看重试上限导致任务无限重跑；状态输出统一中文 |
-| **0.7.0** | 服务化：抓取变成任务队列 + HTTP，CAS 抢任务、心跳、僵尸回收，全部零依赖 |
-| **0.6.1** | 补齐工程面：`CHANGELOG` / `CONTRIBUTING` / `docs` 入仓，CI 加标签一致性校验；新增 `subs --search` 与语料采集工具 |
 
 > 0.5.0 有一个 P0 回归（`--out` 帮助文本里 `%APPDATA%` 未转义，argparse 崩溃，CLI 全不可用），
 > 已在 0.5.1 修复。装到 0.5.0 的请直接升级。

@@ -14,6 +14,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from unittest import mock
 
 from asr_polish.server import App, Store, make_server
 from asr_polish.server.store import (DONE, FAILED, PENDING, RUNNING,
@@ -206,6 +207,214 @@ class TestReclaim(_TempDB):
                          (time.time() - 5000, t.id))
         self.assertEqual(self.store.reclaim_stale(stale_after=600), 0)
         self.assertEqual(self.store.get(t.id).status, FAILED)
+
+
+class TestOwnership(_TempDB):
+    """所有权令牌（fencing token）：任务被接管后，旧执行的写入必须全部落空。
+
+    没有这一层，「被判僵尸又复活的 worker」会和接管者同时写同一行——它甚至
+    能把接管者还在跑的任务抢先标成完成，而接管者最后收尾时反而撞上「已处于
+    终态 done」，日志里还会打出一句假的「已重新排队」。
+    """
+
+    def test_claim_bumps_attempt(self) -> None:
+        t = self.store.create("subs", {"target": "BV1xx"})
+        self.assertEqual(t.attempt, 0)              # 建任务不算持有
+        first = self.store.claim("w1")
+        self.assertEqual(first.attempt, 1)
+        self.store.fail(t.id, "挂了")
+        second = self.store.claim("w1")
+        self.assertEqual(second.attempt, 2)         # 失败重排后再领是新的一轮
+
+    def test_retry_running_is_restart_not_duplicate(self) -> None:
+        t = self.store.create("subs", {"target": "BV1xx"})
+        old = self.store.claim("w1")
+        self.assertTrue(self.store.requeue(t.id))
+        new = self.store.claim("w2")
+        self.assertGreater(new.attempt, old.attempt)
+
+        # 旧执行的每一次写回都被拒
+        self.assertFalse(self.store.heartbeat(t.id, 0.99, "旧进度",
+                                              attempt=old.attempt))
+        self.assertFalse(self.store.finish(t.id, {"by": "w1"},
+                                           attempt=old.attempt))
+        self.assertIsNone(self.store.fail(t.id, "旧错误", attempt=old.attempt))
+
+        task = self.store.get(t.id)
+        self.assertEqual(task.status, RUNNING)      # 没被旧执行抢先标成完成
+        self.assertIsNone(task.result)
+        self.assertEqual(task.progress, 0.0)
+
+        # 新执行一切正常
+        self.assertTrue(self.store.finish(t.id, {"by": "w2"}, attempt=new.attempt))
+        self.assertEqual(self.store.get(t.id).result, {"by": "w2"})
+
+    def test_reclaim_invalidates_old_owner(self) -> None:
+        """没人点重试也会撞车：回收器接管后，僵尸 worker 醒来照样想写。"""
+        t = self.store.create("subs", {"target": "BV1xx"})
+        old = self.store.claim("w1")
+        with self.store._db() as conn:
+            conn.execute("UPDATE tasks SET updated_at=? WHERE id=?",
+                         (time.time() - 700, t.id))
+            conn.commit()
+        self.assertEqual(self.store.reclaim_stale(600), 1)
+        new = self.store.claim("w2")
+        self.assertGreater(new.attempt, old.attempt)
+        self.assertFalse(self.store.finish(t.id, {"by": "w1"},
+                                          attempt=old.attempt))
+        self.assertEqual(self.store.get(t.id).status, RUNNING)
+        self.assertTrue(self.store.finish(t.id, {"by": "w2"}, attempt=new.attempt))
+
+    def test_exhausted_reclaim_also_bumps_attempt(self) -> None:
+        t = self.store.create("subs", {}, max_retries=0)
+        old = self.store.claim("w1")
+        with self.store._db() as conn:
+            conn.execute("UPDATE tasks SET updated_at=? WHERE id=?",
+                         (time.time() - 5000, t.id))
+        self.store.reclaim_stale(stale_after=600)
+        task = self.store.get(t.id)
+        self.assertEqual(task.status, FAILED)
+        self.assertGreater(task.attempt, old.attempt)
+        self.assertFalse(self.store.finish(t.id, {}, attempt=old.attempt))
+
+    def test_manual_retry_of_failed_gets_fresh_token(self) -> None:
+        t = self.store.create("subs", {}, max_retries=0)
+        old = self.store.claim("w1")
+        self.assertEqual(self.store.fail(t.id, "挂了", attempt=old.attempt), FAILED)
+        self.assertTrue(self.store.requeue(t.id))
+        new = self.store.claim("w2")
+        self.assertGreater(new.attempt, old.attempt)
+        # 旧令牌作废：不能把新执行的任务改回 failed
+        self.assertIsNone(self.store.fail(t.id, "旧错误", attempt=old.attempt))
+        self.assertEqual(self.store.get(t.id).status, RUNNING)
+
+    def test_done_task_cannot_be_resurrected_by_stale_token(self) -> None:
+        t = self.store.create("subs", {}, max_retries=0)
+        old = self.store.claim("w1")
+        self.store.fail(t.id, "挂了", attempt=old.attempt)
+        self.store.requeue(t.id)
+        new = self.store.claim("w2")
+        self.assertTrue(self.store.finish(t.id, {"ok": 1}, attempt=new.attempt))
+        self.assertFalse(self.store.finish(t.id, {"ok": 2}, attempt=old.attempt))
+        self.assertEqual(self.store.get(t.id).result, {"ok": 1})
+
+    def test_without_token_no_check(self) -> None:
+        """不传 attempt 等于不校验，管理员路径与旧调用方不受影响。"""
+        t = self.store.create("subs", {"target": "BV1xx"})
+        self.store.claim("w1")
+        self.assertTrue(self.store.finish(t.id, {}))
+        self.assertEqual(self.store.get(t.id).status, DONE)
+
+
+class TestMigration(_TempDB):
+    def test_old_table_gets_attempt_column(self) -> None:
+        """0.9.0 之前的库没有 attempt 列，打开时必须自动补上。"""
+        import sqlite3
+        path = os.path.join(self.tmp, "old.db")
+        conn = sqlite3.connect(path)
+        conn.executescript("""
+            CREATE TABLE tasks (
+                id TEXT PRIMARY KEY, kind TEXT NOT NULL, payload TEXT NOT NULL,
+                status TEXT NOT NULL, progress REAL NOT NULL DEFAULT 0,
+                message TEXT NOT NULL DEFAULT '', result TEXT, error TEXT,
+                retries INTEGER NOT NULL DEFAULT 0,
+                max_retries INTEGER NOT NULL DEFAULT 2, worker TEXT,
+                created_at REAL NOT NULL, started_at REAL,
+                updated_at REAL NOT NULL, finished_at REAL);
+            CREATE INDEX idx_tasks_status ON tasks(status, created_at);
+        """)
+        conn.execute("INSERT INTO tasks (id,kind,payload,status,created_at,"
+                     "updated_at) VALUES ('Told','subs','{}','pending',1,1)")
+        conn.commit()
+        conn.close()
+
+        store = Store(path)
+        try:
+            task = store.get("Told")
+            self.assertIsNotNone(task)
+            self.assertEqual(task.attempt, 0)       # 历史任务没持有过所有权
+            claimed = store.claim("w1")
+            self.assertEqual(claimed.id, "Told")
+            self.assertEqual(claimed.attempt, 1)
+        finally:
+            store.close()
+
+    def test_migration_is_idempotent(self) -> None:
+        """反复打开同一个库不能重复 ALTER。"""
+        path = os.path.join(self.tmp, "twice.db")
+        Store(path).close()
+        store = Store(path)
+        try:
+            self.assertEqual(store.create("subs", {}).attempt, 0)
+        finally:
+            store.close()
+
+
+class TestWorkerOwnership(_TempDB):
+    def _pool(self, events: list) -> "object":
+        from asr_polish.server.worker import WorkerPool
+        pool = WorkerPool(self.store, workers=1, on_event=events.append)
+        pool.heartbeat = 0.0        # 关掉进度节流，让每次 progress 都真写库
+        return pool
+
+    def test_result_dropped_after_takeover(self) -> None:
+        """worker 跑完才发现自己被接管：结果丢弃，不能盖掉新执行。"""
+        from asr_polish.server import jobs
+        events: list[str] = []
+        pool = self._pool(events)
+        t = self.store.create("subs", {"target": "BV1xx"})
+        task = self.store.claim("worker-1")
+
+        def fake_run(_kind, _payload, progress):
+            progress(0.5, "跑一半")
+            self.store.requeue(t.id)        # 用户在跑的过程中点了重试
+            progress(0.8, "继续跑")          # 这次心跳会被拒
+            return {"by": "old"}
+
+        with mock.patch.object(jobs, "run", fake_run):
+            pool._run("worker-1", task)
+
+        after = self.store.get(t.id)
+        self.assertEqual(after.status, PENDING)     # 没有被标成完成
+        self.assertIsNone(after.result)
+        self.assertTrue(any("丢弃" in e for e in events), events)
+
+    def test_failure_dropped_after_takeover(self) -> None:
+        """被接管后即使业务报错，也不该把接管者的任务记成失败。"""
+        from asr_polish.server import jobs
+        events: list[str] = []
+        pool = self._pool(events)
+        t = self.store.create("subs", {"target": "BV1xx"}, max_retries=0)
+        task = self.store.claim("worker-1")
+
+        def fake_run(_kind, _payload, progress):
+            self.store.requeue(t.id)
+            progress(0.1, "第一步")
+            raise RuntimeError("抓取失败")
+
+        with mock.patch.object(jobs, "run", fake_run):
+            pool._run("worker-1", task)
+
+        after = self.store.get(t.id)
+        self.assertEqual(after.status, PENDING)     # 不是 FAILED
+        self.assertIsNone(after.error)
+        self.assertTrue(any("丢弃" in e for e in events), events)
+
+    def test_normal_run_still_finishes(self) -> None:
+        """没被接管时行为不变，别把正常路径改坏。"""
+        from asr_polish.server import jobs
+        events: list[str] = []
+        pool = self._pool(events)
+        t = self.store.create("subs", {"target": "BV1xx"})
+        task = self.store.claim("worker-1")
+
+        with mock.patch.object(jobs, "run", lambda *_: {"ok": 1}):
+            pool._run("worker-1", task)
+
+        after = self.store.get(t.id)
+        self.assertEqual(after.status, DONE)
+        self.assertEqual(after.result, {"ok": 1})
+        self.assertTrue(any("完成" in e for e in events), events)
 
 
 class TestJobs(unittest.TestCase):

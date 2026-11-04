@@ -102,5 +102,42 @@ class TestExpandPages(unittest.TestCase):
         self.assertEqual(pages[1]["cid"], 22)
 
 
+class TestWriteAll(unittest.TestCase):
+    def test_writes_and_leaves_no_temp_files(self):
+        """原子写：先写同目录临时文件再 os.replace，不能留下半成品。"""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            written = export.write_all(out, "stem", ["txt", "srt"], _result())
+            self.assertEqual(len(written), 2)
+            names = sorted(p.name for p in out.iterdir())
+            self.assertEqual(names, ["stem.srt", "stem.txt"])
+            self.assertEqual((out / "stem.txt").read_text(encoding="utf-8"),
+                             "第一句\n第二句")
+
+    def test_skip_existing_keeps_old_file(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            (out / "stem.txt").write_text("旧内容", encoding="utf-8")
+            written = export.write_all(out, "stem", ["txt"], _result(),
+                                       skip_existing=True)
+            self.assertEqual(written, [])
+            self.assertEqual((out / "stem.txt").read_text(encoding="utf-8"),
+                             "旧内容")
+
+    def test_overwrites_atomically(self):
+        """覆盖时旧文件始终可读——不会出现「先截断再写」的窗口。"""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            target = out / "stem.txt"
+            target.write_text("旧" * 1000, encoding="utf-8")
+            export.write_all(out, "stem", ["txt"], _result())
+            text = target.read_text(encoding="utf-8")
+            self.assertEqual(text, "第一句\n第二句")
+            self.assertEqual([p.name for p in out.iterdir()], ["stem.txt"])
+
+
 if __name__ == "__main__":
     unittest.main()
