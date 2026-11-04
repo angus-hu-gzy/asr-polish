@@ -23,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
+from ..bili import cookie_status, current_min_interval, throttle_waited
 from .store import FAILED, PENDING, RUNNING, Store
 from .worker import WorkerPool
 
@@ -79,14 +80,23 @@ input,select,button{background:#1a212b;border:1px solid var(--line);color:var(--
 border-radius:6px;padding:6px 9px;font-size:12px;font-family:inherit}
 button{cursor:pointer}button:hover{border-color:#31404f}
 button.pri{background:#143a55;border-color:#1d5f8a;color:#cfe6ff}
+.banner{display:none;padding:9px 12px;border-radius:8px;margin-bottom:14px;font-size:12px;line-height:1.6}
+.banner.show{display:block}
+.banner.error{background:#3a1416;border:1px solid #6e2326;color:#ffb4ab}
+.banner.warn{background:#3a2e12;border:1px solid #6e5a1e;color:#e3b341}
+.banner.ok{background:#12291a;border:1px solid #1f5233;color:#7ee2a8}
+.banner .meta{opacity:.75;font-size:11px;margin-top:4px}
+.msg{color:var(--run);font-size:11px;margin-top:2px}
 </style></head>
 <body><div class="wrap">
 <h1>asr-polish 任务面板</h1>
 <p class="sub">每 3 秒自动刷新 · 数据来自 SQLite，进程重启不丢</p>
+<div id="banner" class="banner"></div>
 <div class="cards" id="cards"></div>
 <div class="ctl">
   <input id="target" placeholder="BV 号 / up:123 / search:关键词" style="width:280px">
   <button class="pri" id="submit">提交任务</button>
+  <button id="checklogin">检查登录态</button>
   <span class="sub" id="msg" style="margin:0"></span>
 </div>
 <table><thead><tr>
@@ -110,15 +120,39 @@ async function load(){
   $("rows").innerHTML = rows.map(t=>{
     const pct = Math.round((t.progress||0)*100);
     const err = t.error ? `<div class="err">${esc(t.error).slice(0,80)}</div>` : "";
+    const note = (t.status==="running" && t.message)
+      ? `<div class="msg">${esc(t.message).slice(0,90)}</div>` : "";
     return `<tr class="${t.status}-row">
       <td class="mono">${t.id}</td>
       <td>${esc(t.kind)}</td>
-      <td>${esc(t.payload && t.payload.target || "")}${err}</td>
+      <td>${esc(t.payload && t.payload.target || "")}${note}${err}</td>
       <td><div class="bar"><i style="width:${pct}%"></i></div></td>
       <td class="st ${t.status}">${t.status.toUpperCase()}</td>
       <td class="mono">${t.duration ? t.duration+"s" : (t.status==="running"?"…":"")}</td>
     </tr>`}).join("");
 }
+async function loadHealth(force){
+  let h;
+  try { h = await (await fetch("/api/health" + (force ? "?fresh=1" : ""))).json() }
+  catch(e){ return }
+  const c = h.cookie || {}, t = h.throttle || {}, b = $("banner");
+  b.className = "banner show " + (c.level || "ok");
+  const bits = [];
+  if (t.min_interval) bits.push("请求间隔 " + t.min_interval + "s");
+  else bits.push("未限速");
+  if (t.waited) bits.push("已为限速等待 " + t.waited + "s");
+  if (c.logged_in === true) bits.push("登录态已确认有效");
+  else if (c.logged_in === false) bits.push("登录态已失效");
+  else bits.push("登录态未确认");
+  if (c.age_days !== null && c.age_days !== undefined) bits.push("Cookie " + c.age_days + " 天前更新");
+  b.innerHTML = "<b>Cookie：</b>" + esc(c.note || "")
+    + (c.path ? ' <span class="mono" style="opacity:.7">' + esc(c.path) + "</span>" : "")
+    + '<div class="meta">' + esc(bits.join(" · ")) + "</div>";
+}
+$("checklogin").onclick = () => {
+  $("msg").textContent = "正在确认登录态…";
+  loadHealth(true).then(() => { $("msg").textContent = "" });
+};
 $("submit").onclick = async () => {
   const target = $("target").value.trim();
   if(!target) return;
@@ -130,7 +164,7 @@ $("submit").onclick = async () => {
   $("target").value = "";
   load();
 };
-load(); setInterval(load, 3000);
+load(); loadHealth(); setInterval(load, 3000); setInterval(loadHealth, 15000);
 </script></body></html>"""
 
 
@@ -195,10 +229,19 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if parts == ["api", "health"]:
+            # 默认验证登录态：只检查「文件存在、有 SESSDATA」是不够的——
+            # SESSDATA 可能时间没过期但服务端已注销，那样面板会一直显示绿色
+            # 「已配置」，用户却怎么抓都风控失败。验证结果缓存 5 分钟，
+            # 所以每 3 秒刷新的面板并不会真的每 3 秒去问一次 B站。
+            verify = (qs.get("verify") or ["1"])[0] not in ("0", "false", "no")
+            fresh = (qs.get("fresh") or ["0"])[0] in ("1", "true", "yes")
             self._json(200, {
                 "ok": True,
                 "workers": self.app.pool.status() if self.app.pool else [],
                 "stats": self.app.store.stats(),
+                "cookie": cookie_status(verify=verify, fresh=fresh),
+                "throttle": {"min_interval": current_min_interval(),
+                             "waited": round(throttle_waited(), 1)},
             })
             return
 

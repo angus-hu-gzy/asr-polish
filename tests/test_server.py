@@ -117,6 +117,19 @@ class TestRetry(_TempDB):
         self.store.claim("w1")
         self.assertEqual(self.store.fail(t.id, "挂了"), FAILED)
 
+    def test_success_after_retry_clears_error(self) -> None:
+        """重试后成功的任务不该保留上一次的报错——界面上会看起来像失败。"""
+        t = self.store.create("subs", {}, max_retries=2)
+        self.store.claim("w1")
+        self.store.fail(t.id, "第一次风控")
+        self.assertEqual(self.store.get(t.id).error, "第一次风控")
+        self.store.claim("w1")
+        self.store.finish(t.id, {"ok": True})
+        final = self.store.get(t.id)
+        self.assertEqual(final.status, DONE)
+        self.assertIsNone(final.error)
+        self.assertEqual(final.retries, 1)
+
     def test_requeue_failed(self) -> None:
         t = self.store.create("subs", {}, max_retries=0)
         self.store.claim("w1")
@@ -259,6 +272,12 @@ class TestHTTP(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertTrue(body["ok"])
         self.assertIn("stats", body)
+        # 面板靠这两个字段提示「Cookie 是否可用」「有没有在限速」
+        self.assertIn("cookie", body)
+        self.assertIn("level", body["cookie"])
+        self.assertIn("note", body["cookie"])
+        self.assertIn("throttle", body)
+        self.assertIn("min_interval", body["throttle"])
 
     def test_create_and_get(self) -> None:
         code, body = self._get("/api/tasks", "POST",

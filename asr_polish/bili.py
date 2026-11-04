@@ -28,12 +28,16 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+from .throttle import Throttle
 
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
@@ -70,6 +74,87 @@ class BiliError(Exception):
     """B站文本获取过程中的可预期错误。"""
 
 
+class BiliRiskControl(BiliError):
+    """被风控/限流拦下（code -352 / -412 / -799 / -509，或 HTTP 412 / 429）。
+
+    这类错误和「这条视频没有字幕」性质完全不同：**它不是单条视频的问题**，
+    而是当前 IP / 账号被临时限制了。继续打下一条只会延长封禁时间，所以上层
+    应当整体退避一段时间再继续，而不是把这条记成失败然后接着打。
+    """
+
+    def __init__(self, message: str, code: Optional[int] = None,
+                 retry_after: Optional[float] = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.retry_after = retry_after      # 服务端建议的等待秒数（若有）
+
+
+class BiliLoginRequired(BiliRiskControl):
+    """需要登录态（code -101 账号未登录 / -111 csrf 失败）。
+
+    UP 主投稿、合集这类接口对未登录请求直接返回风控失败。**退避没用**——
+    Cookie 不换，等多久都是同样的结果。所以单独成一个类型，让上层直接
+    给出「更新 Cookie」的提示，而不是傻等几分钟再失败一次。
+    """
+
+
+#: 风控类返回码。命中任何一个都意味着「现在不该继续请求」。
+_RISK_CODES = frozenset({-352, -412, -799, -509})
+#: 需要登录态才能继续的返回码。
+_LOGIN_CODES = frozenset({-101, -111})
+
+#: 全局节流器。默认 1 秒一个 API 请求——批量抓时这是「不被封」和「不太慢」
+#: 之间的保守取值，可用 configure() / CLI --min-interval 调整。
+_throttle = Throttle(min_interval=1.0)
+
+
+def configure(min_interval: Optional[float] = None,
+              jitter: Optional[float] = None,
+              enabled: Optional[bool] = None) -> None:
+    """调整全局限流参数。手工调小/关掉仅供测试与排障。"""
+    if enabled is not None and not enabled:
+        _throttle.configure(min_interval=0.0)
+        _throttle.reset()
+        return
+    _throttle.configure(min_interval=min_interval, jitter=jitter)
+    _throttle.reset()
+
+
+def current_min_interval() -> float:
+    """当前生效的请求间隔下限（秒）。"""
+    return _throttle.min_interval
+
+
+def throttle_waited() -> float:
+    """累计为遵守节流而等待的秒数。批量任务跑完后能看出「慢在哪」。"""
+    return _throttle.waited
+
+
+def _check_code(data: dict, what: str) -> None:
+    """检查 B站返回的业务码，把风控/未登录单独抛出来。
+
+    B站几乎所有接口都返回 ``{"code": 0, "message": "0", "data": ...}``，
+    风控时 ``code`` 是负数而 ``data`` 为 null。老代码只看 ``data`` 空不空，
+    于是风控被当成「这条视频取不到信息」——一条一条接着打，正好帮对方把
+    封禁续上。
+    """
+    code = data.get("code")
+    if code in (None, 0):
+        return
+    try:
+        code_i = int(code)
+    except (TypeError, ValueError):
+        raise BiliError(f"{what}返回了非数字 code：{code!r}") from None
+    msg = data.get("message") or ""
+    if code_i in _LOGIN_CODES:
+        raise BiliLoginRequired(
+            f"{what}需要登录态（code {code_i}：{msg}）", code=code_i)
+    if code_i in _RISK_CODES:
+        raise BiliRiskControl(
+            f"{what}触发风控（code {code_i}：{msg}）", code=code_i)
+    raise BiliError(f"{what}失败（code {code_i}：{msg}）")
+
+
 @dataclass
 class FetchResult:
     bvid: str
@@ -86,22 +171,28 @@ class FetchResult:
 
 # ── 基础 HTTP ────────────────────────────────────────────────
 
-def _opener(cookie_path: Optional[str] = None):
-    """构造带 Cookie 的 opener。
+def _resolve_cookie_path(cookie_path: Optional[str] = None) -> Optional[Path]:
+    """定位 cookies.txt：显式路径优先，其次按 _DEFAULT_COOKIE_PATHS 自动查找。
 
-    未显式指定时按 _DEFAULT_COOKIE_PATHS 自动查找——UP 主投稿、合集这类
-    接口对未登录请求会直接返回「风控校验失败」，必须带登录态。
+    三处（opener / fetch / cookie_status）共用这一个函数，避免各自的查找顺序
+    悄悄跑偏——README 承诺了三条路径，代码就必须都认。
     """
-    path: Optional[Path] = None
     if cookie_path:
         cand = Path(cookie_path).expanduser()
         if cand.exists():
-            path = cand
-    if path is None:
-        for p in _DEFAULT_COOKIE_PATHS:
-            if p.exists():
-                path = p
-                break
+            return cand
+    for p in _DEFAULT_COOKIE_PATHS:
+        if p.exists():
+            return p
+    return None
+
+
+def _opener(cookie_path: Optional[str] = None):
+    """构造带 Cookie 的 opener。
+
+    UP 主投稿、合集这类接口对未登录请求会直接返回「风控校验失败」，必须带登录态。
+    """
+    path = _resolve_cookie_path(cookie_path)
     if path is None:
         return urllib.request.build_opener()
     jar = http.cookiejar.MozillaCookieJar(str(path))
@@ -112,15 +203,203 @@ def _opener(cookie_path: Optional[str] = None):
     return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
 
 
+# ── Cookie 状态 ──────────────────────────────────────────────
+
+#: 登录态探测结果的缓存（秒）。面板每 3 秒刷一次，不能每次都真去问 B站。
+_LOGIN_TTL = 300.0
+_login_cache: dict = {"ts": 0.0, "value": None, "path": None}
+_login_lock = threading.Lock()
+
+
+def _has_sessdata(path: Path) -> bool:
+    """cookies.txt 里是否真有 SESSDATA（B站的登录凭证）。
+
+    只认 Mozilla 格式的 7 字段行，避免把注释行或别的站点的 cookie 当成登录态。
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 7 and parts[5] == "SESSDATA" and parts[6].strip():
+            return True
+    return False
+
+
+def cookie_status(cookie_path: Optional[str] = None,
+                  verify: bool = False, fresh: bool = False) -> dict:
+    """返回 Cookie 的可用性快照，供面板与 CLI 提示用。
+
+    默认只做本地检查（不联网）。``verify=True`` 时额外请求一次 nav 接口，
+    判断 SESSDATA 是否仍然有效——**这是判断 Cookie 过期的唯一可靠办法**，
+    文件存在、字段齐全都说明不了问题。``fresh=True`` 强制绕过登录态缓存。
+
+    返回字段：
+        path / found / parsable / has_sessdata / age_days / logged_in / level / note
+    level 取 ok / warn / error，面板直接按它上色。
+    """
+    path = _resolve_cookie_path(cookie_path)
+    if path is None:
+        return {
+            "path": None, "found": False, "parsable": False,
+            "has_sessdata": False, "age_days": None, "logged_in": None,
+            "level": "error",
+            "note": "没有找到 Cookie 文件。未登录时 UP 主投稿与合集接口必然返回"
+                    "「风控校验失败」，只能抓单个 BV 号。",
+        }
+
+    age_days: Optional[float] = None
+    try:
+        age_days = round((time.time() - path.stat().st_mtime) / 86400.0, 1)
+    except OSError:
+        age_days = None
+
+    jar = http.cookiejar.MozillaCookieJar(str(path))
+    parsable = True
+    try:
+        jar.load(ignore_discard=True, ignore_expires=True)
+    except (OSError, http.cookiejar.LoadError):
+        parsable = False
+    has_sessdata = _has_sessdata(path)
+    logged_in = verify_login(path, force=fresh) if (verify and parsable) else None
+
+    if not parsable:
+        level, note = "error", "Cookie 文件存在但无法解析（格式不对或已损坏）"
+    elif not has_sessdata:
+        level, note = "error", "Cookie 文件里没有 SESSDATA，等同于未登录"
+    elif logged_in is False:
+        level, note = "error", "SESSDATA 已失效（nav 接口返回未登录），请重新导出 Cookie"
+    elif logged_in is True:
+        level, note = "ok", "Cookie 有效，已登录"
+    elif age_days is not None and age_days > 30:
+        level = "warn"
+        note = "Cookie 已 %d 天未更新，可能已过期" % int(age_days)
+    else:
+        level, note = "ok", "已配置 Cookie"
+
+    return {
+        "path": str(path), "found": True, "parsable": parsable,
+        "has_sessdata": has_sessdata, "age_days": age_days,
+        "logged_in": logged_in, "level": level, "note": note,
+    }
+
+
+def verify_login(cookie_path: Optional[str] = None,
+                 ttl: float = _LOGIN_TTL,
+                 force: bool = False) -> Optional[bool]:
+    """请求 nav 接口确认登录态。结果缓存 ttl 秒。
+
+    返回 True/False。**只有「明确无法判断」才返回 None**（网络或风控问题）——
+    不确定不等于失效，不能因为探测失败就把用户的 Cookie 判死。
+
+    注意 ``code == -101`` 是明确结论（未登录），不是「未知」：B站的 SESSDATA
+    可能时间上没过期、服务端却已注销（改密码、主动退出、被踢下线）。只看文件
+    的过期时间永远发现不了这种情况。
+
+    缓存键里带上文件的 mtime：用户刚重新导出 Cookie 就该立刻生效，而不是
+    继续拿旧结论糊他 5 分钟。``force`` 可以再跳过缓存强制探一次。
+    """
+    path = _resolve_cookie_path(cookie_path)
+    key = str(path) if path else ""
+    if path is not None:
+        try:
+            key = "%s:%d" % (key, int(path.stat().st_mtime))
+        except OSError:
+            pass
+    now = time.monotonic()
+    with _login_lock:
+        if not force and _login_cache["path"] == key \
+                and now - _login_cache["ts"] < ttl:
+            return _login_cache["value"]
+    value: Optional[bool] = None
+    try:
+        data = _http_json("https://api.bilibili.com/x/web-interface/nav",
+                          cookie_path=cookie_path, timeout=15)
+    except BiliError:
+        value = None                     # 风控或网络问题：结论未知
+    else:
+        code = data.get("code")
+        inner = data.get("data") or {}
+        if code == -101:
+            value = False                # 明确：未登录
+        elif code in (0, None) and "isLogin" in inner:
+            value = bool(inner.get("isLogin"))
+    with _login_lock:
+        _login_cache.update({"ts": now, "value": value, "path": key})
+    return value
+
+
+def explain_risk(exc: BiliRiskControl) -> BiliRiskControl:
+    """把 -352 细分清楚：是「请求太快」还是「压根没登录」。
+
+    这两件事在返回码上长得一模一样，但处理方式相反：前者该退避，后者该换
+    Cookie（退避多久都没用）。区分办法是探一次 nav——结果有 5 分钟缓存，
+    不会因为诊断本身把请求量打上去。
+
+    返回 BiliLoginRequired 表示「是登录态问题」，其余原样返回。
+    """
+    if isinstance(exc, BiliLoginRequired):
+        return exc
+    if exc.code not in (-352, -412):
+        return exc
+    if verify_login() is False:
+        return BiliLoginRequired(
+            "接口返回 -352（风控校验失败），但 nav 显示当前未登录。"
+            "UP 主投稿、合集、搜索在未登录时必然返回 -352，"
+            "这是登录态问题，不是速率问题，退避无效",
+            code=exc.code)
+    return exc
+
+
+def _reset_login_cache() -> None:
+    """清空登录态缓存（Cookie 被更新后调用，测试也会用）。"""
+    with _login_lock:
+        _login_cache.update({"ts": 0.0, "value": None, "path": None})
+
+
 def _http_json(url: str, cookie_path: Optional[str] = None,
                timeout: int = 60) -> dict:
+    """GET 一个返回 JSON 的接口。
+
+    所有 B站 API 请求都经过这里，所以风控的两道防线都放在这：
+
+    1. **发之前**先过 ``_throttle``，保证同一个 host 上有最小间隔；
+    2. **收之后**把 HTTP 412/429 与「返回 HTML 验证页」识别成风控，
+       而不是当成「这条视频取不到」。
+    """
+    _throttle.wait(url)
     req = urllib.request.Request(url, headers={
         "User-Agent": _UA, "Referer": "https://www.bilibili.com/"})
-    with _opener(cookie_path).open(req, timeout=timeout) as resp:
-        raw = resp.read()
-        if resp.headers.get("Content-Encoding") == "gzip":
-            raw = gzip.decompress(raw)
-        return json.loads(raw.decode("utf-8"))
+    try:
+        with _opener(cookie_path).open(req, timeout=timeout) as resp:
+            raw = resp.read()
+            if resp.headers.get("Content-Encoding") == "gzip":
+                raw = gzip.decompress(raw)
+    except urllib.error.HTTPError as e:
+        if e.code in (412, 429):
+            raise BiliRiskControl(
+                f"请求被 B站拦截（HTTP {e.code}）", code=e.code) from e
+        if e.code in (401, 403):
+            raise BiliLoginRequired(
+                f"请求被拒绝（HTTP {e.code}），Cookie 可能已失效", code=e.code) from e
+        raise BiliError(f"接口返回 HTTP {e.code}：{url.split('?')[0]}") from e
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise BiliError(
+            f"请求失败（{type(e).__name__}）：{url.split('?')[0]}") from e
+
+    text = raw.decode("utf-8", "replace")
+    if text.lstrip()[:1] == "<":
+        # 正常接口不会返回 HTML。这里出现 HTML 基本只有一种情况：
+        # 被导向了人机验证页——按风控处理，等一会再来。
+        raise BiliRiskControl("接口返回了 HTML 而非 JSON（疑似人机验证页）")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        raise BiliError(f"接口返回内容不是合法 JSON：{text[:80]!r}") from e
 
 
 def _bcut_http(url: str, method: str = "GET", form: Optional[dict] = None,
@@ -175,9 +454,11 @@ def get_video_info(bvid: str, cookie_path: Optional[str] = None) -> dict:
     data = _http_json(
         f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}",
         cookie_path=cookie_path)
+    _check_code(data, f"取视频信息 {bvid}")
     d = data.get("data") or {}
     if not d:
-        raise BiliError(f"未取到视频信息（bvid 可能错误或被风控）：{data.get('message')}")
+        raise BiliError(
+            f"未取到视频信息（bvid 错误或视频已删除）：{data.get('message')}")
     return {
         "bvid": bvid,
         "aid": d.get("aid"),
@@ -212,23 +493,16 @@ def _fetch_subtitle_detail(video: dict,
 
     lan 为 B站字幕语言码：ai-zh 表示自动生成（ASR 产物，天然带错字），
     zh-CN 等表示人工上传字幕（文本本身基本正确）。
-    """
-    nav = _http_json("https://api.bilibili.com/x/web-interface/nav",
-                     cookie_path=cookie_path)
-    wbi = ((nav.get("data") or {}).get("wbi_img") or {})
-    img_key = Path(wbi.get("img_url") or "").stem
-    sub_key = Path(wbi.get("sub_url") or "").stem
-    if not img_key or not sub_key:
-        return None
 
-    mixin_key = "".join((img_key + sub_key)[i] for i in _WBI_MIXIN_TAB)[:32]
-    params = {"bvid": video["bvid"], "aid": video["aid"],
-              "cid": video["cid"], "wts": int(time.time())}
-    query = urllib.parse.urlencode(sorted(params.items()))
-    w_rid = hashlib.md5((query + mixin_key).encode()).hexdigest()
-    data = _http_json(
-        f"https://api.bilibili.com/x/player/wbi/v2?{query}&w_rid={w_rid}",
-        cookie_path=cookie_path)
+    签名密钥走 ``_signed_query`` 的进程内缓存。原先这里每次都单独请求一次
+    ``nav`` 接口取密钥——批量抓 50 条就是 50 个多余的请求，纯粹在给风控
+    递理由。
+    """
+    query = _signed_query({"bvid": video["bvid"], "aid": video["aid"],
+                           "cid": video["cid"]}, cookie_path)
+    data = _http_json(f"https://api.bilibili.com/x/player/wbi/v2?{query}",
+                      cookie_path=cookie_path)
+    _check_code(data, "取字幕列表")
 
     subs = ((data.get("data") or {}).get("subtitle") or {}).get("subtitles") or []
     pick = _pick_subtitle(subs)
@@ -270,6 +544,11 @@ def _wbi_mixin_key(cookie_path: Optional[str] = None) -> str:
     if not img_key or not sub_key:
         raise BiliError("取不到 wbi 签名密钥（nav 接口异常）")
     raw = img_key + sub_key
+    if len(raw) < 64:
+        # 重排表最大下标 63，长度不够会直接 IndexError——那是个看不懂的崩溃，
+        # 不如明确告诉用户接口变了。
+        raise BiliError(
+            "wbi 密钥长度异常（%d，应为 64），B站接口可能已变更" % len(raw))
     mixin = "".join(raw[i] for i in _WBI_MIXIN_TAB)[:32]
     _wbi_cache[key] = mixin
     return mixin
@@ -314,7 +593,7 @@ def list_up_videos(mid: int, cookie_path: Optional[str] = None,
             f"https://api.bilibili.com/x/space/wbi/arc/search?{q}",
             cookie_path=cookie_path)
         if data.get("code") != 0:
-            raise BiliError(f"取 UP 主投稿失败：{data.get('message')}")
+            _check_code(data, "取 UP 主投稿")
         d = data.get("data") or {}
         vlist = ((d.get("list") or {}).get("vlist")) or []
         if not vlist:
@@ -345,7 +624,7 @@ def list_season(mid: int, season_id: int, cookie_path: Optional[str] = None,
                f"?mid={mid}&season_id={season_id}&page_num={pn}&page_size=30")
         data = _http_json(url, cookie_path=cookie_path)
         if data.get("code") != 0:
-            raise BiliError(f"取合集失败：{data.get('message')}")
+            _check_code(data, "取合集")
         archives = (data.get("data") or {}).get("archives") or []
         if not archives:
             break
@@ -384,7 +663,7 @@ def search_videos(keyword: str, cookie_path: Optional[str] = None,
             "https://api.bilibili.com/x/web-interface/wbi/search/type?" + q,
             cookie_path=cookie_path)
         if data.get("code") != 0:
-            raise BiliError(f"搜索失败：{data.get('message')}")
+            _check_code(data, "搜索")
         result = ((data.get("data") or {}).get("result")) or []
         if not result:
             break
@@ -509,11 +788,10 @@ def fetch(url: str, cookie_path: Optional[str] = None,
 
     auto_cookie = False
     if not cookie_path:
-        for p in _DEFAULT_COOKIE_PATHS:
-            if p.exists():
-                cookie_path = str(p)
-                auto_cookie = True
-                break
+        found = _resolve_cookie_path()
+        if found is not None:
+            cookie_path = str(found)
+            auto_cookie = True
 
     video = get_video_info(bvid, cookie_path=cookie_path)
     result = FetchResult(
@@ -549,6 +827,13 @@ def fetch(url: str, cookie_path: Optional[str] = None,
     if not allow_asr:
         result.source = "无字幕"
         result.warnings.append("该视频没有可用字幕轨（未启用必剪 ASR 兜底）")
+        # B站的 AI 字幕（lan=ai-zh）需要登录态才给。未登录时「取不到字幕」
+        # 和「这视频本来就没字幕」长得一模一样，必须说清楚，否则用户会以为
+        # 是这个视频的问题。
+        if verify_login(cookie_path) is False:
+            result.warnings.append(
+                "当前未登录：B站的 AI 字幕需要登录态才能取到，"
+                "所以上面的「无字幕」可能并不准确——更新 Cookie 后再试一次")
         return result
 
     result.warnings.append("无字幕轨，音频将上传至 B站必剪服务做云端转写（公开视频音轨，风险低）")

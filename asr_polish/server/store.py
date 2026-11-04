@@ -146,6 +146,9 @@ class Store:
     def __init__(self, path: str = "tasks.db") -> None:
         self.path = str(path)
         self._local = threading.local()
+        #: 所有线程建过的连接。线程本地存储没法枚举，只能自己记账。
+        self._all: list[sqlite3.Connection] = []
+        self._all_lock = threading.Lock()
         with self._db() as conn:
             conn.execute("PRAGMA journal_mode=WAL")   # 持久属性，设一次即可
             conn.executescript(_SCHEMA)
@@ -162,16 +165,25 @@ class Store:
         """
         conn = getattr(self._local, "conn", None)
         if conn is None:
-            conn = sqlite3.connect(self.path, timeout=15.0)
+            # check_same_thread=False 是为了 close()：连接本身仍是线程私有的
+            # （一条线程一条），但关闭时是在主线程上统一关，默认的线程检查
+            # 会直接拒绝，导致 worker 线程的连接全部泄漏。
+            conn = sqlite3.connect(self.path, timeout=15.0,
+                                   check_same_thread=False)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA busy_timeout=15000")
             self._local.conn = conn
+            with self._all_lock:
+                self._all.append(conn)
         return conn
 
     def _reset_conn(self) -> None:
         """连接状态不可靠时直接丢弃，下次重建。"""
         conn = getattr(self._local, "conn", None)
         if conn is not None:
+            with self._all_lock:
+                if conn in self._all:
+                    self._all.remove(conn)
             try:
                 conn.close()
             except Exception:
@@ -179,7 +191,20 @@ class Store:
             self._local.conn = None
 
     def close(self) -> None:
-        self._reset_conn()
+        """关闭**所有线程**创建过的连接。
+
+        只关当前线程那条是不够的：worker 线程退出后它的连接没人负责，
+        在 Windows 上会把库文件锁住（测试里表现为删不掉临时目录、以及
+        GC 时报 ``unclosed database``）。
+        """
+        with self._all_lock:
+            conns, self._all = self._all, []
+        for conn in conns:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        self._local = threading.local()
 
     @contextmanager
     def _db(self):
@@ -352,6 +377,11 @@ class Store:
         if error is not None:
             sets.append("error=?")
             args.append(error)
+        elif dst == DONE:
+            # 重试后成功的任务不该继续显示上一次的报错——否则面板里一条
+            # 「完成」的任务底下挂着一行红字，看的人只会以为它失败了。
+            sets.append("error=?")
+            args.append(None)
         if progress is not None:
             sets.append("progress=?")
             args.append(progress)

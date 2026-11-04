@@ -14,21 +14,85 @@
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
 from .. import export
-from ..bili import (BiliError, expand_pages, extract_bvid, extract_mid, fetch,
-                   get_video_info, list_season, list_up_videos, search_videos)
+from ..bili import (BiliError, BiliLoginRequired, BiliRiskControl, explain_risk,
+                    expand_pages, extract_bvid, extract_mid, fetch,
+                    get_video_info, list_season, list_up_videos, search_videos)
 
 Progress = Callable[[float, str], None]
 
 #: 单条视频抓取失败的容忍度：全失败才判 job 失败
 _MAX_ERRORS_KEPT = 5
 
+#: 被风控后依次等待的秒数。取 60 / 180 / 300 的理由：
+#: B站的临时限制多在几分钟内解除，等太短等于白等（还会加重判定），
+#: 等太长用户会以为卡死。三档合计约 9 分钟，之后仍被拦就是策略问题了，
+#: 该让任务失败并提示用户降速，而不是继续耗着。
+_RISK_BACKOFF = (60.0, 180.0, 300.0)
+
+#: 退避时把等待切成小段，每段都刷新心跳与进度说明。
+#: 不分段的话，退避 300 秒期间任务没有任何心跳，会被回收器判成僵尸重新排队。
+_BACKOFF_TICK = 15.0
+
+#: 可替换的 sleep（测试用，避免真的等几分钟）
+_sleep = time.sleep
+
 
 def _noop(_frac: float, _msg: str) -> None:
     pass
+
+
+def _sleep_with_heartbeat(total: float, progress: Progress,
+                          frac: float, note: str) -> None:
+    """分段睡眠，期间持续汇报进度——既刷新心跳，也让用户在面板上看见"在等"。"""
+    remaining = float(total)
+    while remaining > 0:
+        step = min(_BACKOFF_TICK, remaining)
+        progress(frac, "%s，还需 %ds" % (note, int(remaining + 0.999)))
+        _sleep(step)
+        remaining -= step
+
+
+def _with_risk_backoff(fn: Callable, progress: Progress, frac: float,
+                       what: str) -> object:
+    """执行 fn()；遇到风控就退避后重试同一个调用。
+
+    与「把这一条记成失败、接着打下一条」的区别很关键：风控是按 IP / 账号
+    记的，不是按单条视频记的。继续打只会让限制延长，而且剩余几十条大概率
+    全失败——用户拿到一堆假失败，还得自己去猜原因。
+
+    ``BiliLoginRequired`` 直接上抛：Cookie 没换，等多久结果都一样。
+    """
+    last: Optional[BiliRiskControl] = None
+    for attempt in range(len(_RISK_BACKOFF) + 1):
+        try:
+            return fn()
+        except BiliLoginRequired:
+            raise
+        except BiliRiskControl as e:
+            # -352 有两种成因：请求太快，或者压根没登录。后者退避多久都没用，
+            # 所以先探一次登录态再决定是「等」还是「让用户换 Cookie」。
+            explained = explain_risk(e)
+            if isinstance(explained, BiliLoginRequired):
+                raise explained from e
+            last = explained
+            if attempt >= len(_RISK_BACKOFF):
+                break
+            wait = _RISK_BACKOFF[attempt]
+            _sleep_with_heartbeat(
+                wait, progress, frac,
+                "第 %d 次被风控（%s），退避 %ds 后重试"
+                % (attempt + 1, what, int(wait)))
+    raise RuntimeError(
+        "连续 %d 次被风控（最后一次：%s）。已累计退避 %d 秒仍被拦，"
+        "继续重试只会延长限制。建议：把 --min-interval 调大（例如 3）、"
+        "降低单次任务条数，或更新 Cookie 后重试。"
+        % (len(_RISK_BACKOFF) + 1, last,
+           int(sum(_RISK_BACKOFF)))) from last
 
 
 def resolve_targets(target: str, limit: Optional[int] = None,
@@ -86,8 +150,18 @@ def run_subs(payload: dict, progress: Progress = _noop) -> dict:
         want = {int(x) for x in want_pages.split(",") if x.strip().isdigit()}
 
     progress(0.02, "解析目标")
-    targets = resolve_targets(target, limit=limit,
-                              pages=int(payload.get("search_pages") or 1))
+    try:
+        targets = _with_risk_backoff(
+            lambda: resolve_targets(
+                target, limit=limit,
+                pages=int(payload.get("search_pages") or 1)),
+            progress, 0.02, "解析目标")
+    except BiliLoginRequired as e:
+        raise RuntimeError(
+            "需要登录态：%s。\n"
+            "修复办法：重新导出 cookies.txt，放到 README「登录态」一节列出的"
+            "任一位置（或用 --cookie 指定），再重试；"
+            "只想抓单个视频的话可以改用 BV 号。" % e) from e
     if not targets:
         raise ValueError("没有找到可处理的视频")
     if limit and len(targets) > limit:
@@ -99,9 +173,13 @@ def run_subs(payload: dict, progress: Progress = _noop) -> dict:
     n_ok = n_nosub = n_fail = 0
 
     for i, bvid in enumerate(targets, 1):
-        row = {"bvid": bvid, "title": "", "parts": 0, "nosub": 0, "error": ""}
+        row = {"bvid": bvid, "title": "", "parts": 0, "nosub": 0,
+               "error": "", "note": ""}
+        frac_hint = 0.05 + 0.93 * ((i - 1) / total)
         try:
-            info = get_video_info(bvid)
+            info = _with_risk_backoff(
+                lambda bv=bvid: get_video_info(bv),
+                progress, frac_hint, "取视频信息")
             row["title"] = info.get("title") or bvid
             total_pages = len(info.get("pages") or []) or 1
             pages = expand_pages(info)
@@ -112,8 +190,10 @@ def run_subs(payload: dict, progress: Progress = _noop) -> dict:
                 if payload.get("stop"):
                     break
                 try:
-                    res = fetch(bvid, page=p["index"],
-                                allow_asr=bool(payload.get("asr")))
+                    res = _with_risk_backoff(
+                        lambda bv=bvid, ix=p["index"]: fetch(
+                            bv, page=ix, allow_asr=bool(payload.get("asr"))),
+                        progress, frac_hint, "取第 %s P" % p["index"])
                 except BiliError as e:
                     n_fail += 1
                     errors.append("%s P%s: %s" % (bvid, p["index"], e))
@@ -121,6 +201,10 @@ def run_subs(payload: dict, progress: Progress = _noop) -> dict:
                 if not res.segments:
                     row["nosub"] += 1
                     n_nosub += 1
+                    if res.warnings:
+                        # 例如「未登录导致取不到 AI 字幕」——不带出来用户只会
+                        # 以为这些视频本来就没字幕。
+                        row["note"] = res.warnings[-1][:160]
                     continue
                 if payload.get("correct"):
                     from ..correction import correct_text
@@ -134,6 +218,13 @@ def run_subs(payload: dict, progress: Progress = _noop) -> dict:
                                  skip_existing=bool(payload.get("skip_existing")))
                 row["parts"] += 1
                 n_ok += 1
+        except BiliLoginRequired as e:
+            # Cookie 没换，等多久都是同样的结果；整批都没戏，立刻停。
+            raise RuntimeError(
+                "需要登录态：%s。\n"
+                "修复办法：重新导出 cookies.txt，放到 README「登录态」一节列出的"
+                "任一位置（或用 --cookie 指定），再重试；"
+                "只想抓单个视频的话可以改用 BV 号。" % e) from e
         except BiliError as e:
             row["error"] = str(e)
             n_fail += 1

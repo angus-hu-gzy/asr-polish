@@ -139,11 +139,14 @@ def _cmd_fetch(args: argparse.Namespace) -> None:
 def _cmd_subs(args: argparse.Namespace) -> None:
     """批量抓字幕到文件：单视频 / 多 P / UP 主 / 合集。"""
     from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
 
     from . import export
-    from .bili import (BiliError, expand_pages, extract_bvid, extract_mid,
-                       fetch, get_video_info, list_season, list_up_videos,
-                       search_videos)
+    from .bili import (BiliError, BiliLoginRequired, configure, expand_pages,
+                       extract_bvid, extract_mid, fetch, get_video_info,
+                       list_season, list_up_videos, search_videos)
+
+    configure(min_interval=args.min_interval)
 
     try:
         formats = export.parse_formats(args.format)
@@ -178,6 +181,12 @@ def _cmd_subs(args: argparse.Namespace) -> None:
                     targets.append(bv)
                 else:
                     print(f"跳过无法识别：{t}", file=sys.stderr)
+    except BiliLoginRequired as e:
+        print(f"错误：{e}\n"
+              "登录态已失效。请重新导出 cookies.txt，放到 README「登录态」"
+              "一节列出的任一位置（或用 --cookie 指定）后重试。",
+              file=sys.stderr)
+        sys.exit(1)
     except (BiliError, ValueError) as e:
         print(f"错误：{e}", file=sys.stderr)
         sys.exit(1)
@@ -195,11 +204,22 @@ def _cmd_subs(args: argparse.Namespace) -> None:
     if args.pages.strip().lower() != "all":
         want = {int(x) for x in args.pages.split(",") if x.strip().isdigit()}
 
+    #: Cookie 失效时整批立刻收手。否则几十条视频会一条条地失败，
+    #: 每条都等一个 --min-interval，用户干等几分钟才看到「全是登录问题」。
+    abort = threading.Event()
+
     def grab(bvid: str) -> dict:
         row = {"bvid": bvid, "title": "", "ok": 0, "nosub": 0, "fail": 0,
                "err": ""}
+        if abort.is_set():
+            row["err"] = "已中止（登录态失效）"
+            return row
         try:
             info = get_video_info(bvid, cookie_path=args.cookie)
+        except BiliLoginRequired as e:
+            abort.set()
+            row["fail"], row["err"] = 1, str(e)
+            return row
         except BiliError as e:
             row["fail"], row["err"] = 1, str(e)
             return row
@@ -212,6 +232,11 @@ def _cmd_subs(args: argparse.Namespace) -> None:
             try:
                 res = fetch(bvid, cookie_path=args.cookie, page=p["index"],
                             allow_asr=args.asr)
+            except BiliLoginRequired as e:
+                abort.set()
+                row["fail"] += 1
+                row["err"] = str(e)
+                continue
             except BiliError as e:
                 row["fail"] += 1
                 row["err"] = str(e)
@@ -254,11 +279,22 @@ def _cmd_subs(args: argparse.Namespace) -> None:
                 row = fut.result()
                 rows.append(row)
                 show(i, total, row)
+                if abort.is_set():
+                    for f in futs:
+                        f.cancel()
+                    break
     else:
         for i, bv in enumerate(targets, 1):
             row = grab(bv)
             rows.append(row)
             show(i, total, row)
+            if abort.is_set():
+                break
+
+    if abort.is_set():
+        print("\n登录态已失效，已中止剩余条目。\n"
+              "修复办法：重新导出 cookies.txt，放到 README「登录态」一节列出的"
+              "任一位置（或用 --cookie 指定）。", file=sys.stderr)
 
     ok = sum(r["ok"] for r in rows)
     nosub = sum(r["nosub"] for r in rows)
@@ -301,7 +337,9 @@ def _api(server: str, path: str, payload: Optional[dict] = None,
 
 
 def _cmd_serve(args: argparse.Namespace) -> None:
+    from . import bili
     from .server import serve
+    bili.configure(min_interval=args.min_interval)
     serve(host=args.host, port=args.port, db=args.db,
           workers=args.workers, stale_after=args.stale_after)
 
@@ -445,7 +483,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_subs.add_argument("--pages", default="all",
                         help="多 P 视频取哪几集，如 1,2,5 或 all（默认 all）")
     p_subs.add_argument("-j", "--jobs", type=int, default=3,
-                        help="并发数（默认 3，过高易触发风控）")
+                        help="并发数（默认 3）。请求速率由 --min-interval 控制，"
+                             "调大并发只加速音频下载与本地处理")
+    p_subs.add_argument("--min-interval", type=float, default=1.0,
+                        help="同一域名两次请求的最小间隔秒数（默认 1.0，含 ±30%% 抖动）。"
+                             "批量抓时不要调小，否则会触发风控")
     p_subs.add_argument("--cookie", default=None,
                         help="cookies.txt 路径（默认自动查找）")
     p_subs.add_argument("--asr", action="store_true",
@@ -469,6 +511,9 @@ def build_parser() -> argparse.ArgumentParser:
                          help="worker 数量（默认 2）")
     p_serve.add_argument("--stale-after", type=float, default=600.0,
                          help="任务多久没心跳就判定僵尸并回收，单位秒（默认 600）")
+    p_serve.add_argument("--min-interval", type=float, default=1.0,
+                         help="同一域名两次请求的最小间隔秒数（默认 1.0，含 ±30%% 抖动）。"
+                              "风控频繁时调到 2~3")
     p_serve.set_defaults(func=_cmd_serve)
 
     p_submit = sub.add_parser(
