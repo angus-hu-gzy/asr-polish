@@ -261,18 +261,28 @@ print(report.summary())
 
 ## 安装
 
-核心能力零第三方依赖，Python 3.9+ 即可。
+**取字幕、订正、评分都不需要第三方依赖**，Python 3.9+ 即可：
 
 ```bash
-pip install -e .              # 只装核心（订正 / 交叉验证 / 打分）
-pip install -e .[bilibili]    # 额外支持从 B站视频取文本（引入 yt-dlp）
+pip install -e .              # 全部能力，零第三方依赖
+pip install -e .[bilibili]    # 只在「无字幕视频要转写」时需要（引入 yt-dlp）
 ```
 
+> `yt-dlp` 仅在「视频没有字幕轨 → 转走必剪云端 ASR」时才被 import。有字幕的视频（含 B站 AI 字幕）不装它也能取。
+>
 > 当前尚未发布 PyPI，请用上面的源码安装方式；发布后即可 `pip install asr-polish`（或 `asr-polish[bilibili]`）。
 
 装好后即可用命令行工具 `asr-polish`：
 
 ```bash
+# 从 B站视频取文本（字幕轨优先，无字幕走必剪云端 ASR）
+asr-polish fetch "https://www.bilibili.com/video/BVxxxxxxxxxx"
+asr-polish fetch BVxxxxxxxxxx --out transcript.txt   # 文本存文件
+
+# 批量抓字幕到文件（txt / srt / json / md）
+asr-polish subs BVxxxxxxxxxx -f txt,srt -o ./subs
+asr-polish subs --up 329954990 --limit 20 -j 3       # 某 UP 主最新 20 条
+
 # 术语订正
 asr-polish correct "今天讲色考和PASS，用福拉斯克搭微服务，讲h t t p和k8s"
 
@@ -281,14 +291,6 @@ asr-polish assess "转写文本" --duration 1316
 
 # 交叉验证两个转写文本文件
 asr-polish crosscheck cloud.txt local.txt
-
-# 从 B站视频取文本（字幕轨优先，无字幕走必剪云端 ASR）
-asr-polish fetch "https://www.bilibili.com/video/BVxxxxxxxxxx"
-asr-polish fetch BVxxxxxxxxxx --out transcript.txt   # 文本存文件
-
-# 批量抓字幕到文件（txt / srt / json / md）
-asr-polish subs BVxxxxxxxxxx -f txt,srt -o ./subs
-asr-polish subs --up 329954990 --limit 20 -j 3       # 某 UP 主最新 20 条
 
 # 词表管理
 asr-polish lexicon list                    # 列出词表
