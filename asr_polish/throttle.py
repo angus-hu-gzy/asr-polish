@@ -41,7 +41,10 @@ def host_of(url: str) -> str:
 
 
 class Throttle:
-    """保证同一 host 上两次请求之间有最小间隔。
+    """保证同一 host 上两次请求之间有间隔。
+
+    间隔不是固定值：目标值为 ``min_interval``，再按 ``jitter`` 上下浮动
+    （默认 ±30%，即 1.0 秒会落在 0.7～1.3 秒之间）。别把它当硬下限用。
 
     线程安全。锁只保护时间账本的读写，等待在锁外进行——否则一个 worker 在等
     api.bilibili.com 的间隔时，会把要访问必剪的另一个 worker 一起堵住。
