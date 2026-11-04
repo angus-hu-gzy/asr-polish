@@ -1,0 +1,9 @@
+#!/bin/sh
+# 推标签前确认这个提交的 CI 是绿的，红的就拦住。
+#
+# 装：  git config core.hooksPath tools/hooks
+# 绕过：ASR_POLISH_SKIP_CI=1 git push origin v1.0.0
+#       git push --no-verify origin v1.0.0
+#
+# 只管标签，推分支一律放行——日常提交不值得为此等 CI。
+exec "${PYTHON:-python}" "$(git rev-parse --show-toplevel)/tools/ci_guard.py" --hook

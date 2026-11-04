@@ -481,12 +481,20 @@ asr-polish/
 │   ├── eval_against_human.py  # 人工字幕 vs AI 字幕，算真实 CER
 │   ├── collect_corpus.py      # 采集 AI 字幕语料（给上面两个基准用）
 │   ├── audit_corrections.py   # 语料审计：误伤
-│   └── audit_variants.py      # 语料审计：哪些变体其实是常用词
+│   ├── audit_variants.py      # 语料审计：哪些变体其实是常用词
+│   ├── ci_guard.py            # 打标签前的 CI 闸门（0 绿 / 1 红或未完成 / 2 查不到）
+│   └── hooks/pre-push         # 推标签时自动跑 ci_guard，推分支不受影响
 └── tests/
-    ├── test_basic.py      # 核心能力 + 误伤回归 + medium 用例测试
-    ├── test_lexicon_io.py # 词表导入/导出测试
-    ├── test_export.py     # 四种导出格式 + 文件名清洗
-    └── test_server.py     # 状态机 / 并发抢任务 / 重试 / 僵尸回收 / HTTP
+    ├── test_basic.py          # 核心能力 + 误伤回归 + medium 用例
+    ├── test_lexicon_io.py     # 词表导入/导出
+    ├── test_export.py         # 四种导出格式 + 文件名清洗 + 原子写
+    ├── test_risk.py           # 风控识别、退避重试、Cookie 状态
+    ├── test_throttle.py       # 节流器
+    ├── test_cli.py            # 命令行健壮性（管道编码、--only）
+    ├── test_cookie_import.py  # Cookie 解析与写入（含 #HttpOnly_）
+    ├── test_server.py         # 状态机 / 并发抢任务 / 重试 / 僵尸回收 / HTTP
+    ├── test_jobs_outcome.py   # 批量任务四态 + 只重跑失败条目
+    └── test_ci_guard.py       # 标签闸门：按提交判定、标签对象解引用、只拦标签
 ```
 
 ## 变更记录
