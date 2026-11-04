@@ -146,7 +146,8 @@ def _cmd_subs(args: argparse.Namespace) -> None:
     from . import export
     from .bili import (BiliError, BiliLoginRequired, configure, expand_pages,
                        extract_bvid, extract_mid, fetch, get_video_info,
-                       list_season, list_up_videos, search_videos)
+                       group_only_pages, list_season, list_up_videos,
+                       parse_only_targets, search_videos)
 
     configure(min_interval=args.min_interval)
 
@@ -157,8 +158,16 @@ def _cmd_subs(args: argparse.Namespace) -> None:
         sys.exit(2)
 
     targets: list[str] = []
+    only_pages: dict = {}
     try:
-        if args.up:
+        only = parse_only_targets(args.only)
+        if only is not None:
+            # --only 直接给定 BV 号：不再解析 targets/--up/--season/--search。
+            # 重新解析的话，UP 主投稿一变，跑的就变成「现在最新的 N 条」，
+            # 而不是刚才失败的那几条。
+            only_pages = group_only_pages(only)
+            targets = list(only_pages)
+        elif args.up:
             mid = extract_mid(args.up)
             if not mid:
                 print(f"错误：无法识别 UP 主 mid：{args.up}", file=sys.stderr)
@@ -212,7 +221,7 @@ def _cmd_subs(args: argparse.Namespace) -> None:
 
     def grab(bvid: str) -> dict:
         row = {"bvid": bvid, "title": "", "ok": 0, "nosub": 0, "fail": 0,
-               "err": ""}
+               "err": "", "multi": False, "failed": []}
         if abort.is_set():
             row["err"] = "已中止（登录态失效）"
             return row
@@ -221,15 +230,22 @@ def _cmd_subs(args: argparse.Namespace) -> None:
         except BiliLoginRequired as e:
             abort.set()
             row["fail"], row["err"] = 1, str(e)
+            row["failed"].append((None, str(e)))
             return row
         except BiliError as e:
             row["fail"], row["err"] = 1, str(e)
+            row["failed"].append((None, str(e)))
             return row
         row["title"] = info["title"]
         total_pages = len(info.get("pages") or []) or 1
+        row["multi"] = total_pages > 1
         pages = expand_pages(info)
         if want is not None:
             pages = [p for p in pages if p["index"] in want]
+        restrict = only_pages.get(bvid)
+        if restrict is not None:
+            # --only 指定了分 P：只跑那几个，别把已经成功的重做一遍。
+            pages = [p for p in pages if p["index"] in restrict]
         for p in pages:
             try:
                 res = fetch(bvid, cookie_path=args.cookie, page=p["index"],
@@ -238,10 +254,12 @@ def _cmd_subs(args: argparse.Namespace) -> None:
                 abort.set()
                 row["fail"] += 1
                 row["err"] = str(e)
+                row["failed"].append((p["index"], str(e)))
                 continue
             except BiliError as e:
                 row["fail"] += 1
                 row["err"] = str(e)
+                row["failed"].append((p["index"], str(e)))
                 continue
             if not res.segments:
                 row["nosub"] += 1
@@ -302,9 +320,26 @@ def _cmd_subs(args: argparse.Namespace) -> None:
     nosub = sum(r["nosub"] for r in rows)
     fail = sum(r["fail"] for r in rows)
     done = sum(1 for r in rows if r["ok"])
-    print(f"\n视频 {total} 个：有字幕 {done}，无字幕 {nosub} 段，失败 {fail} 次",
+    if not fail and not nosub:
+        verdict = "全部成功（%d 段）" % ok
+    elif fail and not ok and not nosub:
+        verdict = "全部失败"
+    elif not ok:
+        verdict = "没有产出：%d 段都没有字幕" % nosub
+    else:
+        verdict = "部分成功"
+    print(f"\n结果：{verdict}", file=sys.stderr)
+    print(f"视频 {total} 个：有字幕 {done}，无字幕 {nosub} 段，失败 {fail} 次",
           file=sys.stderr)
     print(f"输出目录：{outdir.resolve()}", file=sys.stderr)
+
+    #: 「部分成功」时给出可直接复制的重跑命令——20 条成了 18 条，
+    #: 用户要的是补那 2 条，不是把 20 条重抓一遍（重抓还会再吃一次风控）。
+    retry = ["%s#%s" % (r["bvid"], p) if (p and r["multi"]) else r["bvid"]
+             for r in rows for p, _e in r["failed"]]
+    if retry and not abort.is_set():
+        print("\n只重跑失败的 %d 条（已成功的不会重做）：\n  asr-polish subs "
+              "--only %s" % (len(retry), " ".join(retry)), file=sys.stderr)
     if fail and not ok:
         sys.exit(2)
 
@@ -554,6 +589,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="抓合集/系列：--season <mid> <season_id>")
     p_subs.add_argument("--search", metavar="关键词",
                         help="按关键词搜视频后抓（与 --limit 搭配使用）")
+    p_subs.add_argument("--only", nargs="+", metavar="BV[#P]",
+                        help="只跑这几条，忽略 targets/--up/--season/--search。"
+                             "写法 BV1xx 或 BV1xx#3（只跑第 3 P）。"
+                             "跑完会打印可直接复制的「只重跑失败的」命令")
     p_subs.add_argument("--search-pages", type=int, default=1,
                         help="搜索取前几页，每页约 42 条（默认 1）")
     p_subs.add_argument("--limit", type=int, default=0,

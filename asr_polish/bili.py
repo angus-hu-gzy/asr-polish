@@ -682,6 +682,65 @@ def extract_bvid(text: str) -> Optional[str]:
     return m.group(0) if m else None
 
 
+def parse_only_targets(raw) -> Optional[list[tuple[str, Optional[int]]]]:
+    """解析「只跑这几条」的清单，返回 ``[(bvid, 分P或None), ...]``。
+
+    每一项写成 ``BV1xxxxxxxxx`` 表示这个视频的所有分 P，
+    ``BV1xxxxxxxxx#3`` 表示只跑第 3 P。分 P 那个 ``#`` 是刻意选的：
+    BV 号里不会出现它，链接里也不会——用 ``:`` 会和 ``up:`` / ``season:``
+    那套前缀混淆。
+
+    返回 None 表示没指定（走正常的 target 解析）。列表顺序保留、重复项合并，
+    所以「只重跑失败的 3 条」不会因为同一个视频挂了两个分 P 就跑两遍。
+    """
+    if raw in (None, "", [], ()):
+        return None
+    if isinstance(raw, str):
+        raw = [x for x in raw.replace(",", " ").split() if x]
+    if not isinstance(raw, (list, tuple)):
+        raise ValueError("only 应该是数组，例如 [\"BV1xx\", \"BV1yy#2\"]")
+
+    out: list[tuple[str, Optional[int]]] = []
+    for item in raw:
+        text = str(item).strip()
+        if not text:
+            continue
+        page: Optional[int] = None
+        if "#" in text:
+            text, _, tail = text.partition("#")
+            tail = tail.strip()
+            if not tail.isdigit():
+                raise ValueError("分 P 写法应为 BV号#序号（例如 BV1xx#3）：%s"
+                                 % item)
+            page = int(tail)
+            if page < 1:
+                raise ValueError("分 P 序号从 1 开始：%s" % item)
+        bv = extract_bvid(text)
+        if not bv:
+            raise ValueError("only 里有无法识别的 BV 号：%s" % item)
+        if (bv, page) not in out:
+            out.append((bv, page))
+    return out or None
+
+
+def group_only_pages(items: list[tuple[str, Optional[int]]]
+                     ) -> dict[str, Optional[set]]:
+    """把 ``parse_only_targets`` 的结果压成 ``{bvid: 要跑的分P集合}``。
+
+    值为 None 表示这条要全部 P。同一个 bvid 在清单里既有「整条」又有
+    具体分 P 时按「整条」算——那说明用户本来就想全跑。
+    """
+    grouped: dict[str, Optional[set]] = {}
+    for bv, page in items:
+        if bv not in grouped:
+            grouped[bv] = set()
+        if page is None:
+            grouped[bv] = None
+        elif grouped[bv] is not None:
+            grouped[bv].add(page)          # type: ignore[union-attr]
+    return grouped
+
+
 def extract_mid(text: str) -> Optional[int]:
     """从 UP 主空间链接或纯数字中提取 mid。"""
     m = _MID_RE.search(text or "")

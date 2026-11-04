@@ -138,6 +138,7 @@ asr-polish status                     # 看队列与最近任务
 | `GET /api/tasks/{id}` | 查状态、进度、结果、失败原因 |
 | `GET /api/tasks?status=&limit=` | 列表 |
 | `POST /api/tasks/{id}/retry` | `failed` 重新排队；`running` 强制重启（旧执行的结果会被丢弃） |
+| `POST /api/tasks/{id}/retry-failed` | 只重跑失败的条目：**新建一个任务**，带 `only`，已成功的文件不动 |
 | `GET /api/health` | 存活与 worker 占用 |
 
 三件事决定了它的可靠性，都在 `asr_polish/server/` 里：
@@ -146,6 +147,32 @@ asr-polish status                     # 看队列与最近任务
 - **状态在 SQLite，不在内存**。进程重启、页面关掉，任务都还在；失败可重试、能查卡在哪一条。
 - **抢任务用 CAS，不靠运气**。`BEGIN IMMEDIATE` 先拿写锁再 `SELECT + UPDATE`，两个 worker 不可能领到同一行；再加心跳与僵尸回收，进程被 `kill -9` 留下的 `running` 也能被放回队列。
 - **写回要持有所有权**。每次 `claim()` 把 `attempt` 加一，worker 之后的心跳和结论都带 `WHERE id=? AND attempt=?`，写不进去就说明自己已被接管。没有这一条，一个被误判僵尸、又醒过来的 worker 会和接管者同时写同一行——它甚至能把接管者**还在跑**的任务抢先标成完成。
+
+### 部分成功不等于成功
+
+一批 20 条里成了 18 条，和 20 条全成，以前在任务表上是同一个样子：状态 `done`，
+只有 `result.failed` 一个数字不同。要补那 2 条只能整个任务重来，重来还会再吃一次风控。
+
+现在结果里多一个 `outcome`，四态：
+
+| `outcome` | 含义 | 任务状态 |
+|---|---|---|
+| `complete` | 每一条都取到字幕 | `done` |
+| `partial` | 有产出，但差了几条（失败或没字幕） | `done` |
+| `empty` | 零产出：全都没字幕，或指定的条目里没有可跑的 | `done` |
+| `failed` | 零产出且全是错误 | `failed` |
+
+`failed_items` 列出每一处失败：`bvid`、`page`、`error`，以及 `retry` ——
+`retry` 就是重跑时该传的写法（`BV1xx` 或 `BV1xx#3`），面板和 CLI 直接照抄。
+面板上每条任务带一个徽章和「N 处失败明细」，展开后能点「只重跑这 N 条」；
+CLI 跑完会打印一条可直接复制的命令：
+
+```bash
+asr-polish subs --only BV1xx411c003 BV1xx411c011#3
+```
+
+`--only` 只按给定的 BV 号跑，**不会重新解析 target**——UP 主投稿一直在变，
+重新解析拿到的是「现在最新的 20 条」，不是你要补的那几条。
 
 ```python
 # asr_polish/server/store.py：抢任务的原子写法
@@ -464,10 +491,11 @@ asr-polish/
 
 ## 变更记录
 
-完整逐版本记录见 [CHANGELOG.md](./CHANGELOG.md)，每个版本都写明实测数字与判断依据。最近三版：
+完整逐版本记录见 [CHANGELOG.md](./CHANGELOG.md)，每个版本都写明实测数字与判断依据。最近四版：
 
 | 版本 | 一句话 |
 |---|---|
+| **0.9.1** | 结果区分全部成功 / 部分成功 / 无产出；列出失败明细，`retry-failed` 与 `subs --only` 只补失败的那几条 |
 | **0.9.0** | 任务写回加所有权令牌：被接管（重试 / 僵尸回收）的旧执行无法再写状态，`retry` 对 `running` 从「复制一份」变成「真重启」 |
 | **0.8.0** | 请求限速 + 风控退避 + Cookie 状态提示；批量抓不再把账号抓进风控，`cookie set` 一条命令导入登录态 |
 | **0.7.1** | 修僵尸回收不看重试上限导致任务无限重跑；状态输出统一中文 |

@@ -113,13 +113,19 @@ class WorkerPool:
         try:
             result = jobs.run(task.kind, task.payload, progress)
         except Exception as e:
-            reason = "%s: %s" % (type(e).__name__, e)
+            # 全失败的任务带着「已经跑出来的明细」抛出。它是失败记录的一部分，
+            # 不像普通异常那样只有一句话可写。
+            partial = getattr(e, "result", None) if isinstance(
+                e, jobs.JobFailure) else None
+            reason = (str(e) if isinstance(e, jobs.JobFailure)
+                      else "%s: %s" % (type(e).__name__, e))
             if lost[0]:
                 self._on_event("%s 丢弃 %s 的失败记录：任务已被接管"
                                % (name, task.id))
                 return
             try:
-                final = self.store.fail(task.id, reason, attempt=task.attempt)
+                final = self.store.fail(task.id, reason, attempt=task.attempt,
+                                        result=partial)
             except Exception as e2:                       # 连状态都写不进去
                 self._on_event("%s 失败且无法落库 %s：%s" % (name, task.id, e2))
                 return

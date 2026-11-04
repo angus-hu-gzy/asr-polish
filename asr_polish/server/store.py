@@ -347,8 +347,14 @@ class Store:
                                 message="完成", attempt=attempt)
 
     def fail(self, task_id: str, error: str,
-             attempt: Optional[int] = None) -> Optional[str]:
+             attempt: Optional[int] = None,
+             result: Optional[dict] = None) -> Optional[str]:
         """失败。未超过重试上限就回队列，否则落成 failed。
+
+        `result` 是「失败前已经跑出来的那部分结果」。全失败的任务如果不带
+        这个，面板上就只剩一行错误字符串——用户看不出是哪几条挂了，也没法
+        只重跑那几条（明细本身就在 result 里）。回队列那一支不写它：那一次
+        的产出会被下一次执行覆盖，写进去只会误导。
 
         返回最终状态（pending 或 failed）；返回 None 表示**这次失败记录不该
         由我写**——任务已被接管，或者我拿的是过期令牌。
@@ -369,7 +375,7 @@ class Store:
                 [PENDING, error[:500], "失败，等待重试", now], attempt)
             return PENDING if ok else None
         ok = self._transition(task_id, FAILED, error=error[:500],
-                              message="失败", attempt=attempt)
+                              result=result, message="失败", attempt=attempt)
         return FAILED if ok else None
 
     def requeue(self, task_id: str, reason: str = "手动重试") -> bool:

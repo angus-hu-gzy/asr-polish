@@ -21,12 +21,30 @@ from typing import Callable, Optional
 from .. import export
 from ..bili import (BiliError, BiliLoginRequired, BiliRiskControl, explain_risk,
                     expand_pages, extract_bvid, extract_mid, fetch,
-                    get_video_info, list_season, list_up_videos, search_videos)
+                    get_video_info, group_only_pages, list_season,
+                    list_up_videos, parse_only_targets, search_videos)
 
 Progress = Callable[[float, str], None]
 
 #: 单条视频抓取失败的容忍度：全失败才判 job 失败
 _MAX_ERRORS_KEPT = 5
+
+#: 结果里最多保留多少条失败明细（面板要列出来，也不能无限长）
+_MAX_FAILED_KEPT = 200
+
+
+class JobFailure(RuntimeError):
+    """执行失败，但已经跑出来的那部分结果要留着。
+
+    以前全失败只抛一句话，`result` 是空的——面板上只剩一个错误字符串，
+    用户看不到「哪几条失败、为什么」，也就没法只重跑失败的那几条。
+    异常带上 result，worker 落库时会把它一起写进任务的 result 字段。
+    """
+
+    def __init__(self, message: str, result: Optional[dict] = None) -> None:
+        super().__init__(message)
+        self.result = result
+
 
 #: 被风控后依次等待的秒数。取 60 / 180 / 300 的理由：
 #: B站的临时限制多在几分钟内解除，等太短等于白等（还会加重判定），
@@ -150,21 +168,30 @@ def run_subs(payload: dict, progress: Progress = _noop) -> dict:
         want = {int(x) for x in want_pages.split(",") if x.strip().isdigit()}
 
     progress(0.02, "解析目标")
-    try:
-        targets = _with_risk_backoff(
-            lambda: resolve_targets(
-                target, limit=limit,
-                pages=int(payload.get("search_pages") or 1)),
-            progress, 0.02, "解析目标")
-    except BiliLoginRequired as e:
-        raise RuntimeError(
-            "需要登录态：%s。\n"
-            "修复办法：重新导出 cookies.txt，放到 README「登录态」一节列出的"
-            "任一位置（或用 --cookie 指定），再重试；"
-            "只想抓单个视频的话可以改用 BV 号。" % e) from e
+    only = parse_only_targets(payload.get("only"))
+    if only is not None:
+        # 重跑指定条目：**不重新解析 target**。UP 主投稿会一直变，重新解析
+        # 拿到的是「现在最新的 20 条」，不是「刚才失败的那 3 条」——那就等于
+        # 整个任务重来了，正是这次要消灭的行为。
+        only_pages = group_only_pages(only)
+        targets = list(only_pages)                     # dict 保序、已去重
+    else:
+        only_pages = {}
+        try:
+            targets = _with_risk_backoff(
+                lambda: resolve_targets(
+                    target, limit=limit,
+                    pages=int(payload.get("search_pages") or 1)),
+                progress, 0.02, "解析目标")
+        except BiliLoginRequired as e:
+            raise RuntimeError(
+                "需要登录态：%s。\n"
+                "修复办法：重新导出 cookies.txt，放到 README「登录态」一节列出的"
+                "任一位置（或用 --cookie 指定），再重试；"
+                "只想抓单个视频的话可以改用 BV 号。" % e) from e
     if not targets:
         raise ValueError("没有找到可处理的视频")
-    if limit and len(targets) > limit:
+    if only is None and limit and len(targets) > limit:
         targets = targets[:limit]
 
     total = len(targets)
@@ -174,7 +201,7 @@ def run_subs(payload: dict, progress: Progress = _noop) -> dict:
 
     for i, bvid in enumerate(targets, 1):
         row = {"bvid": bvid, "title": "", "parts": 0, "nosub": 0,
-               "error": "", "note": ""}
+               "error": "", "note": "", "pages": 1, "failed_pages": []}
         frac_hint = 0.05 + 0.93 * ((i - 1) / total)
         try:
             info = _with_risk_backoff(
@@ -182,9 +209,13 @@ def run_subs(payload: dict, progress: Progress = _noop) -> dict:
                 progress, frac_hint, "取视频信息")
             row["title"] = info.get("title") or bvid
             total_pages = len(info.get("pages") or []) or 1
+            row["pages"] = total_pages
             pages = expand_pages(info)
             if want is not None:
                 pages = [p for p in pages if p["index"] in want]
+            if bvid in only_pages and only_pages[bvid] is not None:
+                # 重跑时限定到当初失败的那几个分 P，别把已经成功的重做一遍。
+                pages = [p for p in pages if p["index"] in only_pages[bvid]]
 
             for p in pages:
                 if payload.get("stop"):
@@ -196,7 +227,12 @@ def run_subs(payload: dict, progress: Progress = _noop) -> dict:
                         progress, frac_hint, "取第 %s P" % p["index"])
                 except BiliError as e:
                     n_fail += 1
-                    errors.append("%s P%s: %s" % (bvid, p["index"], e))
+                    msg = str(e)
+                    errors.append("%s P%s: %s" % (bvid, p["index"], msg))
+                    # 分 P 级失败也要落到明细里：否则 20 条成了 18 条时，
+                    # 用户只知道「差了 2」，不知道差在哪一条哪一个 P。
+                    row["failed_pages"].append(
+                        {"page": p["index"], "error": msg[:200]})
                     continue
                 if not res.segments:
                     row["nosub"] += 1
@@ -234,8 +270,11 @@ def run_subs(payload: dict, progress: Progress = _noop) -> dict:
         frac = 0.05 + 0.93 * (i / total)
         progress(frac, "已处理 %d/%d：%s" % (i, total, row["title"][:28]))
 
+    failed_items = _collect_failures(items)
+    outcome = _judge(n_ok, n_nosub, n_fail)
     result = {
         "target": target,
+        "outcome": outcome,
         "videos": total,
         "parts_written": n_ok,
         "no_subtitle": n_nosub,
@@ -243,12 +282,79 @@ def run_subs(payload: dict, progress: Progress = _noop) -> dict:
         "outdir": str(outdir.resolve()),
         "formats": formats,
         "items": items[:200],
+        "failed_items": failed_items[:_MAX_FAILED_KEPT],
         "errors": errors[:_MAX_ERRORS_KEPT],
     }
-    if n_ok == 0 and n_fail > 0:
-        raise RuntimeError("全部失败：%s" % ("; ".join(errors[:3]) or "未知原因"))
-    progress(1.0, "完成")
+    if only is not None:
+        # 让结果自己能说清「这是重跑出来的那几条」，面板上不必去翻 payload。
+        result["only"] = [str(x) for x in (payload.get("only") or [])]
+        result["retry_of"] = payload.get("retry_of")
+    if outcome == "failed":
+        # 全失败仍然是「任务失败」（状态 failed），但这次把明细一起带出去：
+        # 只留一句「全部失败」等于把已经拿到的错误线索扔掉。
+        raise JobFailure(
+            "全部失败（%d 处错误）：%s"
+            % (n_fail, "; ".join(errors[:3]) or "未知原因"), result)
+    progress(1.0, _done_note(outcome, n_ok, n_nosub, n_fail))
     return result
+
+
+def _collect_failures(items: list[dict]) -> list[dict]:
+    """把每个视频的失败点摊平成「可单独重跑」的条目。
+
+    ``retry`` 字段就是重跑时要传给 ``only`` 的写法（``BV1xx`` 或
+    ``BV1xx#3``），面板和 CLI 直接照抄，不用各自再拼一遍。
+    """
+    out: list[dict] = []
+    for row in items:
+        if row.get("error"):
+            out.append({"bvid": row["bvid"], "title": row.get("title") or "",
+                        "page": None, "error": row["error"][:200],
+                        "retry": row["bvid"]})
+        multi = int(row.get("pages") or 1) > 1
+        for bad in row.get("failed_pages") or []:
+            page = bad.get("page")
+            # 单 P 视频不写 `#1`：那等于把「整条」写复杂了，重跑时也一样。
+            token = "%s#%s" % (row["bvid"], page) if multi else row["bvid"]
+            out.append({"bvid": row["bvid"], "title": row.get("title") or "",
+                        "page": page, "error": bad.get("error", ""),
+                        "retry": token})
+    return out
+
+
+def _judge(n_ok: int, n_nosub: int, n_fail: int) -> str:
+    """四态结论：complete / partial / empty / failed。
+
+    判的是「产出」，不是「有没有报错」：
+
+    - 有产出且处处干净 → complete
+    - 有产出但差了几条（失败或没字幕）→ partial
+    - 零产出 → empty。**只要还有「没字幕」这个解释，就不算失败**：20 条全没字幕
+      时 `failed` 是 0，判成「成功」是撒谎，判成「失败」也不对——它确实没出错。
+    - 零产出且全是错误 → failed
+    """
+    if n_ok:
+        return "partial" if (n_fail or n_nosub) else "complete"
+    if n_nosub or not n_fail:
+        return "empty"
+    return "failed"
+
+
+def _done_note(outcome: str, n_ok: int, n_nosub: int, n_fail: int) -> str:
+    if outcome == "complete":
+        return "完成：%d 段全部成功" % n_ok
+    if outcome == "empty":
+        if n_nosub:
+            return ("完成，但没有产出：%d 段都没有字幕" % n_nosub
+                    + ("，另有 %d 处失败" % n_fail if n_fail else ""))
+        return "完成，但没有产出：没有可处理的条目"
+    bits = ["成功 %d 段" % n_ok]
+    if n_nosub:
+        bits.append("无字幕 %d 段" % n_nosub)
+    if n_fail:
+        bits.append("失败 %d 处" % n_fail)
+    return "部分成功：" + "，".join(bits)
+
 
 
 #: 任务类型注册表。新增一种任务就在这里加一行。

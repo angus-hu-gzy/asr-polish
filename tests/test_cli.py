@@ -47,5 +47,42 @@ class TestStdioEncoding(unittest.TestCase):
         self.assertIn("词表管理", text)              # 中文子命令说明也在
 
 
+class TestSubsOnly(unittest.TestCase):
+    """`subs --only` 只跑给定条目：不列 UP 主投稿，也不重跑已成功的分 P。"""
+
+    def test_only_runs_listed_page_only(self):
+        import shutil
+        import tempfile
+
+        from asr_polish import bili, export
+
+        calls: list = []
+        info = {"title": "标题", "cid": 1, "duration": 10,
+                "pages": [{"cid": i, "part": "P%d" % i, "duration": 5}
+                          for i in (1, 2, 3)]}
+
+        def fake_fetch(bvid, cookie_path=None, page=1, allow_asr=False):
+            calls.append((bvid, page))
+            return bili.FetchResult(
+                bvid=bvid, title="标题", owner="", duration=10, source="字幕轨",
+                text="x", page=page,
+                segments=[{"start": 0, "end": 1, "text": "x"}])
+
+        out = tempfile.mkdtemp(prefix="asrcli_")
+        self.addCleanup(shutil.rmtree, out, True)
+        with mock.patch.object(bili, "get_video_info",
+                               lambda *a, **k: info), \
+                mock.patch.object(bili, "list_up_videos",
+                                  side_effect=AssertionError("不该列投稿")) as up, \
+                mock.patch.object(bili, "fetch", fake_fetch), \
+                mock.patch.object(export, "write_all"), \
+                mock.patch("sys.stderr", io.StringIO()) as err:
+            cli.main(["subs", "--only", "BV1xx411c003#2", "-o", out])
+
+        up.assert_not_called()
+        self.assertEqual(calls, [("BV1xx411c003", 2)])
+        self.assertIn("全部成功", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -416,6 +416,55 @@ class TestWorkerOwnership(_TempDB):
         self.assertEqual(after.result, {"ok": 1})
         self.assertTrue(any("完成" in e for e in events), events)
 
+    def test_job_failure_keeps_details(self) -> None:
+        """全失败仍是 failed，但明细要跟着落库——不能只剩一句话。"""
+        from asr_polish.server import jobs
+        events: list[str] = []
+        pool = self._pool(events)
+        t = self.store.create("subs", {"target": "BV1xx"}, max_retries=0)
+        task = self.store.claim("worker-1")
+        detail = {"outcome": "failed",
+                  "failed_items": [{"retry": "BV1a", "error": "风控"}]}
+
+        def fake_run(_kind, _payload, _progress):
+            raise jobs.JobFailure("全部失败（1 处错误）：风控", detail)
+
+        with mock.patch.object(jobs, "run", fake_run):
+            pool._run("worker-1", task)
+
+        after = self.store.get(t.id)
+        self.assertEqual(after.status, FAILED)
+        self.assertEqual(after.result["failed_items"][0]["retry"], "BV1a")
+        # 错误文案不该带 "JobFailure:" 这种类名前缀，那是给意外异常用的
+        self.assertEqual(after.error, "全部失败（1 处错误）：风控")
+        self.assertTrue(any("失败" in e for e in events), events)
+
+
+class TestFailureKeepsResult(_TempDB):
+    """失败也要留下明细：否则面板只剩一行错误，没法只重跑失败的那几条。"""
+
+    def test_failed_task_keeps_partial_result(self) -> None:
+        t = self.store.create("subs", {}, max_retries=0)
+        claimed = self.store.claim("w1")
+        detail = {"outcome": "failed",
+                  "failed_items": [{"retry": "BV1a"}, {"retry": "BV1b#3"}]}
+        self.assertEqual(
+            self.store.fail(t.id, "全部失败", attempt=claimed.attempt,
+                            result=detail), FAILED)
+        got = self.store.get(t.id)
+        self.assertEqual(got.result["outcome"], "failed")
+        self.assertEqual([x["retry"] for x in got.result["failed_items"]],
+                         ["BV1a", "BV1b#3"])
+
+    def test_requeue_branch_does_not_pin_stale_result(self) -> None:
+        """回队列那一支不写 result：下一次执行会覆盖它，留着只会误导。"""
+        t = self.store.create("subs", {}, max_retries=2)
+        claimed = self.store.claim("w1")
+        self.assertEqual(
+            self.store.fail(t.id, "boom", attempt=claimed.attempt,
+                            result={"outcome": "failed"}), PENDING)
+        self.assertIsNone(self.store.get(t.id).result)
+
 
 class TestJobs(unittest.TestCase):
     def test_parse_targets(self) -> None:
@@ -539,6 +588,45 @@ class TestHTTP(unittest.TestCase):
         code, body = self._get("/api/tasks/%s/retry" % task_id, "POST")
         self.assertEqual(code, 202)
         self.assertEqual(body["status"], PENDING)
+
+    def _finished(self, target: str, result: dict) -> str:
+        """建一个任务、跑完、写入指定 result，返回任务 id。"""
+        _, body = self._get("/api/tasks", "POST",
+                            {"kind": "subs", "target": target, "limit": 20,
+                             "outdir": "./subs"})
+        task_id = body["id"]
+        while True:
+            claimed = self.store.claim("w1")
+            if claimed is None or claimed.id == task_id:
+                break
+        self.store.finish(task_id, result)
+        return task_id
+
+    def test_retry_failed_creates_scoped_task(self) -> None:
+        """只重跑失败的那几条：新建任务，带 only，其余参数沿用原任务。"""
+        parent = self._finished("BVpartial", {
+            "outcome": "partial", "failed": 2,
+            "failed_items": [{"bvid": "BV1a", "retry": "BV1a"},
+                             {"bvid": "BV1b", "page": 3,
+                              "retry": "BV1b#3"}],
+        })
+        code, child = self._get("/api/tasks/%s/retry-failed" % parent, "POST")
+        self.assertEqual(code, 202)
+        self.assertEqual(child["payload"]["only"], ["BV1a", "BV1b#3"])
+        self.assertEqual(child["payload"]["retry_of"], parent)
+        self.assertEqual(child["payload"]["target"], "BVpartial")
+        self.assertEqual(child["payload"]["limit"], 20)
+        self.assertEqual(child["status"], PENDING)
+        # 原任务不能被改动：它的 result 是「当时到底发生了什么」的记录
+        self.assertEqual(self.store.get(parent).status, DONE)
+        self.assertEqual(self.store.get(parent).result["outcome"], "partial")
+
+    def test_retry_failed_without_failures_409(self) -> None:
+        parent = self._finished("BVclean",
+                                {"outcome": "complete", "failed_items": []})
+        code, body = self._get("/api/tasks/%s/retry-failed" % parent, "POST")
+        self.assertEqual(code, 409)
+        self.assertIn("没有可重跑", body["error"])
 
 
 class WarehouseFake:

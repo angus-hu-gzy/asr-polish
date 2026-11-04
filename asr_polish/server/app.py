@@ -12,6 +12,7 @@ POST   /api/tasks            {"kind":"subs","target":"BV...", ...}  → 202 + �
 GET    /api/tasks/{id}       查单个任务
 GET    /api/tasks            列表，支持 ?status=&limit=
 POST   /api/tasks/{id}/retry 手动重试（failed 重新排队；running 强制重启）
+POST   /api/tasks/{id}/retry-failed  只重跑失败的条目（新建一个任务）
 GET    /api/health           健康检查
 GET    /                     面板
 """
@@ -87,6 +88,20 @@ button.pri{background:#143a55;border-color:#1d5f8a;color:#cfe6ff}
 .banner.ok{background:#12291a;border:1px solid #1f5233;color:#7ee2a8}
 .banner .meta{opacity:.75;font-size:11px;margin-top:4px}
 .msg{color:var(--run);font-size:11px;margin-top:2px}
+.pill{display:inline-block;padding:1px 7px;border-radius:9px;font-size:10.5px;
+border:1px solid transparent;white-space:nowrap}
+.pill.ok{background:#0f2a1a;border-color:#1f5233;color:#7ee2a8}
+.pill.part{background:#2e2410;border-color:#6e5a1e;color:#e3b341}
+.pill.empty{background:#1d232c;border-color:#2f3a48;color:#9aa4b0}
+.pill.bad{background:#331315;border-color:#6e2326;color:#ffb4ab}
+.res{font-size:11px;color:var(--muted);margin-top:3px}
+details{margin-top:4px}
+summary{cursor:pointer;font-size:11px;color:var(--muted)}
+summary:hover{color:var(--text)}
+ul.fl{margin:5px 0 6px;padding-left:16px;font-size:11px;color:var(--muted)}
+ul.fl li{margin:1px 0}
+button.mini{padding:3px 9px;font-size:11px;background:#1a212b}
+button.mini:disabled{opacity:.55;cursor:default}
 </style></head>
 <body><div class="wrap">
 <h1>asr-polish 任务面板</h1>
@@ -101,13 +116,38 @@ button.pri{background:#143a55;border-color:#1d5f8a;color:#cfe6ff}
 </div>
 <table><thead><tr>
 <th style="width:104px">任务</th><th style="width:60px">类型</th>
-<th>目标</th><th style="width:120px">进度</th>
+<th>目标 / 结果</th><th style="width:110px">进度</th>
 <th style="width:76px">状态</th><th style="width:70px">耗时</th>
 </tr></thead><tbody id="rows"></tbody></table>
 </div>
 <script>
 const $ = id => document.getElementById(id);
 function esc(s){return (s||"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]))}
+const OUT = {complete:["全部成功","ok"], partial:["部分成功","part"],
+             empty:["无产出","empty"], failed:["全部失败","bad"]};
+function resultBox(t){
+  const r = t.result || {};
+  const key = r.outcome || (t.status === "failed" ? "failed" : null);
+  if(!key) return "";
+  const meta = OUT[key] || [key,"empty"];
+  const bits = [];
+  if(r.parts_written !== undefined) bits.push("成功 " + r.parts_written + " 段");
+  if(r.no_subtitle) bits.push("无字幕 " + r.no_subtitle + " 段");
+  if(r.failed) bits.push("失败 " + r.failed + " 处");
+  const fi = r.failed_items || [];
+  let detail = "";
+  if(fi.length){
+    const lis = fi.slice(0,8).map(x=>`<li><span class="mono">${esc(x.retry||x.bvid)}</span>
+      ${esc((x.error||"").slice(0,70))}</li>`).join("");
+    const more = fi.length > 8 ? `<li>… 还有 ${fi.length-8} 条</li>` : "";
+    detail = `<details><summary>${fi.length} 处失败明细</summary>
+      <ul class="fl">${lis}${more}</ul>
+      <button class="mini retry-failed" data-id="${t.id}">只重跑这 ${fi.length} 条</button>
+    </details>`;
+  }
+  return `<div style="margin-top:3px"><span class="pill ${meta[1]}">${meta[0]}</span></div>
+    <div class="res">${bits.join(" · ")}</div>${detail}`;
+}
 async function load(){
   const r = await fetch("/api/tasks?limit=40");
   const d = await r.json();
@@ -122,14 +162,38 @@ async function load(){
     const err = t.error ? `<div class="err">${esc(t.error).slice(0,80)}</div>` : "";
     const note = (t.status==="running" && t.message)
       ? `<div class="msg">${esc(t.message).slice(0,90)}</div>` : "";
+    const box = (t.status==="done"||t.status==="failed") ? resultBox(t) : "";
+    const onlyN = ((t.payload && t.payload.only) || []).length;
+    const onlyNote = onlyN
+      ? `<div class="res">只重跑失败条目 ${onlyN} 条` +
+        (t.payload.retry_of ? "（原任务 " + esc(t.payload.retry_of) + "）" : "") +
+        `</div>`
+      : "";
     return `<tr class="${t.status}-row">
       <td class="mono">${t.id}</td>
       <td>${esc(t.kind)}</td>
-      <td>${esc(t.payload && t.payload.target || "")}${note}${err}</td>
+      <td>${esc(t.payload && t.payload.target || "")}${note}${onlyNote}${box}${err}</td>
       <td><div class="bar"><i style="width:${pct}%"></i></div></td>
       <td class="st ${t.status}">${t.status.toUpperCase()}</td>
       <td class="mono">${t.duration ? t.duration+"s" : (t.status==="running"?"…":"")}</td>
     </tr>`}).join("");
+  bindRetry();
+}
+async function retryFailed(id, btn){
+  btn.disabled = true; btn.textContent = "提交中…";
+  const r = await fetch("/api/tasks/"+id+"/retry-failed",{method:"POST"});
+  const d = await r.json();
+  $("msg").textContent = r.ok
+    ? ("已新建 " + d.id + "，只跑失败的 " + (d.only||[]).length + " 条")
+    : ("失败：" + (d.error||r.status));
+  load();
+}
+function bindRetry(){
+  document.querySelectorAll("button.retry-failed").forEach(b=>{
+    if(b.dataset.bound) return;
+    b.dataset.bound = "1";
+    b.onclick = () => retryFailed(b.dataset.id, b);
+  });
 }
 async function loadHealth(force){
   let h;
@@ -309,6 +373,36 @@ class Handler(BaseHTTPRequestHandler):
             # 中断（它跑完才发现令牌失效），所以已抓完的文件仍可能被它覆盖一次。
             body["note"] = ("已强制重启，原执行的结果会被丢弃"
                             if restart else "已重新排队")
+            self._json(202, body)
+            return
+
+        if len(parts) == 4 and parts[:2] == ["api", "tasks"] \
+                and parts[3] == "retry-failed":
+            # 只重跑失败的那几条：**新建一个任务**，而不是把原任务打回队列。
+            # 原任务的 result 是「当时到底发生了什么」的记录，回队列会把它
+            # 覆盖掉，用户就再也查不到当初是哪几条挂了。新任务带 `only`，
+            # 执行时直接按 BV 号跑，不重新解析 target——否则 UP 主投稿一变，
+            # 跑的就不是你要重跑的那几条了。
+            task = self.app.store.get(parts[2])
+            if task is None:
+                self._err(404, "没有这个任务：%s" % parts[2])
+                return
+            retry = [x.get("retry") for x in
+                     ((task.result or {}).get("failed_items") or [])
+                     if x.get("retry")]
+            if not retry:
+                self._err(409, "这个任务没有可重跑的失败条目")
+                return
+            payload = {k: v for k, v in task.payload.items() if k != "only"}
+            payload["only"] = retry
+            payload["retry_of"] = task.id
+            child = self.app.store.create(task.kind, payload)
+            self.app.note("任务 %s 的 %d 条失败另起任务 %s"
+                          % (task.id, len(retry), child.id))
+            body = child.to_dict()
+            body["only"] = retry
+            body["note"] = ("只重跑失败的 %d 条（原任务 %s）"
+                            % (len(retry), task.id))
             self._json(202, body)
             return
 
