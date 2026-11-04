@@ -211,23 +211,32 @@ _login_cache: dict = {"ts": 0.0, "value": None, "path": None}
 _login_lock = threading.Lock()
 
 
-def _has_sessdata(path: Path) -> bool:
-    """cookies.txt 里是否真有 SESSDATA（B站的登录凭证）。
+def _text_has_sessdata(text: str) -> bool:
+    """文本里是否真有 SESSDATA（B站的登录凭证）。
 
     只认 Mozilla 格式的 7 字段行，避免把注释行或别的站点的 cookie 当成登录态。
+    ``#HttpOnly_`` 是 Netscape 格式给 HttpOnly cookie 的前缀，**不是注释**
+    （SESSDATA 由浏览器插件导出时通常就带这个前缀，当注释跳过会把有效 Cookie
+    误判成「没有 SESSDATA」）。
     """
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return False
     for line in text.splitlines():
         line = line.strip()
-        if not line or line.startswith("#"):
+        if line.startswith("#HttpOnly_"):
+            line = line[len("#HttpOnly_"):]
+        elif not line or line.startswith("#"):
             continue
         parts = line.split("\t")
         if len(parts) >= 7 and parts[5] == "SESSDATA" and parts[6].strip():
             return True
     return False
+
+
+def _has_sessdata(path: Path) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return _text_has_sessdata(text)
 
 
 def cookie_status(cookie_path: Optional[str] = None,
@@ -286,6 +295,166 @@ def cookie_status(cookie_path: Optional[str] = None,
         "has_sessdata": has_sessdata, "age_days": age_days,
         "logged_in": logged_in, "level": level, "note": note,
     }
+
+
+# ── Cookie 导入 ──────────────────────────────────────────────
+
+#: 新写入 cookie 的标注有效期。读取时用了 ignore_expires，这里只是让文件看起来
+#: 正常，并给 B站 一个合理的续期预期（SESSDATA 实际有效期约半年）。
+_COOKIE_LIFETIME = 180 * 86400
+_COOKIE_DOMAIN = ".bilibili.com"
+
+
+def default_cookie_target() -> Path:
+    """新 Cookie 写到哪：已有文件就更新它，否则用项目的标准路径。"""
+    found = _resolve_cookie_path()
+    return found if found is not None else _DEFAULT_COOKIE_PATHS[-1]
+
+
+def _is_netscape(text: str) -> bool:
+    """是 cookies.txt 全文，还是请求头里的一串键值。"""
+    for line in text.splitlines():
+        s = line.strip().lstrip("\ufeff")
+        if s:
+            return s.startswith("# Netscape HTTP Cookie File")
+    return False
+
+
+def _parse_cookie_header(text: str) -> list[tuple[str, str]]:
+    """从 ``Cookie: a=1; b=2``（或去掉前缀的 ``a=1; b=2``）取出 (name, value)。
+
+    只按**第一个** ``=`` 切：cookie 值里可能自带 ``=``（base64 填充），
+    从右边切会把值截错，而错一个字符就等于没登录。
+    """
+    body = "; ".join(line.strip() for line in text.splitlines() if line.strip())
+    body = re.sub(r"^cookie\s*:\s*", "", body, flags=re.I)
+    pairs: list[tuple[str, str]] = []
+    for chunk in body.split(";"):
+        name, sep, value = chunk.strip().strip('"').partition("=")
+        name, value = name.strip(), value.strip().strip('"')
+        if sep and name and value:
+            pairs.append((name, value))
+    return pairs
+
+
+def _make_cookie(name: str, value: str) -> http.cookiejar.Cookie:
+    # 不标 HttpOnly：从请求头里看不出某条 cookie 是不是 HttpOnly，标错等于
+    # 在文件里写假信息。我们不在浏览器里跑，这个标记对 urllib 也毫无影响。
+    return http.cookiejar.Cookie(
+        version=0, name=name, value=value, port=None, port_specified=False,
+        domain=_COOKIE_DOMAIN, domain_specified=True, domain_initial_dot=True,
+        path="/", path_specified=True, secure=True,
+        expires=int(time.time()) + _COOKIE_LIFETIME, discard=False,
+        comment=None, comment_url=None, rest={}, rfc2109=False)
+
+
+def _commit_cookie_file(payload: str, target: Path) -> None:
+    """先写临时文件、验证能读回来、再原子替换。
+
+    直接覆盖原文件的坏处是：粘贴内容有问题时，会把用户原本还能用的 Cookie
+    一起毁掉，连回退的机会都没有。
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + ".new")
+    with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(payload)
+    probe = http.cookiejar.MozillaCookieJar(str(tmp))
+    try:
+        probe.load(ignore_discard=True, ignore_expires=True)
+    except (OSError, http.cookiejar.LoadError) as exc:
+        tmp.unlink(missing_ok=True)
+        raise BiliError("写入的内容不是合法的 cookies.txt：%s" % exc) from exc
+    if len(list(probe)) == 0:
+        tmp.unlink(missing_ok=True)
+        raise BiliError("写入的内容里没解析出任何 cookie")
+    os.replace(tmp, target)
+
+
+def import_cookies(text: str, path: Optional[str] = None) -> dict:
+    """把用户粘贴的内容写成 cookies.txt，返回导入报告。
+
+    接受两种输入：
+
+    1. cookies.txt 全文（首行 ``# Netscape HTTP Cookie File``）——整份替换；
+    2. 开发者工具里 ``Cookie:`` 请求头的值，或纯 ``a=1; b=2``——**合并**。
+
+    合并而不是覆盖，是因为只贴了 SESSDATA / bili_jct 这几条时，覆盖会顺手把
+    ``buvid3`` 这类设备指纹抹掉；少了它反而更容易被风控盯上。
+
+    没有 SESSDATA 直接拒绝写入：那是「未登录状态」的 Cookie，写进去只会让人
+    以为配好了，然后对着 -352 干瞪眼。
+    """
+    target = Path(path).expanduser() if path else default_cookie_target()
+    text = text.replace("\ufeff", "").strip()
+    if not text:
+        raise BiliError("粘贴的内容是空的")
+
+    kind = "netscape" if _is_netscape(text) else "header"
+
+    if kind == "netscape":
+        body = "\n".join(line.rstrip() for line in text.splitlines()) + "\n"
+        if not _text_has_sessdata(body):
+            raise BiliError(
+                "这份 cookies.txt 里没有 SESSDATA，等于未登录状态。"
+                "请在浏览器里登录 B站 后重新导出。")
+        _commit_cookie_file(body, target)
+        total = len(list(_load_jar(target)))
+        return {"path": str(target), "kind": kind, "changed": total,
+                "total": total, "has_sessdata": True}
+
+    pairs = _parse_cookie_header(text)
+    if not pairs:
+        raise BiliError(
+            "没能从粘贴内容里认出 cookie。请复制开发者工具里 Cookie 请求头的"
+            "整行值（形如 SESSDATA=xxx; bili_jct=yyy），或直接贴 cookies.txt 全文。")
+    names = [name for name, _ in pairs]
+    if "SESSDATA" not in names:
+        raise BiliError(
+            "粘贴的 Cookie 里没有 SESSDATA（当前只有 %s），说明浏览器此时未登录。"
+            "请先在 B站 登录，再刷新页面后重新复制。" % "、".join(names[:6]))
+
+    jar = _load_jar(target)
+    changed = 0
+    for name, value in pairs:
+        olds = [c for c in jar if c.name == name]
+        if olds and all(c.value == value for c in olds):
+            continue
+        for c in olds:                       # 同名只留一条，避免新旧并存
+            jar.clear(c.domain, c.path, c.name)
+        jar.set_cookie(_make_cookie(name, value))
+        changed += 1
+
+    _commit_cookie_file(_jar_to_text(jar), target)
+    return {"path": str(target), "kind": kind, "changed": changed,
+            "total": len(list(jar)), "has_sessdata": _has_sessdata(target)}
+
+
+def _load_jar(path: Path) -> http.cookiejar.MozillaCookieJar:
+    jar = http.cookiejar.MozillaCookieJar(str(path))
+    if path.exists():
+        try:
+            jar.load(ignore_discard=True, ignore_expires=True)
+        except (OSError, http.cookiejar.LoadError):
+            pass                             # 旧文件坏了就丢掉，反正马上重写
+    return jar
+
+
+def _jar_to_text(jar: http.cookiejar.MozillaCookieJar) -> str:
+    """把 jar 渲染成 Netscape 文本（不落盘，交给 _commit_cookie_file 校验）。"""
+    lines = ["# Netscape HTTP Cookie File", ""]
+    for c in jar:
+        domain = ("#HttpOnly_" if c.has_nonstandard_attr("HttpOnly")
+                  else "") + c.domain
+        lines.append("\t".join([
+            domain,
+            "TRUE" if c.domain_specified else "FALSE",
+            c.path or "/",
+            "TRUE" if c.secure else "FALSE",
+            str(int(c.expires or 0)),
+            c.name,
+            c.value,
+        ]))
+    return "\n".join(lines) + "\n"
 
 
 def verify_login(cookie_path: Optional[str] = None,

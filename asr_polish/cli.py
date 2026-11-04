@@ -14,6 +14,8 @@
     asr-polish serve --port 8040                   # 起 HTTP 服务 + 任务队列
     asr-polish submit up:12345 --wait              # 把任务交给服务去跑
     asr-polish status                              # 看队列和最近的任务
+    asr-polish cookie                              # 检查 B站 登录态是否还有效
+    asr-polish cookie set                          # 从剪贴板导入 Cookie 并验证
     asr-polish version                             # 显示版本
 
 核心能力纯标准库实现（argparse），无第三方依赖；
@@ -411,6 +413,86 @@ def _cmd_status(args: argparse.Namespace) -> None:
         print(_pad(t["id"], 14) + _pad(label, 10) + _pad(pct, 7) + target[:44])
 
 
+def _read_clipboard() -> Optional[str]:
+    """读系统剪贴板。Windows 用 PowerShell（一定在），macOS / Linux 走各自命令。"""
+    import subprocess
+
+    for cmd in (["powershell", "-NoProfile", "-Command", "Get-Clipboard", "-Raw"],
+                ["pbpaste"],
+                ["xclip", "-selection", "clipboard", "-o"],
+                ["wl-paste"]):
+        try:
+            done = subprocess.run(cmd, capture_output=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if done.returncode == 0:
+            text = done.stdout.decode("utf-8", "replace")
+            if text.strip():
+                return text
+    return None
+
+
+def _cmd_cookie(args: argparse.Namespace) -> None:
+    from . import bili
+
+    if getattr(args, "cookie_cmd", None) != "set":
+        status = bili.cookie_status(verify=True, fresh=True)
+        print("路径     :", status.get("path") or "（没找到）")
+        if not status.get("found"):
+            print("结论     :", status.get("note") or "")
+            print()
+            print("用 asr-polish cookie set 导入 Cookie（详见 README「登录态」）。")
+            return
+        print("可解析   :", "是" if status["parsable"] else "否")
+        print("SESSDATA :", "有" if status["has_sessdata"] else "没有")
+        if status.get("age_days") is not None:
+            print("导出时间 : %.1f 天前" % status["age_days"])
+        print("登录态   :", {True: "有效", False: "已失效",
+                           None: "未能确认"}[status["logged_in"]])
+        print("结论     :", status.get("note") or "")
+        return
+
+    text = args.text or ""
+    if not text and args.file:
+        src = Path(args.file).expanduser()
+        try:
+            text = src.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            print(f"错误：读不到 {src}（{exc}）", file=sys.stderr)
+            sys.exit(1)
+    if not text:
+        text = _read_clipboard() or ""
+        if not text:
+            print("错误：剪贴板是空的。请先复制 Cookie 请求头，"
+                  "或用 --file 指定文件。", file=sys.stderr)
+            sys.exit(1)
+        print(f"从剪贴板读到 {len(text)} 个字符")
+
+    try:
+        rep = bili.import_cookies(text, path=args.path)
+    except bili.BiliError as exc:
+        print(f"错误：{exc}", file=sys.stderr)
+        sys.exit(1)
+
+    kind = "cookies.txt 全文" if rep["kind"] == "netscape" else "Cookie 请求头"
+    print(f"已写入 {rep['path']}")
+    print(f"  来源 {kind} · 更新 {rep['changed']} 条 · 文件内共 {rep['total']} 条")
+    if args.no_verify:
+        return
+
+    print("正在向 B站 确认登录态…")
+    logged_in = bili.verify_login(rep["path"], force=True)
+    if logged_in is True:
+        print("登录态：有效。up: / season: 现在可用了。")
+    elif logged_in is False:
+        print("登录态：仍然无效——B站 认为这份 Cookie 未登录。", file=sys.stderr)
+        print("  多半是复制时浏览器还没登录，或者复制的是无痕窗口里的。"
+              "登录 B站、刷新页面后再复制一次。", file=sys.stderr)
+        sys.exit(2)
+    else:
+        print("登录态：无法确认（网络或风控问题）。Cookie 已写入，稍后可再查。")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="asr-polish",
@@ -549,6 +631,20 @@ def build_parser() -> argparse.ArgumentParser:
                           help="只看某个状态的")
     p_status.add_argument("--limit", type=int, default=15, help="列多少条")
     p_status.set_defaults(func=_cmd_status)
+
+    p_cookie = sub.add_parser(
+        "cookie", help="查看 / 更新 B站 Cookie（up: 与 season: 必须先登录）")
+    cookie_sub = p_cookie.add_subparsers(dest="cookie_cmd")
+    cookie_sub.add_parser("status", help="检查 Cookie 是否有效（会联网确认）")
+    p_cset = cookie_sub.add_parser(
+        "set", help="导入 Cookie：默认读剪贴板，写完立即验证登录态")
+    p_cset.add_argument("--file", help="从文件读（cookies.txt 全文或 Cookie 请求头）")
+    p_cset.add_argument("--text", help="直接给出内容（不推荐，容易漏引号）")
+    p_cset.add_argument("--path", help="写到哪个文件（默认更新已有的那一份）")
+    p_cset.add_argument("--no-verify", action="store_true",
+                        help="写完不联网验证")
+    p_cset.set_defaults(func=_cmd_cookie)
+    p_cookie.set_defaults(func=_cmd_cookie)
 
     return parser
 
