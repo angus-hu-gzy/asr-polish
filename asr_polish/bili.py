@@ -196,10 +196,8 @@ def _opener(cookie_path: Optional[str] = None):
     path = _resolve_cookie_path(cookie_path)
     if path is None:
         return urllib.request.build_opener()
-    jar = http.cookiejar.MozillaCookieJar(str(path))
-    try:
-        jar.load(ignore_discard=True, ignore_expires=True)
-    except (OSError, http.cookiejar.LoadError):
+    jar = _load_jar(path)
+    if not len(list(jar)):
         return urllib.request.build_opener()
     return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
 
@@ -268,11 +266,10 @@ def cookie_status(cookie_path: Optional[str] = None,
     except OSError:
         age_days = None
 
-    jar = http.cookiejar.MozillaCookieJar(str(path))
-    parsable = True
     try:
-        jar.load(ignore_discard=True, ignore_expires=True)
-    except (OSError, http.cookiejar.LoadError):
+        parsable = bool(_parse_netscape(
+            path.read_text(encoding="utf-8", errors="replace")))
+    except OSError:
         parsable = False
     has_sessdata = _has_sessdata(path)
     logged_in = verify_login(path, force=fresh) if (verify and parsable) else None
@@ -349,25 +346,88 @@ def _make_cookie(name: str, value: str) -> http.cookiejar.Cookie:
         comment=None, comment_url=None, rest={}, rfc2109=False)
 
 
+_HTTPONLY = "#HttpOnly_"
+_NS_FIELDS = 7          # domain, include_sub, path, secure, expires, name, value
+
+
+def _netscape_cookie(domain: str, path: str, secure: bool,
+                     expires: Optional[int], name: str, value: str,
+                     httponly: bool) -> http.cookiejar.Cookie:
+    """按 Netscape 行的字段造一条 Cookie。"""
+    return http.cookiejar.Cookie(
+        version=0, name=name, value=value, port=None, port_specified=False,
+        domain=domain, domain_specified=bool(domain),
+        domain_initial_dot=domain.startswith("."),
+        path=path, path_specified=path.startswith("/"),
+        secure=secure, expires=expires, discard=expires is None,
+        comment=None, comment_url=None,
+        rest={"HttpOnly": None} if httponly else {}, rfc2109=False)
+
+
+def _parse_netscape(text: str) -> "list[http.cookiejar.Cookie]":
+    """自己解析 cookies.txt，不走 ``MozillaCookieJar.load``。
+
+    非得自己解析，是因为标准库在这件事上**按版本行为不同**：Python 3.9 的
+    ``_really_load`` 把所有 ``#`` 开头的行都当注释丢掉，``#HttpOnly_`` 开头的
+    行连看都不看；3.10 起才剥掉这个前缀当正常行处理。而浏览器插件导出的
+    cookies.txt 里，SESSDATA 几乎一定带 ``#HttpOnly_`` 前缀。
+
+    结果是同一个文件：3.10+ 能登进去，3.9 读到 0 条，用户看到的是「没登录」
+    或者「导入的内容里没解析出任何 cookie」——文件明明是好的。自己解析就没有
+    这种版本差异，顺带也让导入校验不再依赖临时文件。
+
+    坏行直接跳过（不抛错）：一份真实的导出文件里混进半行、多一个空行都很常见，
+    为了一行脏数据把整份 Cookie 拒掉，用户只能去手工改文件。
+    """
+    cookies = []
+    for raw in text.splitlines():
+        line = raw.rstrip("\r\n")
+        httponly = False
+        if line.startswith(_HTTPONLY):
+            line, httponly = line[len(_HTTPONLY):], True
+        elif line.startswith("#HttpOnly "):        # 早期插件用空格而非下划线
+            line, httponly = line[len("#HttpOnly "):], True
+        if not line.strip() or line.startswith(("#", "$")):
+            continue
+        fields = line.split("\t")
+        if len(fields) < _NS_FIELDS:
+            fields = line.split()                  # 少数工具用空格分隔
+            if len(fields) < _NS_FIELDS:
+                continue
+        if len(fields) > _NS_FIELDS:               # 值里自带 tab：并回去
+            fields = fields[:_NS_FIELDS - 1] + ["\t".join(fields[_NS_FIELDS - 1:])]
+        domain, _include_sub, path, secure, expires, name, value = fields
+        if not domain or not name:
+            continue
+        try:
+            stamp: Optional[int] = int(expires)
+        except ValueError:
+            stamp = None                           # 时间列坏了就当成会话 cookie
+        if stamp == 0:
+            stamp = None
+        cookies.append(_netscape_cookie(
+            domain=domain, path=path or "/", secure=secure.strip().upper() == "TRUE",
+            expires=stamp, name=name, value=value, httponly=httponly))
+    return cookies
+
+
 def _commit_cookie_file(payload: str, target: Path) -> None:
-    """先写临时文件、验证能读回来、再原子替换。
+    """内容先验一遍、再写临时文件、最后原子替换。
 
     直接覆盖原文件的坏处是：粘贴内容有问题时，会把用户原本还能用的 Cookie
-    一起毁掉，连回退的机会都没有。
+    一起毁掉，连回退的机会都没有。校验放在写盘之前，坏内容连临时文件都不
+    会留下。
+
+    校验用 ``_parse_netscape`` 而不是 ``MozillaCookieJar.load``：后者在
+    Python 3.9 上会把 ``#HttpOnly_`` 行当注释丢掉，导致一份完全合法的导出
+    文件被判成「没解析出 cookie」。
     """
+    if not _parse_netscape(payload):
+        raise BiliError("写入的内容里没解析出任何 cookie")
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(target.name + ".new")
     with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(payload)
-    probe = http.cookiejar.MozillaCookieJar(str(tmp))
-    try:
-        probe.load(ignore_discard=True, ignore_expires=True)
-    except (OSError, http.cookiejar.LoadError) as exc:
-        tmp.unlink(missing_ok=True)
-        raise BiliError("写入的内容不是合法的 cookies.txt：%s" % exc) from exc
-    if len(list(probe)) == 0:
-        tmp.unlink(missing_ok=True)
-        raise BiliError("写入的内容里没解析出任何 cookie")
     replace_with_retry(
         tmp, target,
         on_error=lambda exc: BiliError(
@@ -436,12 +496,18 @@ def import_cookies(text: str, path: Optional[str] = None) -> dict:
 
 
 def _load_jar(path: Path) -> http.cookiejar.MozillaCookieJar:
+    """读 cookies.txt。坏文件当空处理——反正马上会重写。
+
+    用 ``_parse_netscape`` 而不是 ``jar.load()``：见那个函数的说明，
+    Python 3.9 会把 ``#HttpOnly_`` 行整行丢掉，SESSDATA 往往就在那种行里。
+    """
     jar = http.cookiejar.MozillaCookieJar(str(path))
-    if path.exists():
-        try:
-            jar.load(ignore_discard=True, ignore_expires=True)
-        except (OSError, http.cookiejar.LoadError):
-            pass                             # 旧文件坏了就丢掉，反正马上重写
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return jar
+    for cookie in _parse_netscape(text):
+        jar.set_cookie(cookie)
     return jar
 
 

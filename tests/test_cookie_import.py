@@ -110,6 +110,29 @@ class TestImportNetscape(unittest.TestCase):
         self.assertTrue(bili._text_has_sessdata(text))
         self.assertEqual(bili.import_cookies(text, self.target)["total"], 1)
 
+    def test_httponly_lines_survive_the_round_trip(self):
+        """``#HttpOnly_`` 行必须读得回来。
+
+        Python 3.9 的 ``MozillaCookieJar._really_load`` 把所有 ``#`` 开头的行
+        当注释整行丢掉（3.10 才剥前缀），而浏览器插件导出的 SESSDATA 恰好带
+        这个前缀——3.9 上会读成「0 条 Cookie」，看着像没登录。所以这条必须
+        自己解析，不能吃标准库的版本差异。
+        """
+        text = ("# Netscape HTTP Cookie File\n"
+                "#HttpOnly_.bilibili.com\tTRUE\t/\tTRUE\t1999999999\tSESSDATA\tzzz\n")
+        self.assertEqual(bili.import_cookies(text, self.target)["total"], 1)
+        jar = bili._load_jar(Path(self.target))
+        self.assertEqual([c.name for c in jar], ["SESSDATA"])
+        self.assertEqual(jar._cookies[".bilibili.com"]["/"]["SESSDATA"].value, "zzz")
+        self.assertIn("#HttpOnly_", bili._jar_to_text(jar))   # 合并时不丢标记
+
+    def test_dirty_line_does_not_kill_the_file(self):
+        """一条坏行不该让整份 Cookie 被拒——用户没法手工改。"""
+        text = ("# Netscape HTTP Cookie File\n"
+                ".bilibili.com\tTRUE\t/\tTRUE\t1999999999\n"
+                ".bilibili.com\tTRUE\t/\tTRUE\t1999999999\tSESSDATA\tok\n")
+        self.assertEqual(bili.import_cookies(text, self.target)["total"], 1)
+
     def test_rejects_netscape_without_sessdata(self):
         text = "# Netscape HTTP Cookie File\n.bilibili.com\tTRUE\t/\tTRUE\t1\tbuvid3\ta\n"
         with self.assertRaises(bili.BiliError):

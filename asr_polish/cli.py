@@ -649,7 +649,32 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _prepare_stdio() -> None:
+    """别让中文输出把整条命令打崩。
+
+    Windows 上 stdout 一旦重定向到管道或文件，用的就是系统代码页——西文机器
+    是 cp1252，打印一句中文帮助就 ``UnicodeEncodeError``，退出码 1，什么都没
+    输出。CI 的 Windows runner 就是这么红的，真实用户在
+    ``asr-polish subs --help > help.txt`` 时也会撞上同一件事。
+
+    真实控制台（isatty）**不动编码**：Windows 控制台走 WriteConsoleW，本来
+    就是 Unicode，硬改 UTF-8 反而会让老 conhost 里显示成乱码。这里只保证
+    「写不出去」降级成替换字符，不因为一个字符中断整条命令。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if stream is None:
+            continue
+        try:
+            if stream.isatty():
+                stream.reconfigure(errors="replace")
+            else:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass                    # 被替换成 StringIO 之类，改不了就算了
+
+
 def main(argv: Optional[list[str]] = None) -> None:
+    _prepare_stdio()
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "command", None):

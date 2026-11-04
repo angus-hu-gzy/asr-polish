@@ -48,6 +48,20 @@
   并发写同一文件名时，读的人会看到被截断的文件。改为同目录临时文件 + `os.replace`，
   读者要么看到旧完整版，要么看到新完整版。
 
+- **Python 3.9 上带 `#HttpOnly_` 的 Cookie 被读成「一条都没有」**。浏览器插件导出的
+  cookies.txt 里，SESSDATA 几乎总是写成 `#HttpOnly_.bilibili.com\tTRUE\t...`，而
+  Python 3.9 的 `MozillaCookieJar._really_load` 把**所有 `#` 开头的行当注释整行丢掉**
+  （3.10 起才剥掉前缀当正常行处理）。后果是同一个文件：3.10+ 能登进去，3.9 读到 0 条——
+  导入被拒「写入的内容里没解析出任何 cookie」，`cookie` 检查显示「格式不对」，
+  更糟的是 `_opener()` 带着一个空 jar 去请求，等于**未登录**在跑。
+  改为自己解析 Netscape 行（`_parse_netscape`），不再吃标准库的版本差异；
+  坏行跳过而不是整份拒绝——真实导出文件里混进半行很常见，让用户手工改不现实。
+
+- **Windows 上 `asr-polish subs --help` 直接崩**。stdout 重定向到管道或文件时用的是
+  系统代码页（西文机器 cp1252），打印中文帮助报 `UnicodeEncodeError`，退出码 1、
+  一个字都没输出。入口加 `_prepare_stdio()`：非 tty 一律 UTF-8 + `errors="replace"`，
+  真实控制台不动编码（Windows 控制台走 `WriteConsoleW`，本来就是 Unicode）。
+
 - **Cookie 重写撞上瞬时占用不再报错**。CI 上抓到的偶发：同一份 Cookie 导入两次，
   第二次一个字节都没变，代码却照样「写临时文件 → 原子替换」，而 Windows runner 的
   Defender 正好在扫这个新文件，`os.replace` 报 `WinError 5 拒绝访问`。
@@ -71,10 +85,12 @@
 
 ### 测试
 
-212 项（新增 20 项：令牌单调递增、`running` 重试后旧执行的三类写回全被拒、
+217 项（新增 25 项：令牌单调递增、`running` 重试后旧执行的三类写回全被拒、
 僵尸回收后旧执行不能抢先标完成、预算用尽回收也 bump 尝试、旧库自动迁移且幂等、
 worker 在接管后丢弃结果与失败记录、原子写不留临时文件、Cookie 内容未变不重写、
-替换撞锁重试、持续占用时保留原文件并清理临时文件）。
+替换撞锁重试、持续占用时保留原文件并清理临时文件、`#HttpOnly_` 行能读回且合并时
+不丢标记、坏行不影响整份文件、cp1252 管道下 `--help` / `--version` / 无命令三条
+路径都不崩）。
 
 ---
 
