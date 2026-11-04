@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Iterable
 
 from . import __version__
+from ._atomic import replace_with_retry
 from .bili import FetchResult
 
 FORMATS = ("txt", "srt", "json", "md")
@@ -152,7 +153,7 @@ def _write_atomic(path: Path, text: str) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(text)
-        os.replace(tmp, path)
+        replace_with_retry(Path(tmp), path)
     except BaseException:
         try:
             os.unlink(tmp)

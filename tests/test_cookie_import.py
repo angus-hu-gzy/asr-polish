@@ -4,6 +4,7 @@
 所以重点测三件事：值不能被截断、缺 SESSDATA 必须拒绝、写失败不能毁掉原文件。
 """
 import http.cookiejar
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -125,6 +126,56 @@ class TestImportNetscape(unittest.TestCase):
         deep = str(Path(self.dir) / "a" / "b" / "cookies.txt")
         bili.import_cookies(_NETSCAPE, deep)
         self.assertTrue(Path(deep).exists())
+
+
+class TestWriteRobustness(unittest.TestCase):
+    """写入的两条防线：没变就不重写；撞上瞬时占用要重试。
+
+    第一条来自 CI 上的一次偶发：同一份 Cookie 导入两次，第二次一个字节都没变，
+    代码却照样重写文件，结果 Windows runner 的杀软正好在扫临时文件，
+    ``os.replace`` 报「拒绝访问」，测试红了一大片。
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.target = Path(self.dir) / "cookies.txt"
+
+    def test_unchanged_import_does_not_touch_file(self):
+        bili.import_cookies(_HEADER, str(self.target))
+        with mock.patch.object(bili, "_commit_cookie_file") as commit:
+            rep = bili.import_cookies(_HEADER, str(self.target))
+        self.assertEqual(rep["changed"], 0)
+        commit.assert_not_called()          # 内容一模一样，重写只会制造风险
+
+    def test_replace_retries_on_transient_lock(self):
+        real = os.replace
+        calls = []
+
+        def flaky(src, dst):
+            calls.append(dst)
+            if len(calls) < 3:
+                raise PermissionError(13, "拒绝访问")
+            real(src, dst)
+
+        with mock.patch.object(bili.os, "replace", flaky):
+            rep = bili.import_cookies(_HEADER, str(self.target))
+        self.assertEqual(rep["changed"], 4)
+        self.assertEqual(len(calls), 3)     # 前两次撞锁，第三次成功
+        self.assertTrue(self.target.exists())
+
+    def test_persistent_lock_keeps_old_file_and_cleans_up(self):
+        bili.import_cookies(_HEADER, str(self.target))
+        before = self.target.read_text(encoding="utf-8")
+
+        def always_locked(src, dst):
+            raise PermissionError(13, "拒绝访问")
+
+        with mock.patch.object(bili.os, "replace", always_locked):
+            with self.assertRaises(bili.BiliError) as ctx:
+                bili.import_cookies("SESSDATA=new; bili_jct=newjct", str(self.target))
+        self.assertIn("占着", str(ctx.exception))          # 说清原因，别只说「失败」
+        self.assertEqual(self.target.read_text(encoding="utf-8"), before)
+        self.assertFalse(self.target.with_name("cookies.txt.new").exists())
 
 
 class TestTargetPath(unittest.TestCase):

@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from ._atomic import replace_with_retry
 from .throttle import Throttle
 
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -367,7 +368,11 @@ def _commit_cookie_file(payload: str, target: Path) -> None:
     if len(list(probe)) == 0:
         tmp.unlink(missing_ok=True)
         raise BiliError("写入的内容里没解析出任何 cookie")
-    os.replace(tmp, target)
+    replace_with_retry(
+        tmp, target,
+        on_error=lambda exc: BiliError(
+            "写入 %s 失败：文件被别的程序占着（杀软正在扫描、或编辑器/浏览器"
+            "正在读它）。稍后重试一次，或先关掉占用它的程序。" % target))
 
 
 def import_cookies(text: str, path: Optional[str] = None) -> dict:
@@ -424,7 +429,8 @@ def import_cookies(text: str, path: Optional[str] = None) -> dict:
         jar.set_cookie(_make_cookie(name, value))
         changed += 1
 
-    _commit_cookie_file(_jar_to_text(jar), target)
+    if changed:
+        _commit_cookie_file(_jar_to_text(jar), target)
     return {"path": str(target), "kind": kind, "changed": changed,
             "total": len(list(jar)), "has_sessdata": _has_sessdata(target)}
 

@@ -138,6 +138,43 @@ class TestWriteAll(unittest.TestCase):
             self.assertEqual(text, "第一句\n第二句")
             self.assertEqual([p.name for p in out.iterdir()], ["stem.txt"])
 
+    def test_retries_when_target_is_briefly_locked(self):
+        """Windows 上杀软扫新文件会让 os.replace 短暂报「拒绝访问」。"""
+        import os
+        import tempfile
+        from unittest import mock
+
+        real = os.replace
+        calls = []
+
+        def flaky(src, dst):
+            calls.append(dst)
+            if len(calls) < 3:
+                raise PermissionError(13, "拒绝访问")
+            real(src, dst)
+
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            with mock.patch.object(export.os, "replace", flaky):
+                export.write_all(out, "stem", ["txt"], _result())
+            self.assertEqual(len(calls), 3)
+            self.assertEqual((out / "stem.txt").read_text(encoding="utf-8"),
+                             "第一句\n第二句")
+
+    def test_persistent_lock_leaves_no_partial_file(self):
+        import tempfile
+        from unittest import mock
+
+        def always_locked(src, dst):
+            raise PermissionError(13, "拒绝访问")
+
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            with mock.patch.object(export.os, "replace", always_locked):
+                with self.assertRaises(PermissionError):
+                    export.write_all(out, "stem", ["txt"], _result())
+            self.assertEqual(list(out.iterdir()), [])      # 半成品必须清掉
+
 
 if __name__ == "__main__":
     unittest.main()
