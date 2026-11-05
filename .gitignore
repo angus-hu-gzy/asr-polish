@@ -16,6 +16,13 @@ subs/
 corpus_asr/
 manifest.json
 
+# 本地服务状态（`serve` 默认在当前目录建库，还带 WAL/SHM 两个旁路文件）
+tasks.db
+tasks.db-wal
+tasks.db-shm
+*.sqlite
+*.sqlite3
+
 # 个人数据 / 凭证
 cookies.txt
 *.cookies.txt
