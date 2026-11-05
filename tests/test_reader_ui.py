@@ -265,6 +265,93 @@ class ReaderMarkupTest(unittest.TestCase):
             self.assertIn("saveBlob(", m.group(0))
         self.assertEqual(s.count("createObjectURL"), 1)
 
+    # ── 单篇总结 ──────────────────────────────────────
+    def test_model_settings_are_local_and_stated_plainly(self) -> None:
+        """模型三样只存浏览器，而且页面必须把「全文会发出去」说出来。
+
+        这不是免责声明，是这个功能最需要坦白的一件事：用户点的是「总结」，
+        实际动作是把整篇文字稿发到第三方、按那边的规则花钱。藏着不说，
+        等他发现账单或发现内容外传，就没有第二次了。
+        """
+        page = self.html
+        self.assertIn('id="modelbox"', page)
+        for box in ("mbase", "mname", "mkey"):
+            self.assertIn('id="%s"' % box, page)
+        self.assertIn('id="mkey" type="password"', page)   # key 不明文晾在屏幕上
+        self.assertIn("asr-polish:model:v1", page)
+        self.assertNotIn("/api/config", page)              # 没有把配置交给后端存
+        self.assertIn("全文会发给你填的这个服务", page)
+        self.assertIn("按它的计费规则花钱", page)
+
+    def test_summary_button_says_what_is_missing(self) -> None:
+        """没配好就说缺什么——但不能靠在旁边挂一段字来提示。
+
+        工具栏在 1440 宽下本来就是一整行；多一段二十多字的灰字会把它挤成两行，
+        正文跟着往下跳。所以状态写在按钮自己身上：文案变「先配模型」、虚线框、
+        title 里写全缺哪几样。
+        """
+        page = self.html
+        self.assertIn('id="sumbtn" type="button"', page)
+        # 不加 aria-disabled：它是可点的（点了打开设置），对读屏器谎称禁用是错的
+        self.assertNotIn('aria-disabled="true"', page)
+        self.assertIn('class="btn sm off sumbtn"', page)
+        self.assertIn("先配模型", page)
+        self.assertIn("先在设置里填服务地址、模型名、API key", page)
+        self.assertNotIn('id="sumwhy"', page)      # 那一段灰字不能再回来
+        # 在顶栏，不在工具栏：工具栏在 1440 宽下本来就满，再加一个按钮就换行
+        self.assertLess(page.index('class="bar"'), page.index('id="sumbtn"'))
+        self.assertLess(page.index('id="sumbtn"'), page.index("</header>"))
+        m = re.search(r"function updateSumButton\(.*?\n\}", _page_script(), re.S)
+        self.assertIsNotNone(m, "找不到 updateSumButton")
+        body = m.group(0)
+        self.assertIn("modelReady(", body)
+        self.assertIn("textContent", body)          # 文案跟着配置变
+        self.assertIn("off", body)                  # 未配置时换成虚线框
+
+    def test_summary_never_runs_on_page_load(self) -> None:
+        """打开页面绝不自动调模型——每次调用都是钱。
+
+        只有两处会调：点「总结」且这一篇还没缓存、点「重新生成」。
+        渲染正文、切任务、切分 P 都不许顺手调一把。
+        """
+        s = _page_script()
+        for fn in ("renderDoc", "switchTo", "selectPart"):
+            m = re.search(r"function " + fn + r"\(.*?\n\}", s, re.S)
+            self.assertIsNotNone(m, "找不到 " + fn)
+            self.assertNotIn("generateSummary", m.group(0),
+                             fn + " 里不该调模型")
+        m = re.search(r'\$\("#sumbtn"\)\.addEventListener\("click".*?\n\}\);', s, re.S)
+        self.assertIsNotNone(m, "找不到总结按钮的点击处理")
+        self.assertIn("generateSummary(", m.group(0))
+        m = re.search(r'\$\("#sumregen"\)\.addEventListener\("click".*?\n\}\);',
+                      s, re.S)
+        self.assertIn("generateSummary(", m.group(0))
+
+    def test_summary_is_kept_per_part(self) -> None:
+        """多分 P：每篇一份，切到哪篇看哪篇。"""
+        self.assertIn("asr-polish:summary:v1:", _page_script())
+        m = re.search(r"function selectPart\(.*?\n\}", _page_script(), re.S)
+        self.assertIn("renderSummary()", m.group(0))
+
+    def test_stale_summary_is_checked_against_the_text(self) -> None:
+        """拿着旧总结配新字幕是最坏的一种坏：每条要点都点得动，但都指到别处。"""
+        m = re.search(r"function renderSummary\(.*?\n\}", _page_script(), re.S)
+        self.assertIsNotNone(m, "找不到 renderSummary")
+        self.assertIn("summarySig(", m.group(0))
+
+    def test_unverifiable_anchors_are_not_clickable(self) -> None:
+        """没有出处的时间不给点击。
+
+        只判了「有没有 click」不够——真正要守的是**只有核对通过的那一支才绑**。
+        所以这里连事件绑定的次数一起钉住：多出来的那一个，就是某处又给
+        编出来的时间戳开了后门。
+        """
+        m = re.search(r"function anchorEl\(.*?\n\}", _page_script(), re.S)
+        self.assertIsNotNone(m, "找不到 anchorEl")
+        body = m.group(0)
+        self.assertIn("r.idx >= 0", body)
+        self.assertEqual(body.count("addEventListener"), 1)
+
 
 @unittest.skipUnless(_NODE, "没有 node，跳过前端逻辑测试")
 class ReaderLogicTest(unittest.TestCase):
@@ -575,6 +662,105 @@ class ReaderLogicTest(unittest.TestCase):
                          "【2024最新】Python从零入门到精通系统学习大纲-全文.md")
         # 同一个标题，重点导出仍是 -重点.md：加了个参数不能改变老行为
         self.assertEqual(self.d["mdFile"], "Python-从零-入门-精讲-重点.md")
+
+    # ── 单篇总结 ──────────────────────────────────────
+    def test_model_config_round_trip_and_junk(self) -> None:
+        """三样读得回来；坏 JSON、字段类型不对，一律当「没配」。"""
+        self.assertEqual(self.d["modelOk"], {
+            "base": "api.deepseek.com/v1", "model": "deepseek-chat",
+            "key": "sk-fake-for-test"})
+        for key in ("modelJunk", "modelBroken"):
+            self.assertEqual(self.d[key], {"base": "", "model": "", "key": ""}, key)
+
+    def test_missing_config_names_the_missing_parts(self) -> None:
+        """缺什么说什么：只缺 key 时不该把地址也一起报上去。"""
+        self.assertTrue(self.d["readyOk"]["ok"])
+        self.assertEqual(self.d["readyMissingKey"]["missing"], ["API key"])
+        self.assertIn("API key", self.d["readyMissingKey"]["why"])
+        self.assertEqual(self.d["readyMissingTwo"]["missing"], ["服务地址"])
+        self.assertEqual(self.d["readyEmpty"]["missing"],
+                         ["服务地址", "模型名", "API key"])
+
+    def test_storage_keys(self) -> None:
+        self.assertEqual(self.d["modelKeyName"], "asr-polish:model:v1")
+        self.assertEqual(self.d["sumKeyName"], "asr-polish:summary:v1:T-test")
+
+    def test_summary_source_carries_real_timestamps(self) -> None:
+        """发给模型的正文必须带行首时间，否则它只能编——而编出来的会被判无出处。
+
+        时间用的是页面上那个 fmt，和正文里显示的一致：模型抄回去的是它看见的
+        那个字符串，两处不一样就永远对不上。
+        """
+        src = self.d["srcP2"]
+        self.assertTrue(src["hasTime"])
+        self.assertEqual(src["text"],
+                         "[01:03] 打开官网下载安装包\n[01:10] 下一步下一步就行")
+
+    def test_summary_source_for_a_part_without_time(self) -> None:
+        """必剪 ASR / 纯文本：不标时间，并且明确告诉模型 t 写 null。"""
+        src = self.d["srcAsr"]
+        self.assertFalse(src["hasTime"])
+        self.assertIn("t 请写成 null", src["text"])
+        self.assertIn("第一段\n第二段", src["text"])
+        self.assertNotIn("[", src["text"].split("）")[-1])   # 正文里没有假时间
+
+    def test_summary_source_out_of_range(self) -> None:
+        self.assertEqual(self.d["srcOob"]["text"], "")
+        self.assertFalse(self.d["srcOob"]["hasTime"])
+
+    def test_stamp_formats(self) -> None:
+        self.assertEqual(self.d["stampMmss"], 63)
+        self.assertEqual(self.d["stampHms"], 3725)
+        self.assertEqual(self.d["stampSec"], 83)
+        self.assertEqual(self.d["stampDigits"], 83)      # 数字串当秒
+        self.assertEqual(self.d["stampBracket"], 63)     # 连方括号一起抄回来了
+        self.assertIsNone(self.d["stampBad"])
+        self.assertIsNone(self.d["stampNull"])
+
+    def test_anchor_matching_has_a_small_tolerance(self) -> None:
+        """容差是为了「页面上四舍五入过的时间」——不是为了让编的时间通过。"""
+        self.assertEqual(self.d["matchNear"], 2)    # 63.4 → 第 3 段
+        self.assertEqual(self.d["matchFar"], -1)    # 70 秒：原文里没有，判无出处
+        self.assertEqual(self.d["matchNull"], -1)
+        self.assertEqual(self.d["matchEmpty"], -1)
+
+    def test_made_up_timestamps_become_unanchored(self) -> None:
+        """模型编的时间不给锚点，没给时间的也一样。"""
+        rows = self.d["anchors"]
+        self.assertEqual(rows[0]["idx"], 2)         # 01:03 真的在原文里
+        self.assertEqual(rows[1]["idx"], -1)        # 07:12 是编的
+        self.assertEqual(rows[1]["t"], 432)         # 时间本身仍记着，用来标注
+        self.assertEqual(rows[2]["idx"], -1)        # 没给
+
+    def test_part_without_time_ignores_model_stamps(self) -> None:
+        """这一篇没有逐句时间：模型就算给了时间也是编的，一律无出处。"""
+        self.assertEqual(self.d["anchorsNoTime"][0]["idx"], -1)
+
+    def test_signature_changes_with_the_text(self) -> None:
+        """同一篇稳定，换一篇就变——缓存靠它判断「是不是同一份字幕」。"""
+        self.assertTrue(self.d["sigStable"])
+        self.assertTrue(self.d["sigChangesWithText"])
+        self.assertEqual(self.d["sigEmpty"], "0")
+
+    def test_summary_store_round_trip(self) -> None:
+        store = self.d["sumStore"]
+        self.assertEqual(sorted(store["parts"]), ["a.srt", "b.srt"])
+        item = self.d["sumOfA"]
+        self.assertEqual(item["summary"]["tldr"], "一句话总览")
+        self.assertEqual(item["summary"]["points"][0]["text"], "第一条")
+        self.assertEqual(item["sig"], "3:20:开头|结尾")
+        # b 那条 points 不是数组：收成空数组，不把整条丢掉（sig 还有用）
+        self.assertEqual(store["parts"]["b.srt"]["summary"]["points"], [])
+
+    def test_bad_summary_stores_fall_back(self) -> None:
+        for store in self.d["badStores"]:
+            self.assertEqual(store, {"v": 1, "parts": {}}, store)
+        self.assertIsNone(self.d["sumOfMissing"])
+        self.assertIsNone(self.d["sumOfNull"])
+
+    def test_writing_a_summary_does_not_mutate_the_input(self) -> None:
+        self.assertEqual(self.d["sumWrite"]["parts"]["b.srt"]["sig"], "9:9:新|新")
+        self.assertEqual(self.d["sumWriteLeavesOrig"], "2:9:x|y")
 
 
 if __name__ == "__main__":

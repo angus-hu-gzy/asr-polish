@@ -174,6 +174,44 @@ function main() {
   const fullEmpty = api.buildFullText({ parts: [] }, task);
   const fullNull = api.buildFullText(null, task);
   const mdWhen = new Date(2026, 10, 5, 20, 31);
+
+  // ── 单篇总结 ────────────────────────────────────
+  // 设置里那三样。key 用明显的假值：这文件进仓库，任何像真 key 的串都不该出现。
+  const modelOk = api.parseModel(
+    '{"base":"api.deepseek.com/v1","model":"deepseek-chat","key":"sk-fake-for-test"}');
+  const modelJunk = api.parseModel('{"base":123,"model":null,"key":[]}');
+  const modelBroken = api.parseModel("{oops");
+
+  // 发给模型的正文：行首补回时间，模型才可能引用真实时间
+  const srcP2 = api.buildSummarySource(fullMulti, 1);
+  const srcAsr = api.buildSummarySource(fullAsr, 0);
+  const srcOob = api.buildSummarySource(fullMulti, 9);
+
+  // 模型给的时间戳：三种写法都认，认不出的返回 null
+  const stampMmss = api.parseStamp("01:03");        // 63
+  const stampHms = api.parseStamp("1:02:05");       // 3725
+  const stampSec = api.parseStamp(83);
+  const stampDigits = api.parseStamp("83");
+  const stampBracket = api.parseStamp("[01:03]");   // 模型抄成带括号的
+  const stampBad = api.parseStamp("刚才那里");
+  const stampNull = api.parseStamp(null);
+
+  const segs3 = [{ start: 0 }, { start: 5 }, { start: 63 }];
+  const asrSegs = [{ start: null }, { start: null }];
+
+  const sumA = JSON.stringify({
+    v: 1,
+    parts: {
+      "a.srt": {
+        sig: "3:20:开头|结尾", at: "2026-11-05 21:00", model: "deepseek-chat",
+        summary: { tldr: "一句话总览", points: [{ text: "第一条", t: "01:03" }],
+                   concepts: [{ term: "术语", def: "解释" }] },
+      },
+      "b.srt": { sig: "2:9:x|y", summary: { points: "不是数组" } },
+      "c.srt": "不是一个对象",
+    },
+  });
+  const sumStore = api.parseSumStore(sumA);
   const out = {
     playerUrl: api.playerUrl({ bvid: "BV1RXx169Exu", page: 2 }, 62.7),
     playerUrlZero: api.playerUrl({ bvid: "BV1RXx169Exu", page: 1 }, 0),
@@ -252,6 +290,57 @@ function main() {
     fullNull: fullNull,
     fullEmptyPlain: api.buildPlainText(fullEmpty),
     fullEmptyMd: api.buildFullMarkdown(fullEmpty, mdWhen, task),
+
+    // ── 单篇总结 ──────────────────────────────────
+    modelOk: modelOk,
+    modelJunk: modelJunk,
+    modelBroken: modelBroken,
+    readyOk: api.modelReady(modelOk),
+    // 缺什么就报什么：只缺 key 的时候不该提示「服务地址没填」
+    readyMissingKey: api.modelReady({ base: "b", model: "m" }),
+    readyMissingTwo: api.modelReady({ base: "", model: "m", key: "k" }),
+    readyEmpty: api.modelReady(null),
+    modelKeyName: api.modelKey(),
+    sumKeyName: api.sumKey("T-test"),
+
+    srcP2: srcP2,
+    srcAsr: srcAsr,
+    srcOob: srcOob,
+
+    stampMmss: stampMmss,
+    stampHms: stampHms,
+    stampSec: stampSec,
+    stampDigits: stampDigits,
+    stampBracket: stampBracket,
+    stampBad: stampBad,
+    stampNull: stampNull,
+
+    matchNear: api.matchStamp(segs3, 63.4),   // 容差内：落在第 3 段
+    matchFar: api.matchStamp(segs3, 70),      // 差 7 秒：无出处
+    matchNull: api.matchStamp(segs3, null),
+    matchEmpty: api.matchStamp([], 5),
+
+    // 模型给了一个原文没有的时间：判无出处，不给锚点
+    anchors: api.anchorsOf(
+      [{ text: "第一条", t: "01:03" },
+       { text: "编的", t: "07:12" },
+       { text: "没给", t: null }], segs3, true),
+    // 这一篇本来没有逐句时间：模型硬给了时间也一律无出处
+    anchorsNoTime: api.anchorsOf([{ text: "a", t: "01:03" }], asrSegs, false),
+
+    sigStable: api.summarySig(fullMulti.parts[1]) === api.summarySig(fullMulti.parts[1]),
+    sigChangesWithText: api.summarySig(fullMulti.parts[1]) !== api.summarySig(fullAsr.parts[0]),
+    sigEmpty: api.summarySig(null),
+
+    sumStore: sumStore,
+    badStores: [api.parseSumStore("{oops"), api.parseSumStore("[1,2]"),
+                api.parseSumStore('{"v":1,"parts":[]}'), api.parseSumStore(null)],
+    sumOfA: api.sumOf(sumStore, "a.srt"),
+    sumOfMissing: api.sumOf(sumStore, "zz"),
+    sumOfNull: api.sumOf(null, "a"),
+    sumWrite: api.withSum(sumStore, "b.srt",
+      { sig: "9:9:新|新", at: "", model: "", summary: { tldr: "新的", points: [], concepts: [] } }),
+    sumWriteLeavesOrig: sumStore.parts["b.srt"].sig,
   };
   process.stdout.write(JSON.stringify(out));
 }

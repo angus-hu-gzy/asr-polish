@@ -166,6 +166,9 @@ input[type=text]::placeholder{color:var(--placeholder)}
 /* 模式切换。固定最小宽度：🌙「夜间」和 ☀️「白天」字数一变，右边这个按钮
    就换宽度，搜索框跟着抖一下——切的是颜色，不该让版面前后差几像素。 */
 .themetog{min-width:82px;text-align:center}
+/* 「先配模型」和「总结」字数差三个，不固定宽度的话填完配置的一瞬间左边的
+   搜索框会跟着变宽——为了一次状态变化抖一下版面，不值得。 */
+.sumbtn{min-width:80px;text-align:center}
 
 /* ── 进度 ─────────────────────────────────────────── */
 #run{max-width:940px;margin:0 auto;padding:0 20px 12px}
@@ -224,6 +227,11 @@ main{max-width:1240px;margin:0 auto;padding:22px 20px 120px}
               min-width:52px;text-align:right}
 .tools .stat{font-size:12.5px;color:var(--faint);white-space:nowrap;
              border-left:1px solid var(--line);padding-left:11px}
+/* 「还没配好」不能靠旁边挂一段说明来提示：工具栏在 1440 宽下本来就是一整行，
+   多一段二十多字的灰字会把它挤成两行，正文跟着往下跳一截。所以状态写在按钮
+   自己身上——文案改成「先配模型」，虚线框表示它不是坏了、是还没配。
+   完整原因留在 title 里，点一下直接打开设置。 */
+.btn.off{opacity:.62;border-style:dashed}
 /* 提示条与搜索条跟正文同宽：铺满 1240 的话，视线要横跨到播放器那边去 */
 #notice,.tools,#fails{max-width:46em;margin-left:auto;margin-right:auto}
 
@@ -355,6 +363,83 @@ mark.cur{background:var(--mark-cur);color:var(--mark-cur-ink);
 .player .pf{padding:7px 10px;font-size:12px;color:var(--muted);
             font-variant-numeric:tabular-nums}
 
+/* 模型设置面板：和重点列表一样走流内展开，不做浮层。
+   浮层要处理「点外面关闭」、要压 z-index、夜间还得单独调一层阴影，而这里
+   需要的只是一个能安稳填三行字的方框。 */
+.modelbox{
+  max-width:46em;margin:0 auto 18px;background:var(--panel);
+  border:1px solid var(--line);border-radius:11px;padding:12px 14px 14px;
+  box-shadow:var(--shadow);
+}
+.modelbox[hidden]{display:none}
+.modelbox .mh{display:flex;align-items:center;gap:9px;margin-bottom:10px}
+.modelbox h3{margin:0;font-size:13.5px;font-weight:600}
+.modelbox .sp{flex:1}
+.modelbox .mrow{display:grid;grid-template-columns:78px 1fr;gap:10px;
+                align-items:center;margin:0 0 8px}
+.modelbox label{font-size:12.5px;color:var(--muted)}
+.modelbox input{
+  width:100%;min-width:0;background:var(--field);border:1px solid var(--line);
+  border-radius:8px;padding:7px 10px;font-size:13px;outline:none;
+}
+.modelbox input:focus{background:var(--panel);border-color:var(--accent-line);
+  box-shadow:0 0 0 3px var(--accent-glow)}
+.modelbox input::placeholder{color:var(--placeholder)}
+.modelbox .mact{display:flex;align-items:center;gap:9px;margin-top:10px;flex-wrap:wrap}
+.modelbox .mnote{font-size:12px;color:var(--muted)}
+/* 这段是给人看的告知，不是免责声明：全文确实会离开这台机器，确实要花钱。 */
+.modelbox .mhint{font-size:12px;line-height:1.85;color:var(--muted);margin:11px 0 0;
+  padding-top:10px;border-top:1px solid var(--line-soft)}
+
+/* 总结：正文上方、流内展开，不盖住正文，也不用管浮层的关闭时机。 */
+.summary{
+  max-width:46em;margin:0 auto 22px;background:var(--panel);
+  border:1px solid var(--line);border-radius:11px;padding:13px 15px 15px;
+  box-shadow:var(--shadow);
+}
+.summary[hidden]{display:none}
+.summary .sh{display:flex;align-items:center;gap:9px;margin-bottom:10px}
+.summary h3{margin:0;font-size:13.5px;font-weight:600}
+.summary .sp{flex:1}
+.summary .sstat{font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums}
+.summary .s-tldr{
+  margin:0 0 14px;padding:11px 13px;background:var(--field);border-radius:9px;
+  font-size:14.5px;line-height:1.8;color:var(--ink);
+}
+.summary .s-block{margin:0 0 14px}
+.summary .s-block:last-child{margin-bottom:0}
+.summary .s-block h4{margin:0 0 7px;font-size:12px;font-weight:600;
+  color:var(--muted);letter-spacing:.04em}
+.summary ol{margin:0;padding-left:20px}
+.summary ol li{margin:0 0 7px;font-size:13.5px;line-height:1.8;color:var(--sub)}
+.summary ol li:last-child{margin-bottom:0}
+.summary .cl{list-style:none;margin:0;padding:0}
+.summary .cl li{display:grid;grid-template-columns:auto 1fr;gap:9px;padding:4px 0;
+  font-size:13px;line-height:1.75}
+.summary .cl b{color:var(--note-strong);font-weight:600}
+.summary .cl span{color:var(--muted)}
+/* 锚点：一个小时间按钮。能点的悬停变主色；无出处的就是个灰字，不给手型、
+   也不给悬停反馈——看起来能点却点不动，比看起来不能点更让人恼火。 */
+.summary .anchor{
+  display:inline-block;margin-left:8px;padding:0 5px;border-radius:5px;
+  border:1px solid var(--line);background:var(--panel);vertical-align:1px;
+  font:11.5px/1.7 ui-monospace,Consolas,monospace;color:var(--faint);
+  font-variant-numeric:tabular-nums;cursor:pointer;
+}
+.summary .anchor:hover{border-color:var(--accent-line);color:var(--accent);
+  background:var(--accent-glow)}
+.summary .anchor.none{border-color:transparent;background:none;cursor:default;
+  color:var(--faint)}
+.summary .anchor.none:hover{color:var(--faint);background:none;border-color:transparent}
+.summary .note{
+  margin:0 0 12px;padding:8px 11px;border-radius:8px;font-size:12.5px;
+  line-height:1.75;background:var(--warn-bg);border:1px solid var(--warn-line);
+  color:var(--note-strong);
+}
+.summary .s-empty{font-size:13px;color:var(--muted);line-height:1.9}
+.summary .s-err{font-size:13px;line-height:1.85;color:var(--bad);word-break:break-word}
+.summary .s-err .fix{display:block;margin-top:7px;color:var(--muted);font-size:12.5px}
+
 /* 失败明细 */
 .fails{margin:26px 0 0;border-top:1px solid var(--line);padding-top:18px}
 .fails h3{font-size:13.5px;font-weight:600;margin:0 0 10px;color:var(--bad)}
@@ -393,6 +478,10 @@ mark.cur{background:var(--mark-cur);color:var(--mark-cur-ink);
              placeholder="粘贴 BV 号或视频链接，回车取字幕">
       <button class="btn primary" id="go" type="submit">取字幕</button>
     </form>
+    <button class="btn sm" id="modelbtn" type="button"
+            title="配置模型服务：总结要用它。三样只存在这个浏览器里">⚙ 模型</button>
+    <button class="btn sm off sumbtn" id="sumbtn" type="button"
+            title="先在设置里填服务地址、模型名、API key">先配模型</button>
     <button class="btn sm themetog" id="themebtn" type="button">🌙 夜间</button>
   </div>
   <div id="run" hidden>
@@ -404,6 +493,40 @@ mark.cur{background:var(--mark-cur);color:var(--mark-cur-ink);
 <main>
   <div id="notice"></div>
 
+  <div class="modelbox" id="modelbox" hidden>
+    <div class="mh">
+      <h3>模型设置</h3>
+      <span class="sp"></span>
+      <button class="pbtn" id="modelclose" type="button" title="收起设置">✕</button>
+    </div>
+    <div class="mrow">
+      <label for="mbase">服务地址</label>
+      <input id="mbase" type="text" spellcheck="false"
+             placeholder="api.deepseek.com/v1">
+    </div>
+    <div class="mrow">
+      <label for="mname">模型名</label>
+      <input id="mname" type="text" spellcheck="false" placeholder="deepseek-chat">
+    </div>
+    <div class="mrow">
+      <label for="mkey">API key</label>
+      <input id="mkey" type="password" spellcheck="false" placeholder="sk-…">
+    </div>
+    <div class="mact">
+      <button class="btn sm primary" id="modelsave" type="button">保存</button>
+      <button class="btn sm" id="modelclear" type="button">清除</button>
+      <span class="mnote" id="modelnote"></span>
+    </div>
+    <p class="mhint">
+      地址填到 <code>/v1</code> 这一层就行，末尾的 <code>/chat/completions</code>
+      会自己接上；不写 <code>https://</code> 的话按 https 算（要走 http 就得自己写明）。
+      只支持 OpenAI 兼容的接口。<br>
+      <b>点总结时，这一篇的全文会发给你填的这个服务</b>，按它的计费规则花钱——
+      所以用你自己的 key。三样东西只存在这个浏览器里，不写进任何文件，
+      也不会出现在服务日志里。换台机器就要重新填。
+    </p>
+  </div>
+
   <div class="tools" id="tools" hidden>
     <input id="find" type="text" spellcheck="false" placeholder="在文字稿里搜…">
     <button class="btn sm" id="prev" title="上一处 (Shift+Enter)">↑</button>
@@ -413,6 +536,18 @@ mark.cur{background:var(--mark-cur);color:var(--mark-cur-ink);
             title="把整篇文字稿导出成 Markdown，每段前面带时间戳。没有正文时这个按钮是灰的">导出全文 md</button>
     <span class="count" id="count"></span>
     <span class="stat" id="stat"></span>
+  </div>
+
+  <div class="summary" id="summary" hidden>
+    <div class="sh">
+      <h3 id="sumh">这一篇的总结</h3>
+      <span class="sp"></span>
+      <span class="sstat" id="sumstat"></span>
+      <button class="btn sm" id="sumregen" type="button"
+              title="重新调一次模型，覆盖现在这份（会再花一次钱）">重新生成</button>
+      <button class="pbtn" id="sumclose" type="button" title="收起总结">✕</button>
+    </div>
+    <div id="sumbody"></div>
   </div>
 
   <div class="marksbox" id="marksbox" hidden>
@@ -473,7 +608,10 @@ var OUT = {
 };
 var S = { id:null, timer:null, tick:null, startedAt:0, marks:[], cur:-1,
           text:"", parts:0, task:null, mk:[], lsBroken:false, part:0, anyJump:false,
-          posArmed:false, transcript:null };
+          posArmed:false, transcript:null,
+          /* 总结这一层的临时状态。sumMem 是内存里的那份缓存：localStorage
+             写不进去时（隐私模式）这一页仍然要能看，不能存一遍就消失。 */
+          sumBusy:false, sumErr:null, sumMem:null, sumAnchor:"", sumWarned:false };
 
 /* ── 小工具 ──────────────────────────────────────── */
 function el(tag, cls, text){
@@ -558,6 +696,8 @@ function switchTo(id, note){
   resetNotice(); clear($("#doc")); clear($("#fails"));
   $("#tools").hidden = true;
   $("#marksbox").hidden = true;        // 换任务了，重点列表先收起来
+  $("#summary").hidden = true;         // 总结是按任务存的，别把上一条的摆在眼前
+  S.sumMem = {}; S.sumErr = null; S.sumAnchor = "";
   if (note) notice("ok", note, "");
   poll();
 }
@@ -736,6 +876,8 @@ function selectPart(i, scroll){
   // 按 ↓ 会顺着上一篇的命中往前跳。带上 noJump，别把人从这一篇顶上拽走。
   var q = $("#find").value;
   if (q) runSearch(q, true);
+  // 总结是按篇存的：切到哪一篇就看哪一篇，没做过的显示「还没生成」。
+  if (!$("#summary").hidden) renderSummary();
 }
 
 /* 统计只算当前这一篇。多分 P 时若把各篇加起来，屏幕上摆着 8 段，
@@ -806,6 +948,7 @@ function renderDoc(d, task){
   if (!d.parts || !d.parts.length){
     notice(meta[1], meta[0], d.hint || "没有可显示的内容");
     $("#exportFull").disabled = true;   // 没有正文就不给导出，别让人下个空文件
+    updateSumButton();
     if (r.parts_truncated) {
       notice("warn", "分 P 被截断", "这条合集共 " + (r.parts_truncated + (r.parts_written||0)) +
              " 个分 P，按单条上限只取了一部分。要全取请用命令行带 max_parts=0 或走任务面板。");
@@ -889,6 +1032,7 @@ function renderDoc(d, task){
   updateStat();
   $("#tools").hidden = false;
   $("#exportFull").disabled = false;
+  updateSumButton();                 // 有正文了，总结才可能点得动
   renderFailures(r, task);
   restoreMarks();
   // 带 ?q= 进来的是「我要搜这个词」，位置让位给搜索：搜索要跳到第一处命中，
@@ -1372,6 +1516,530 @@ function exportFull(){
 
 $("#exportFull").addEventListener("click", exportFull);
 
+/* ── 单篇总结（学习工作台第 1 层）───────────────────── */
+/* 这一层的规矩只有一条：**没有出处的总结不上线**。
+   所以整块拆成两半——发送前（怎么让模型看见真实时间）和渲染前（哪些时间是真的）。
+
+   模型配置只存浏览器，和划重点、读位、主题一个路数：没有账号，也就没有同步。
+   key 不写文件、不进日志、不进任何一条错误消息——它的唯一去处是这个请求的
+   Authorization 头。 */
+
+var MODEL_KEY = "asr-polish:model:v1";
+var SUM_PREFIX = "asr-polish:summary:v1:";
+
+function modelKey(){ return MODEL_KEY }
+function sumKey(taskId){ return SUM_PREFIX + taskId }
+
+function lsDel(k){ try { localStorage.removeItem(k); return true } catch(e){ return false } }
+
+/* 配置解析。坏 JSON、字段类型不对，一律当「没配」——宁可让按钮灰着让人去填，
+   也不能拿一份半截配置去发请求（那会把 key 发到一个空地址上）。 */
+function parseModel(raw){
+  var empty = { base:"", model:"", key:"" };
+  if (!raw) return empty;
+  try {
+    var d = JSON.parse(raw);
+    if (!d || typeof d !== "object") return empty;
+    return {
+      base:  typeof d.base  === "string" ? d.base  : "",
+      model: typeof d.model === "string" ? d.model : "",
+      key:   typeof d.key   === "string" ? d.key   : ""
+    };
+  } catch(e){ return empty }
+}
+
+/* 缺什么就说什么。泛泛一句「请先配置」等于没说：用户不知道是地址没填、
+   模型名没填，还是 key 忘了粘。 */
+function modelReady(cfg){
+  cfg = cfg || { base:"", model:"", key:"" };
+  var miss = [];
+  if (!String(cfg.base  || "").trim()) miss.push("服务地址");
+  if (!String(cfg.model || "").trim()) miss.push("模型名");
+  if (!String(cfg.key   || "").trim()) miss.push("API key");
+  return {
+    ok: !miss.length,
+    missing: miss,
+    why: miss.length ? ("先在设置里填" + miss.join("、")) : ""
+  };
+}
+
+/* 发给模型的正文。
+   
+   为什么要带时间戳：要点要能点回原文，模型就必须在自己看得见的时间戳里挑。
+   `buildPlainText` 刻意剥掉了时间（给模型读的正文，时间戳是噪音），所以这里
+   回手把它按行对齐补回来——**行数与段数对不上就整篇不标**，错位的时间戳会
+   让每一条要点都指到别处，比没有时间戳糟得多。
+   
+   正文本身仍然出自 buildPlainText：只有一份「全文怎么拼」的规矩。 */
+function buildSummarySource(full, i){
+  var part = (full && full.parts && full.parts[i]) || null;
+  if (!part) return { text:"", hasTime:false, segs:[] };
+  var segs = part.segments || [];
+  // 单篇传进去，buildPlainText 就不会加「## P1 · 标题」那一层壳
+  var body = buildPlainText({ parts: [part] });
+  var lines = body ? body.split("\n") : [];
+  var hasTime = !!part.hasTime;
+  var out = [];
+  if (hasTime && lines.length === segs.length){
+    for (var k = 0; k < segs.length; k++){
+      var st = segs[k].start == null ? "无时间" : fmt(segs[k].start);
+      out.push("[" + st + "] " + lines[k]);
+    }
+  } else {
+    out = lines.slice();
+    if (lines.length !== segs.length) hasTime = false;
+  }
+  var head = hasTime ? ""
+    : "（这一篇没有逐句时间戳，行首没有 [分:秒]。所有要点的 t 请写成 null。）\n\n";
+  return { text: head + out.join("\n"), hasTime: hasTime, segs: segs };
+}
+
+/* 模型给的时间 → 秒。"01:23" / "1:02:05" / "83" 三种都认。
+   只做单位换算，不做任何补全："3" 就是 3 秒，不是 3 分钟。 */
+function parseStamp(v){
+  if (v == null) return null;
+  if (typeof v === "number") return v >= 0 ? Math.round(v) : null;
+  var s = String(v).trim().replace(/^\[/, "").replace(/\]$/, "").trim();
+  if (!s) return null;
+  var m = /^(\d+)$/.exec(s);
+  if (m) return parseInt(m[1], 10);
+  m = /^(?:(\d+):)?(\d{1,3}):(\d{1,2})$/.exec(s);
+  if (m){
+    return (m[1] ? parseInt(m[1], 10) * 3600 : 0)
+         + parseInt(m[2], 10) * 60 + parseInt(m[3], 10);
+  }
+  m = /^(\d{1,3}):(\d{1,2})$/.exec(s);
+  if (m) return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+  return null;
+}
+
+/* 这个时间在不在原文里：返回最近那一段的序号，够不着就 -1。
+   
+   容差 1.5 秒不是为了宽容，是因为**页面显示的时间是四舍五入过的**：段落
+   start 是 62.7，屏幕上写 01:03，模型抄回 63——不放容差的话，每一条要点都会
+   被判成「无出处」，而这个功能就白做了。1.5 秒不会指到相邻段（相邻段间隔
+   普遍在 2 秒以上），取最近的即可。 */
+function matchStamp(segs, sec, tol){
+  if (sec == null || !segs || !segs.length) return -1;
+  tol = tol == null ? 1.5 : tol;
+  var best = -1, bestD = Infinity;
+  for (var i = 0; i < segs.length; i++){
+    var st = segs[i].start;
+    if (st == null) continue;
+    var d = Math.abs(st - sec);
+    if (d < bestD){ bestD = d; best = i }
+  }
+  return bestD <= tol ? best : -1;
+}
+
+/* 把每条要点配上「在原文第几段」。idx = -1 就是无出处。
+   这一篇本来没有逐句时间（必剪 ASR / 纯文本）时，哪怕模型硬给了时间也一律
+   判无出处——它不可能知道，给了就是编的。 */
+function anchorsOf(points, segs, hasTime, tol){
+  return (points || []).map(function(p){
+    var t = parseStamp(p && p.t);
+    var idx = (hasTime && t != null) ? matchStamp(segs, t, tol) : -1;
+    return { text: (p && p.text) || "", t: t, idx: idx };
+  });
+}
+
+/* 这一篇正文的指纹。任务重跑、字幕变了，指纹就变，旧总结自动作废。
+   用内容而不是时间戳：任务表的字段是「任务什么时候跑的」，不是「这篇字幕
+   什么时候变的」；而字数 + 段数 + 首尾两句足以认出「同一篇」。 */
+function summarySig(part){
+  var segs = (part && part.segments) || [];
+  if (!segs.length) return "0";
+  var chars = 0;
+  for (var i = 0; i < segs.length; i++) chars += String(segs[i].text || "").length;
+  var head = String(segs[0].text || "").slice(0, 24);
+  var tail = String(segs[segs.length - 1].text || "").slice(-24);
+  return segs.length + ":" + chars + ":" + head + "|" + tail;
+}
+
+/* 缓存按「任务 + 分 P 名」分组，和重点、读位一致。
+   解析照旧全容错：坏 JSON、条目缺 summary、points 不是数组，都当没存过。 */
+function parseSumStore(raw){
+  var empty = { v:1, parts:{} };
+  if (!raw) return empty;
+  try {
+    var d = JSON.parse(raw);
+    if (!d || typeof d !== "object") return empty;
+    var src = d.parts;
+    if (!src || typeof src !== "object"
+        || Object.prototype.toString.call(src) === "[object Array]") return empty;
+    var parts = {};
+    for (var k in src){
+      if (!Object.prototype.hasOwnProperty.call(src, k)) continue;
+      var it = src[k], sm = it && it.summary;
+      if (!sm || typeof sm !== "object") continue;
+      parts[k] = {
+        sig: typeof it.sig === "string" ? it.sig : "",
+        at:  typeof it.at  === "string" ? it.at  : "",
+        model: typeof it.model === "string" ? it.model : "",
+        summary: {
+          tldr: typeof sm.tldr === "string" ? sm.tldr : "",
+          points: Object.prototype.toString.call(sm.points) === "[object Array]"
+                  ? sm.points : [],
+          concepts: Object.prototype.toString.call(sm.concepts) === "[object Array]"
+                    ? sm.concepts : []
+        }
+      };
+    }
+    return { v:1, parts: parts };
+  } catch(e){ return empty }
+}
+
+function sumOf(store, name){
+  if (!store || !store.parts || !name) return null;
+  return store.parts[name] || null;
+}
+
+/* 不改传进来的对象，理由和 withPos 一样：读-改-写中间抛了，半截数据不该流回去。 */
+function withSum(store, name, item){
+  var out = {};
+  var src = (store && store.parts) || {};
+  for (var k in src){
+    if (Object.prototype.hasOwnProperty.call(src, k)) out[k] = src[k];
+  }
+  out[name] = item;
+  return { v:1, parts: out };
+}
+
+/* ── 总结：读写与渲染 ─────────────────────────────── */
+
+function cfgNow(){ return parseModel(lsRead(modelKey())) }
+
+/* 当前这一篇。索引和 renderDoc 里 append 的顺序是同一个，因为两边都按
+   d.parts 的顺序走。 */
+function currentPart(){
+  var full = buildFullText(S.transcript, S.task);
+  var i = currentPartIndex();
+  return { full: full, i: i, part: full.parts[i] || null };
+}
+
+/* 内存优先：隐私模式下 localStorage 只读，存进去的那份拿不回来，
+   但这一页里点完就该立刻看得见。 */
+function summaryFor(name){
+  if (!name) return null;
+  if (S.sumMem && S.sumMem[name]) return S.sumMem[name];
+  return sumOf(parseSumStore(lsRead(sumKey(S.id))), name);
+}
+
+function saveSummaryItem(name, item){
+  if (!name) return false;
+  if (!S.sumMem) S.sumMem = {};
+  S.sumMem[name] = item;
+  if (!S.id) return false;
+  var ok = lsWrite(sumKey(S.id),
+                   JSON.stringify(withSum(parseSumStore(lsRead(sumKey(S.id))), name, item)));
+  if (!ok && !S.sumWarned){
+    S.sumWarned = true;
+    notice("warn", "总结存不进浏览器",
+      "这个浏览器不允许页面写 localStorage（隐私模式，或禁用了站点数据）。"
+      + "这一份总结在这一页里照常看，但刷新就没了。");
+  }
+  return ok;
+}
+
+/* 按「这一段的时间」找 DOM，不用段序号。
+   buildFullText 会多拆一次占位块、renderDoc 不会，两条路的段序号在某些数据
+   上可能差一位；用时间找就不会指错地方。 */
+function cueByStart(t, tol){
+  if (t == null) return null;
+  var secs = partSections();
+  var sec = secs[currentPartIndex()];
+  if (!sec) return null;
+  var cues = sec.querySelectorAll(".cue");
+  var best = null, bestD = Infinity;
+  for (var i = 0; i < cues.length; i++){
+    var st = cues[i]._start;
+    if (st == null) continue;
+    var d = Math.abs(st - t);
+    if (d < bestD){ bestD = d; best = cues[i] }
+  }
+  return bestD <= (tol == null ? 1.5 : tol) ? best : null;
+}
+
+function errFix(kind){
+  if (kind === "no_key" || kind === "auth")
+    return "点顶栏「⚙ 模型」改 key，回来再点「重新生成」。";
+  if (kind === "bad_base" || kind === "connect")
+    return "点顶栏「⚙ 模型」检查服务地址；确认这台机器能访问它。";
+  if (kind === "timeout")
+    return "稍等一下再点「重新生成」；换一个更快的模型也有用。";
+  if (kind === "rate")
+    return "等几分钟再点，顺便看看账号额度。";
+  if (kind === "parse")
+    return "换个指令跟随好一些的模型再试——这一位没按 JSON 输出。";
+  return "";
+}
+
+function anchorEl(r, part){
+  var ok = r.idx >= 0;
+  var label = ok ? fmt(part.segments[r.idx].start)
+                 : (r.t == null ? "无出处" : fmt(r.t));
+  var b = el("button", "anchor" + (ok ? "" : " none"), label);
+  b.type = "button";
+  if (!ok){
+    b.title = r.t == null
+      ? "这条要点没有时间戳：模型没给，或者这一篇本来就没有逐句时间"
+      : ("模型给的 " + fmt(r.t) + " 在原文里找不到对应段落，所以不给跳转");
+    return b;
+  }
+  b.title = "回到这一段（" + label + "），再点一次跳到视频这里";
+  b.addEventListener("click", function(){
+    var cue = cueByStart(r.t);
+    if (!cue){
+      // 页面里已经找不到这一段（多半是任务重跑、正文变了）：别假装能跳
+      b.className = "anchor none";
+      b.title = "现在的正文里找不到这一段了";
+      return;
+    }
+    // 已经落在这儿了，再点一次才是「去视频里看」——一次点击不该同时干两件事
+    if (S.sumAnchor === label + "@" + r.idx){
+      if (cue._jump) showPlayer(cue._meta, cue._start);
+      return;
+    }
+    S.sumAnchor = label + "@" + r.idx;
+    focusCue(cue);
+  });
+  return b;
+}
+
+function paintSummaryItems(part, item){
+  var body = $("#sumbody");
+  var sm = item.summary || {};
+  var rows = anchorsOf(sm.points, part.segments || [], !!part.hasTime);
+
+  if (!part.hasTime){
+    body.appendChild(el("div", "note",
+      "这一篇没有逐句时间戳（必剪 ASR 或纯文本导出），要点无法定位到视频。"
+      + "内容照常，只是点不了。"));
+  }
+  if (sm.tldr) body.appendChild(el("div", "s-tldr", sm.tldr));
+
+  if (rows.length){
+    var block = el("div", "s-block");
+    block.appendChild(el("h4", null, "核心要点"));
+    var ol = el("ol");
+    rows.forEach(function(r){
+      var li = el("li");
+      li.appendChild(document.createTextNode(r.text));
+      li.appendChild(anchorEl(r, part));
+      ol.appendChild(li);
+    });
+    block.appendChild(ol);
+    body.appendChild(block);
+  }
+
+  var concepts = sm.concepts || [];
+  if (concepts.length){
+    var cb = el("div", "s-block");
+    cb.appendChild(el("h4", null, "关键概念"));
+    var ul = el("ul", "cl");
+    concepts.forEach(function(c){
+      var li = el("li");
+      li.appendChild(el("b", null, c.term || ""));
+      li.appendChild(el("span", null, c.def || ""));
+      ul.appendChild(li);
+    });
+    cb.appendChild(ul);
+    body.appendChild(cb);
+  }
+
+  var bits = [];
+  if (item.model) bits.push(item.model);
+  if (item.at) bits.push(item.at + " 生成");
+  if (bits.length) $("#sumstat").textContent = bits.join(" · ");
+}
+
+function renderSummary(){
+  var box = $("#summary");
+  if (!box || box.hidden) return;
+  var body = $("#sumbody");
+  clear(body);
+  $("#sumstat").textContent = "";
+  $("#sumregen").disabled = !!S.sumBusy;
+
+  var cur = currentPart();
+  if (!cur.part){
+    $("#sumh").textContent = "总结";
+    body.appendChild(el("div", "s-empty", "这一篇没有正文，没什么可总结的。"));
+    return;
+  }
+  $("#sumh").textContent = "这一篇的总结"
+    + (cur.part.label ? " · " + cur.part.label : "");
+
+  if (S.sumBusy){
+    body.appendChild(el("div", "s-empty",
+      "正在让模型读这一篇…要点要一条条对回原文，可能要半分钟。"));
+    return;
+  }
+  if (S.sumErr && S.sumErr.part === cur.part.name){
+    var p = el("div", "s-err", S.sumErr.message);
+    var fix = S.sumErr.fix || errFix(S.sumErr.kind);
+    if (fix) p.appendChild(el("span", "fix", fix));
+    body.appendChild(p);
+    return;
+  }
+
+  var item = summaryFor(cur.part.name);
+  if (!item){
+    body.appendChild(el("div", "s-empty",
+      "还没有这一篇的总结。点「重新生成」让它读一遍——这一篇有 "
+      + (cur.part.segments || []).length + " 段。"));
+    return;
+  }
+  if (item.sig !== summarySig(cur.part)){
+    // 拿着旧总结配新字幕是最坏的一种：每条要点都点得动，但都指到别处。
+    body.appendChild(el("div", "note",
+      "字幕变过了（任务重跑过，或者这一篇被重新抓了一遍），这份总结对不上现在的"
+      + "正文，所以不再显示。点「重新生成」重新做一份。"));
+    $("#sumstat").textContent = "缓存已失效";
+    return;
+  }
+  paintSummaryItems(cur.part, item);
+}
+
+/* 配好没有 → 按钮的样子。
+   未配置时不是简单置灰：按钮文字变成「先配模型」，点它是去填设置而不是报错。
+   灰着点不动的按钮只会让人猜「为什么」。
+   也不加 aria-disabled：这个按钮**是可点的**（点了打开设置），对读屏器谎称
+   禁用，等于把它从键盘和读屏用户的路径里摘掉。 */
+function updateSumButton(){
+  var btn = $("#sumbtn");
+  if (!btn) return;
+  var rd = modelReady(cfgNow());
+  var hasDoc = !!(S.transcript && S.transcript.parts && S.transcript.parts.length);
+  btn.className = "btn sm sumbtn" + (rd.ok ? "" : " off");
+  btn.textContent = rd.ok ? "总结" : "先配模型";
+  btn.disabled = !hasDoc || !!S.sumBusy;
+  btn.title = rd.ok
+    ? "把这一篇整理成要点。会调用设置里配的模型服务，按它那边花钱"
+    : (rd.why + "。点这里去填。");
+}
+
+async function generateSummary(){
+  var cur = currentPart();
+  if (!cur.part || !S.id) return;
+
+  var cfg = cfgNow();
+  var rd = modelReady(cfg);
+  if (!rd.ok){
+    // 缺配置就别发请求：发出去也只会换回一句「key 无效」，白等一轮
+    openModelBox(true);
+    $("#modelnote").textContent = rd.why + "，填完再点总结。";
+    return;
+  }
+
+  S.sumBusy = true; S.sumErr = null;
+  updateSumButton();
+  renderSummary();
+
+  var src = buildSummarySource(cur.full, cur.i);
+  var res = null, thrown = null;
+  try {
+    res = await call("POST", "/api/tasks/" + encodeURIComponent(S.id) + "/summary",
+                     { model: cfg, text: src.text, hasTime: src.hasTime,
+                       part: cur.part.name });
+  } catch(e){ thrown = e }
+
+  S.sumBusy = false;
+  updateSumButton();
+
+  if (thrown){
+    S.sumErr = { part: cur.part.name, kind: "net",
+      message: "请求发不出去：这一页和本机服务断开了（" + (thrown.message || thrown) + "）。",
+      fix: "确认 asr-polish serve 还在跑，然后刷新页面重试。" };
+    renderSummary();
+    return;
+  }
+  if (!res.ok){
+    S.sumErr = { part: cur.part.name, kind: res.data.kind || "model",
+                 message: res.data.error || ("HTTP " + res.code) };
+    renderSummary();
+    return;
+  }
+
+  var item = { sig: summarySig(cur.part),
+               at: mdStamp(new Date()),
+               model: res.data.model || cfg.model,
+               summary: res.data.summary || { tldr:"", points:[], concepts:[] } };
+  saveSummaryItem(cur.part.name, item);
+  S.sumAnchor = "";
+  renderSummary();
+}
+
+/* ── 模型设置面板 ─────────────────────────────────── */
+
+function openModelBox(open){
+  var box = $("#modelbox");
+  if (!box) return;
+  if (open){
+    var cfg = cfgNow();
+    $("#mbase").value = cfg.base;
+    $("#mname").value = cfg.model;
+    $("#mkey").value = cfg.key;
+    $("#modelnote").textContent = "";
+  }
+  box.hidden = !open;
+}
+
+$("#modelbtn").addEventListener("click", function(){
+  openModelBox($("#modelbox").hidden);
+});
+$("#modelclose").addEventListener("click", function(){ openModelBox(false); });
+
+$("#modelsave").addEventListener("click", function(){
+  var cfg = {
+    base:  $("#mbase").value.trim(),
+    model: $("#mname").value.trim(),
+    key:   $("#mkey").value.trim()
+  };
+  var rd = modelReady(cfg);
+  if (!rd.ok){
+    $("#modelnote").textContent = "还缺" + rd.missing.join("、") + "。";
+    return;
+  }
+  var ok = lsWrite(modelKey(), JSON.stringify(cfg));
+  $("#modelnote").textContent = ok
+    ? "已保存，只在这个浏览器里。"
+    : "存不进浏览器（隐私模式或禁用了站点数据）：这次能用，刷新就没了。";
+  updateSumButton();
+  if (ok) setTimeout(function(){ openModelBox(false) }, 700);
+});
+
+$("#modelclear").addEventListener("click", function(){
+  lsDel(modelKey());
+  $("#mbase").value = ""; $("#mname").value = ""; $("#mkey").value = "";
+  $("#modelnote").textContent = "已清除。总结按钮会重新变灰。";
+  updateSumButton();
+});
+
+$("#sumbtn").addEventListener("click", function(){
+  var rd = modelReady(cfgNow());
+  if (!rd.ok){
+    // 点了不是报错，是直接把要填的东西摆出来
+    openModelBox(true);
+    $("#modelnote").textContent = rd.why + "，填完再点总结。";
+    return;
+  }
+  var box = $("#summary");
+  var wasOpen = !box.hidden;
+  box.hidden = wasOpen;
+  if (wasOpen) return;
+  S.sumErr = null;
+  S.sumAnchor = "";
+  renderSummary();
+  var cur = currentPart();
+  // 有缓存就直接看，没缓存才真去调模型——打开就花钱是最不该有的默认
+  if (cur.part && !summaryFor(cur.part.name)) generateSummary();
+});
+
+$("#sumclose").addEventListener("click", function(){ $("#summary").hidden = true });
+$("#sumregen").addEventListener("click", function(){ generateSummary() });
+
+
 /* ── 断点续读 ────────────────────────────────────── */
 /* 记的是「哪一篇 + 该篇第几段」，不是滚动像素：换个窗口大小像素全变，段落
    序号不变。仍然只存 localStorage，按任务 id 分块，块里再按分 P 名分开——
@@ -1436,9 +2104,12 @@ function pickCueIndex(tops, boundary){
 }
 
 /* 位置存不进去（隐私模式）不弹提示：读位这件事不值得为它打断一次阅读，
-   页面照旧能用，只是刷新后从头开始。 */
+   页面照旧能用，只是刷新后从头开始。返回值给总结那层用——总结是要花钱的，
+   「存不住」必须说一声。 */
 function lsRead(k){ try { return localStorage.getItem(k); } catch(e){ return null } }
-function lsWrite(k, v){ try { localStorage.setItem(k, v); } catch(e){} }
+function lsWrite(k, v){
+  try { localStorage.setItem(k, v); return true; } catch(e){ return false }
+}
 
 function partNameOf(sec){
   var c = sec.querySelector(".cue");
@@ -1828,7 +2499,19 @@ window.__reader = {
   themeKey: themeKey,
   themeFrom: themeFrom,
   nextTheme: nextTheme,
-  themeLabel: themeLabel
+  themeLabel: themeLabel,
+  modelKey: modelKey,
+  sumKey: sumKey,
+  parseModel: parseModel,
+  modelReady: modelReady,
+  buildSummarySource: buildSummarySource,
+  parseStamp: parseStamp,
+  matchStamp: matchStamp,
+  anchorsOf: anchorsOf,
+  summarySig: summarySig,
+  parseSumStore: parseSumStore,
+  sumOf: sumOf,
+  withSum: withSum
 };
 })();
 </script>

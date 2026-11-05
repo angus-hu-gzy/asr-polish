@@ -14,6 +14,7 @@ GET    /api/tasks            列表，支持 ?status=&limit=
 POST   /api/tasks/{id}/retry 手动重试（failed 重新排队；running 强制重启）
 POST   /api/tasks/{id}/retry-failed  只重跑失败的条目（新建一个任务）
 GET    /api/tasks/{id}/transcript    只读：把已落盘的字幕读成分段（阅读页用）
+POST   /api/tasks/{id}/summary       单篇总结：转发给 OpenAI 兼容的模型服务
 GET    /api/health           健康检查
 GET    /                     面板
 GET    /reader               阅读页
@@ -31,7 +32,7 @@ from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
 from ..bili import cookie_status, current_min_interval, throttle_waited
-from . import transcript
+from . import summary, transcript
 from .reader import html as reader_html
 from .store import DONE, FAILED, PENDING, RUNNING, Store
 from .worker import WorkerPool
@@ -451,6 +452,35 @@ class Handler(BaseHTTPRequestHandler):
             body["note"] = ("只重跑失败的 %d 条（原任务 %s）"
                             % (len(retry), task.id))
             self._json(202, body)
+            return
+
+        if len(parts) == 4 and parts[:2] == ["api", "tasks"] \
+                and parts[3] == "summary":
+            # 单篇总结。**服务端不读磁盘、不读 transcript**：正文由前端用
+            # buildPlainText 拼好发过来，这样「全文是什么」只有一个出处
+            # （reader.py 的底座），后端不会长出第二套分段规则。
+            #
+            # 三个约束值得写在这：
+            # 1. key 只在这次请求的内存里走一遍，不落盘、不进 app.note。
+            #    log_message 只记 method + path，请求体从来不入日志。
+            # 2. 每次都真的调一次模型（要花钱），所以前端只在点按钮时调，
+            #    打开页面绝不自动触发。
+            # 3. 失败按 kind 分开返回，message 带着提供方的原话——吞成一句
+            #    「总结失败」的话，用户没法判断该改地址、改 key 还是等一会儿。
+            data = self._body()
+            if data is None:
+                self._err(400, "请求体不是合法 JSON（或超过 1MB）")
+                return
+            task = self.app.store.get(parts[2])
+            if task is None:
+                self._err(404, "没有这个任务：%s" % parts[2])
+                return
+            try:
+                out = summary.call(data.get("model") or {}, data.get("text") or "")
+            except summary.SummaryError as e:
+                self._json(e.status, {"error": e.message, "kind": e.kind})
+                return
+            self._json(200, out)
             return
 
         self._err(404, "未知路径：%s" % u.path)

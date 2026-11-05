@@ -141,6 +141,7 @@ asr-polish status                     # 看队列与最近任务
 | `POST /api/tasks/{id}/retry` | `failed` 重新排队；`running` 强制重启（旧执行的结果会被丢弃） |
 | `POST /api/tasks/{id}/retry-failed` | 只重跑失败的条目：**新建一个任务**，带 `only`，已成功的文件不动 |
 | `GET /api/tasks/{id}/transcript` | 只读：把已落盘的字幕读成分段（阅读页用，历史任务也能读） |
+| `POST /api/tasks/{id}/summary` | 单篇总结：把前端拼好的正文转发给 OpenAI 兼容接口，返回结构化摘要（**不落盘、不记 key**） |
 | `GET /api/health` | 存活与 worker 占用 |
 
 三件事决定了它的可靠性，都在 `asr_polish/server/` 里：
@@ -541,7 +542,8 @@ asr-polish/
 │   │   ├── jobs.py        #   任务执行器（把抓取包装成可调度的 job）
 │   │   ├── app.py         #   HTTP 路由 + 面板
 │   │   ├── reader.py      #   /reader 阅读页（单文件 HTML，无外链）
-│   │   └── transcript.py  #   只读：已落盘字幕 → 分段（选格式 / 路径校验）
+│   │   ├── transcript.py  #   只读：已落盘字幕 → 分段（选格式 / 路径校验）
+│   │   └── summary.py     #   单篇总结：调 OpenAI 兼容接口（标准库 urllib）
 │   └── data/
 │       └── corrections.json   # 默认术语词表
 ├── eval/
@@ -576,6 +578,7 @@ asr-polish/
     ├── test_retry_after.py    # Retry-After 两种写法、夹逼、超上限快速失败
     ├── test_reader.py         # srt 解析（CRLF / 坏块 / 占位块）+ 接口四态
     ├── test_reader_ui.py      # 阅读页前端纯函数（node + DOM 桩，没 node 就跳过）
+    ├── test_summary.py        # 总结：端点拼装 / 时间解析 / 模型输出兜底 / key 不外泄
     ├── test_mcp.py            # MCP 协议层（通知不回包 / 坏 JSON 不中断）+ 工具层
     └── test_ci_guard.py       # 标签闸门：按提交判定、标签对象解引用、只拦标签
 ```
