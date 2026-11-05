@@ -291,13 +291,18 @@ print(report.summary())
 **取字幕、订正、评分都不需要第三方依赖**，Python 3.9+ 即可：
 
 ```bash
-pip install -e .              # 全部能力，零第三方依赖
-pip install -e .[bilibili]    # 只在「无字幕视频要转写」时需要（引入 yt-dlp）
+pip install asr-polish                # 全部能力，零第三方依赖
+pip install "asr-polish[bilibili]"    # 只在「无字幕视频要转写」时需要（引入 yt-dlp）
+```
+
+想改代码就从源码装：
+
+```bash
+git clone https://github.com/angus-hu-gzy/asr-polish.git
+pip install -e ".[dev]"
 ```
 
 > `yt-dlp` 仅在「视频没有字幕轨 → 转走必剪云端 ASR」时才被 import。有字幕的视频（含 B站 AI 字幕）不装它也能取。
->
-> 当前尚未发布 PyPI，请用上面的源码安装方式；发布后即可 `pip install asr-polish`（或 `asr-polish[bilibili]`）。
 
 装好后即可用命令行工具 `asr-polish`：
 

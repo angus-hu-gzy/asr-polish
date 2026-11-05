@@ -7,6 +7,32 @@
 
 ---
 
+## [0.9.2] - 2026-11-05
+
+首次发到 PyPI：`pip install asr-polish`。**代码没有功能变化**，这一版改的是「怎么装」。
+
+### 新增
+
+- **PyPI 发布流程**（`.github/workflows/publish.yml`）：推 `v*` 标签自动发布，也可以在
+  Actions 页面手动指定标签补发。认证走 OIDC 信任发布，仓库里不存任何 token；发布前校验
+  「标签 = `__version__` = CHANGELOG」，并先查该版本在 PyPI 上是否已存在（PyPI 不允许
+  覆盖，补跑不该红一片）。
+- 元数据补 `Changelog` / `Issues` 两个链接。
+
+### 变更
+
+- README 安装章节改为 `pip install asr-polish`；源码安装降为「想改代码时」的第二选择。
+- **为什么首发版本是 0.9.2 而不是 0.9.1**：0.9.1 的 README 里写着「当前尚未发布 PyPI」，
+  这句话会随元数据嵌进 PyPI 页面、之后改不了，所以先把说明改对再发。0.9.1 从未公开
+  发布过，PyPI 上的第一个版本就是 0.9.2。
+
+### 测试
+
+264 项，未变。构建产物 `twine check` 两个都通过；干净虚拟环境里 `pip install --no-index`
+装轮子后，`asr-polish --version` / `correct` / `subs --help` 均正常，词表 87 条随包进。
+
+---
+
 ## [0.9.1] - 2026-11-04
 
 让「部分成功」在结果里看得见，并且能只补失败的那几条。
