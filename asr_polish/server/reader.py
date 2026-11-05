@@ -112,6 +112,19 @@ main{max-width:1240px;margin:0 auto;padding:22px 20px 120px}
 .notice code{background:#f0ece1;padding:1px 5px;border-radius:4px;
              font-size:12.5px;font-family:ui-monospace,Consolas,monospace}
 
+/* 断点续读的提示条。必须浮动：恢复位置时页面会滚到那一段，流内元素就跟着
+   滚出视野了，用户根本看不到这句话。贴在底部居中，只占一行，不压住正在读
+   的地方；9 秒后自己让开。 */
+.resume{
+  position:fixed;left:50%;transform:translateX(-50%);bottom:22px;z-index:30;
+  display:flex;align-items:center;gap:12px;max-width:calc(100vw - 32px);
+  padding:9px 13px;background:#f5fbf7;border:1px solid #cfe6d6;border-radius:9px;
+  font-size:12.5px;line-height:1.6;color:#41684f;
+  box-shadow:0 6px 20px rgba(40,60,50,.14);
+}
+.resume[hidden]{display:none}
+.resume .sp{flex:1}
+
 /* 搜索条 */
 .tools{
   display:flex;align-items:center;gap:8px;flex-wrap:wrap;
@@ -326,6 +339,12 @@ mark.cur{background:var(--mark-cur);box-shadow:0 0 0 2px rgba(255,176,32,.35)}
     </div>
   </div>
 
+  <div class="resume" id="resume" hidden>
+    <span id="resumetx">已回到上次读到的位置</span>
+    <span class="sp"></span>
+    <button class="btn sm" id="resumetop" type="button">回顶部</button>
+  </div>
+
   <div class="stage">
     <aside class="toc" id="toc" hidden>
       <div class="th" id="toch">目录</div>
@@ -363,7 +382,8 @@ var OUT = {
   failed:   ["全部失败", "bad"]
 };
 var S = { id:null, timer:null, tick:null, startedAt:0, marks:[], cur:-1,
-          text:"", parts:0, task:null, mk:[], lsBroken:false, part:0, anyJump:false };
+          text:"", parts:0, task:null, mk:[], lsBroken:false, part:0, anyJump:false,
+          posArmed:false };
 
 /* ── 小工具 ──────────────────────────────────────── */
 function el(tag, cls, text){
@@ -776,7 +796,10 @@ function renderDoc(d, task){
   $("#tools").hidden = false;
   renderFailures(r, task);
   restoreMarks();
+  // 带 ?q= 进来的是「我要搜这个词」，位置让位给搜索：搜索要跳到第一处命中，
+  // 两套滚动抢起来只会落到一处谁也不想要的地方。
   if ($("#find").value) runSearch($("#find").value);
+  else restorePos();
 }
 
 function skipList(skipped){
@@ -1052,6 +1075,186 @@ function exportMarks(){
 
 $("#export").addEventListener("click", exportMarks);
 
+/* ── 断点续读 ────────────────────────────────────── */
+/* 记的是「哪一篇 + 该篇第几段」，不是滚动像素：换个窗口大小像素全变，段落
+   序号不变。仍然只存 localStorage，按任务 id 分块，块里再按分 P 名分开——
+   这样在第二篇读一半关掉，也不会把第一篇的位置顶掉。 */
+var POS_PREFIX = "asr-polish:pos:v1:";
+
+function posKey(taskId){ return POS_PREFIX + taskId; }
+
+/* 解析整块记录。JSON 坏了、格式不是我们写的、段落号不是非负整数，一律当成
+   「没存过」——这种时候必须静默退回顶部，不能因为一行脏数据让页面白屏。 */
+function parsePos(raw){
+  var empty = { v: 1, parts: {} };
+  if (!raw) return empty;
+  try {
+    var d = JSON.parse(raw);
+    if (!d || typeof d !== "object") return empty;
+    var src = d.parts;
+    if (!src || typeof src !== "object"
+        || Object.prototype.toString.call(src) === "[object Array]") return empty;
+    var parts = {};
+    for (var k in src){
+      if (!Object.prototype.hasOwnProperty.call(src, k)) continue;
+      var n = src[k];
+      if (typeof n === "number" && isFinite(n) && n >= 0 && Math.floor(n) === n){
+        parts[k] = n;
+      }
+    }
+    return { v: 1, parts: parts };
+  } catch(e){ return empty }
+}
+
+function posOf(store, partName){
+  if (!store || !store.parts || !partName) return null;
+  var n = store.parts[partName];
+  return typeof n === "number" ? n : null;
+}
+
+/* 不改传进来的对象：读-改-写之间如果哪一步抛了，半截数据不该流回去。 */
+function withPos(store, partName, idx){
+  var out = {};
+  var src = (store && store.parts) || {};
+  for (var k in src){
+    if (Object.prototype.hasOwnProperty.call(src, k)) out[k] = src[k];
+  }
+  out[partName] = idx;
+  return { v: 1, parts: out };
+}
+
+/* 「视口顶部那一屏」是哪一段：给一串 rect.top，返回第一个完整落在界下面的。
+
+   不用「离界最近」：`.cue` 有 scroll-margin-top:96px，滚到位后目标段停在界
+   下方 27px，而它前面那段的下沿离界只有 25px——按距离算会稳定选中上一段，
+   每次续读都差一段。实测 1400×900：界 69、目标 96、上一段 44。
+   判据换成「top >= 界」，语义也更直白：header 下面第一条完整的段落。
+   全滚过去了（没有一段在界下面）就取最后一段。 */
+function pickCueIndex(tops, boundary){
+  if (!tops || !tops.length) return -1;
+  for (var i = 0; i < tops.length; i++){
+    if (tops[i] >= boundary) return i;
+  }
+  return tops.length - 1;
+}
+
+/* 位置存不进去（隐私模式）不弹提示：读位这件事不值得为它打断一次阅读，
+   页面照旧能用，只是刷新后从头开始。 */
+function lsRead(k){ try { return localStorage.getItem(k); } catch(e){ return null } }
+function lsWrite(k, v){ try { localStorage.setItem(k, v); } catch(e){} }
+
+function partNameOf(sec){
+  var c = sec.querySelector(".cue");
+  return (c && c._partName) || "";
+}
+
+/* header 是吸顶的，界不能拿 0 当——那样「顶部那段」会少算一屏。 */
+function visibleTop(){
+  var h = document.querySelector("header");
+  var b = (h && h.getBoundingClientRect) ? h.getBoundingClientRect().bottom : 0;
+  return (b > 0 ? b : 0) + 6;
+}
+
+function currentPartIndex(){
+  var secs = partSections();
+  for (var i = 0; i < secs.length; i++){
+    if (!secs[i].hidden) return i;
+  }
+  return S.part;
+}
+
+/* 只写一处，省得两处各拼一遍 key 与 part 名。 */
+function writePos(idx){
+  if (!S.id) return;
+  var sec = partSections()[currentPartIndex()];
+  if (!sec) return;
+  var name = partNameOf(sec);
+  if (!name) return;
+  lsWrite(posKey(S.id),
+          JSON.stringify(withPos(parsePos(lsRead(posKey(S.id))), name, idx)));
+}
+
+/* 只有人真的滚动过才记。页面加载时浏览器自己也会发 scroll（恢复滚动位置、
+   字体或图片把内容撑高），不设这道闸的话，第一次打开就会顺手写下一个 0，
+   下次进来白弹一句「已回到上次读到的位置」——位置是对的，提示是噪音。 */
+function savePos(){
+  if (!S.posArmed) return;
+  var sec = partSections()[currentPartIndex()];
+  if (!sec || sec.hidden) return;
+  var cues = sec.querySelectorAll(".cue");
+  if (!cues.length) return;
+  var tops = [];
+  for (var i = 0; i < cues.length; i++) tops.push(cues[i].getBoundingClientRect().top);
+  var at = pickCueIndex(tops, visibleTop());
+  if (at < 0) return;
+  writePos(at);
+}
+
+/* 停下 300ms 再写一次。每次 scroll 都写等于拿 localStorage 当草稿纸。 */
+var posTimer = null;
+function onScroll(){
+  if (!S.posArmed && (window.scrollY || 0) > 20) S.posArmed = true;
+  if (!S.posArmed) return;
+  if (posTimer) clearTimeout(posTimer);
+  posTimer = setTimeout(savePos, 300);
+}
+window.addEventListener("scroll", onScroll, { passive: true });
+/* 关标签 / 刷新：上面的节流多半还没到点，这里补最后一次。pagehide 比
+   unload 可靠——bfcache 里也会触发。 */
+window.addEventListener("pagehide", savePos);
+window.addEventListener("beforeunload", savePos);
+
+var resumeTimer = null;
+
+function hideResume(){
+  var box = $("#resume");
+  if (box) box.hidden = true;
+  if (resumeTimer){ clearTimeout(resumeTimer); resumeTimer = null; }
+}
+
+function showResume(page){
+  var box = $("#resume");
+  if (!box) return;
+  var tx = $("#resumetx");
+  if (tx) tx.textContent = "已回到上次读到的位置" + (page ? "（P" + page + "）" : "");
+  box.hidden = false;
+  if (resumeTimer) clearTimeout(resumeTimer);
+  resumeTimer = setTimeout(hideResume, 9000);     // 读几行就自己让开
+}
+
+$("#resumetop").addEventListener("click", function(){
+  hideResume();
+  // 「从头读」要立刻落库：smooth 滚动是异步的，等 scroll 事件算出来的还是
+  // 点击前那个位置，等于什么也没改。
+  writePos(0);
+  if (window.scrollTo){
+    try { window.scrollTo({ top: 0, behavior: "smooth" }); return; } catch(e){}
+  }
+  if (document.documentElement) document.documentElement.scrollTop = 0;
+});
+
+/* 打开页面时接上上次的位置。找不到那一篇、序号超过当前篇的段数（重跑后
+   字幕变短），都静默从头开始——位置只是方便，不是数据，不能因为它让页面
+   报错，也不能滚到一片空白里。 */
+function restorePos(){
+  if (!S.id) return false;
+  var store = parsePos(lsRead(posKey(S.id)));
+  var secs = partSections();
+  for (var i = 0; i < secs.length; i++){
+    var name = partNameOf(secs[i]);
+    if (!name) continue;
+    var at = posOf(store, name);
+    if (at == null) continue;
+    var cues = secs[i].querySelectorAll(".cue");
+    if (at >= cues.length) continue;
+    selectPart(i, false);                 // 位置在别的篇里，先切过去再滚
+    focusCue(cues[at]);                   // 复用搜索那套：滚到中间 + 闪一下
+    showResume(secs.length > 1 ? (cues[at]._page || "") : "");
+    return true;
+  }
+  return false;
+}
+
 $("#mkbtn").addEventListener("click", function(){
   var box = $("#marksbox");
   box.hidden = !box.hidden;
@@ -1250,7 +1453,12 @@ window.__reader = {
   mdFileName: mdFileName,
   markLink: markLink,
   mkKey: mkKey,
-  fmt: fmt
+  fmt: fmt,
+  posKey: posKey,
+  parsePos: parsePos,
+  posOf: posOf,
+  withPos: withPos,
+  pickCueIndex: pickCueIndex
 };
 })();
 </script>

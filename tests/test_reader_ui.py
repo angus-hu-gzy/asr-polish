@@ -99,6 +99,36 @@ class ReaderMarkupTest(unittest.TestCase):
         m = re.search(r"function selectPart\(.*?\n\}", _page_script(), re.S)
         self.assertIn("runSearch(q, true)", m.group(0))
 
+    def test_resume_position_is_local_only(self) -> None:
+        """读位也只存浏览器：它和重点一样是「本机方便」，不是任务数据。"""
+        self.assertIn("asr-polish:pos:v1:", self.html)
+        self.assertNotIn("/api/position", self.html)
+
+    def test_resume_reuses_search_scroll(self) -> None:
+        """续读要复用搜索那套「滚过去 + 闪一下」，不能另写一套滚动。
+
+        另写一套的后果不是多几行代码：闪动的时长、滚动的居中方式、分 P 没
+        显示时的处理全会慢慢分叉，两处行为迟早不一致。
+        """
+        m = re.search(r"function restorePos\(.*?\n\}", _page_script(), re.S)
+        self.assertIsNotNone(m, "找不到 restorePos")
+        body = m.group(0)
+        self.assertIn("focusCue(", body)
+        self.assertIn("selectPart(", body)      # 位置在别的篇里，先切篇再滚
+
+    def test_resume_saves_on_scroll_and_unload(self) -> None:
+        """滚动停下写一次，关页面前补一次——只靠滚动节流会丢掉最后一屏。"""
+        s = _page_script()
+        self.assertIn('addEventListener("scroll"', s)
+        self.assertIn('addEventListener("pagehide"', s)
+        self.assertIn("pickCueIndex", s)
+
+    def test_resume_does_not_fight_search(self) -> None:
+        """带 ?q= 进来是明确的「搜这个词」：两套滚动抢起来会落到一处谁也不想要的地方。"""
+        m = re.search(r"function renderDoc\(.*?\n\}", _page_script(), re.S)
+        self.assertIsNotNone(m, "找不到 renderDoc")
+        self.assertIn("else restorePos()", m.group(0))
+
 
 @unittest.skipUnless(_NODE, "没有 node，跳过前端逻辑测试")
 class ReaderLogicTest(unittest.TestCase):
@@ -211,6 +241,51 @@ class ReaderLogicTest(unittest.TestCase):
         self.assertEqual(self.d["link"],
                          "https://www.bilibili.com/video/BV1RXx169Exu/?p=1&t=3")
         self.assertEqual(self.d["linkNoTime"], "")
+
+    # ── 断点续读 ──────────────────────────────────────
+    def test_position_key_is_per_task(self) -> None:
+        """按任务 id 分块：换一个任务读到别处，不能串。"""
+        self.assertEqual(self.d["posKey"], "asr-polish:pos:v1:T-test")
+
+    def test_bad_position_data_falls_back_silently(self) -> None:
+        """坏 JSON / 不是对象 / parts 不是对象，一律当「没存过」。
+
+        这里不能抛：抛出来就是整页白屏，而失效的位置本来只是「从头读」而已。
+        """
+        for key in ("posEmpty", "posBroken", "posNotObject",
+                    "posNoParts", "posPartsIsArray"):
+            self.assertEqual(self.d[key], {"v": 1, "parts": {}}, key)
+
+    def test_illegal_offsets_are_dropped_one_by_one(self) -> None:
+        """一条脏记录不该毁掉整块：负数、字符串、小数、布尔都丢掉，0 留着。"""
+        self.assertEqual(self.d["posDirty"]["parts"], {"a": 3, "f": 0})
+
+    def test_position_read_write(self) -> None:
+        self.assertEqual(self.d["posRead"], 3)
+        self.assertIsNone(self.d["posReadMissing"])
+        self.assertIsNone(self.d["posReadNoStore"])
+        self.assertEqual(self.d["posWriteNew"]["parts"], {"a": 3, "b": 17})
+        self.assertEqual(self.d["posWriteSame"]["parts"], {"a": 40})
+        # 写入不能改动传进来的那份：读-改-写之间抛了，半截数据不该流回去
+        self.assertEqual(self.d["posWriteLeavesOrig"], 3)
+
+    def test_pick_cue_at_viewport_top(self) -> None:
+        """header 下面第一条完整的段落就是「正在读的那段」。"""
+        self.assertEqual(self.d["idxMid"], 3)          # 前两段还在界上方
+        self.assertEqual(self.d["idxAllAbove"], 2)     # 滚到底：取最后一段
+        self.assertEqual(self.d["idxAllBelow"], 0)     # 还在顶上：取第一段
+        self.assertEqual(self.d["idxEmpty"], -1)
+        self.assertEqual(self.d["idxExact"], 0)        # 正好贴线算「已到」
+
+    def test_pick_cue_is_not_the_previous_one(self) -> None:
+        """按「离界最近」会稳定地选错成上一段——这是实测出来的那次偏差。
+
+        `.cue` 有 scroll-margin-top:96px，滚到位后目标段停在界（69）下面 27px，
+        而上一段的下沿在 44px 处、离界只有 25px。谁更近一目了然，但更近的那个
+        是刚滚过去、正被 header 挡住的段落。判据必须是「第一个 >= 界」。
+        """
+        # tops 依次是 -42(上一段)、44(再上一段)、96(目标)、183、269
+        self.assertEqual(self.d["idxRealLayout"], 2)
 
 
 if __name__ == "__main__":

@@ -65,6 +65,10 @@ function makeEnv(src) {
       setItem: (k, v) => { store[k] = String(v); },
       removeItem: (k) => { delete store[k]; },
     },
+    // 滚动监听与 pagehide 在页面加载时就绑上了；桩里收下不做事，
+    // 这一层只跑纯函数，不模拟滚动时序。
+    addEventListener() {},
+    removeEventListener() {},
     // ?task=… 让页面进「直接看某个任务」那一路，S.id 有值导出的 md 才带任务号。
     // fetch 永远 pending：这一层只验纯函数，不要真去请求。
     location: { search: "?task=T-test", href: "http://127.0.0.1/reader?task=T-test" },
@@ -109,6 +113,7 @@ function main() {
       bvid: "BV1demoASR", partName: "BV1demoASR-没有时间戳的一期.srt" },
   ];
 
+  const store1 = api.parsePos('{"v":1,"parts":{"a":3}}');
   const out = {
     playerUrl: api.playerUrl({ bvid: "BV1RXx169Exu", page: 2 }, 62.7),
     playerUrlZero: api.playerUrl({ bvid: "BV1RXx169Exu", page: 1 }, 0),
@@ -130,6 +135,31 @@ function main() {
     mdAsr: api.buildMarkdown([marks[2]], task, new Date(2026, 10, 5, 13, 43)),
     link: api.markLink(marks[0]),
     linkNoTime: api.markLink(marks[2]),
+
+    // ── 断点续读 ──────────────────────────────────
+    posKey: api.posKey("T-test"),
+    // 没存过 / 脏数据：都必须是空壳，页面据此从顶部开始且不提示
+    posEmpty: api.parsePos(null),
+    posBroken: api.parsePos("{oops"),
+    posNotObject: api.parsePos("[1,2,3]"),
+    posNoParts: api.parsePos('{"v":1}'),
+    posPartsIsArray: api.parsePos('{"v":1,"parts":[1,2]}'),
+    // 同一个 parts 里混进非法的段号：坏的丢掉，好的留着，不能让一条脏数据毁掉整篇
+    posDirty: api.parsePos('{"v":1,"parts":{"a":3,"b":-1,"c":"x","d":2.5,"e":true,"f":0}}'),
+    posRead: api.posOf(store1, "a"),
+    posReadMissing: api.posOf(store1, "zz"),
+    posReadNoStore: api.posOf(null, "a"),
+    posWriteNew: api.withPos(store1, "b", 17),
+    posWriteSame: api.withPos(store1, "a", 40),
+    posWriteLeavesOrig: store1.parts.a,
+    idxMid: api.pickCueIndex([-500, -200, 30, 300, 700], 82),
+    idxAllAbove: api.pickCueIndex([-500, -200, -100], 82),
+    idxAllBelow: api.pickCueIndex([300, 500, 900], 82),
+    idxEmpty: api.pickCueIndex([], 82),
+    idxExact: api.pickCueIndex([82, 300], 82),
+    // 实测的一组：界 69、目标段停在 96、它前面那段下沿在 44。
+    // 按「距离最近」会选错到前一段，按「第一个 >= 界」才对。
+    idxRealLayout: api.pickCueIndex([-42, 44, 96, 183, 269], 69),
   };
   process.stdout.write(JSON.stringify(out));
 }
