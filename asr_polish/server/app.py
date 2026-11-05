@@ -13,8 +13,14 @@ GET    /api/tasks/{id}       查单个任务
 GET    /api/tasks            列表，支持 ?status=&limit=
 POST   /api/tasks/{id}/retry 手动重试（failed 重新排队；running 强制重启）
 POST   /api/tasks/{id}/retry-failed  只重跑失败的条目（新建一个任务）
+GET    /api/tasks/{id}/transcript    只读：把已落盘的字幕读成分段（阅读页用）
 GET    /api/health           健康检查
 GET    /                     面板
+GET    /reader               阅读页
+
+`/transcript` 只读磁盘上已经写好的导出文件，不触发抓取、不改任务状态。
+它的存在是因为 `result` 里只有文件路径没有正文——把正文塞进 SQLite 会让
+任务表变胖，而且老任务还得做数据迁移；读文件则连历史任务都能直接看。
 """
 from __future__ import annotations
 
@@ -25,7 +31,9 @@ from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
 from ..bili import cookie_status, current_min_interval, throttle_waited
-from .store import FAILED, PENDING, RUNNING, Store
+from . import transcript
+from .reader import html as reader_html
+from .store import DONE, FAILED, PENDING, RUNNING, Store
 from .worker import WorkerPool
 
 _MAX_BODY = 1 << 20          # 1 MB，请求体上限
@@ -292,6 +300,11 @@ class Handler(BaseHTTPRequestHandler):
                        "text/html; charset=utf-8")
             return
 
+        if parts == ["reader"]:
+            self._send(200, reader_html().encode("utf-8"),
+                       "text/html; charset=utf-8")
+            return
+
         if parts == ["api", "health"]:
             # 默认验证登录态：只检查「文件存在、有 SESSDATA」是不够的——
             # SESSDATA 可能时间没过期但服务端已注销，那样面板会一直显示绿色
@@ -321,6 +334,28 @@ class Handler(BaseHTTPRequestHandler):
             tasks = self.app.store.list(status=status, limit=limit)
             self._json(200, {"stats": self.app.store.stats(),
                              "tasks": [t.to_dict() for t in tasks]})
+            return
+
+        if len(parts) == 4 and parts[:2] == ["api", "tasks"] \
+                and parts[3] == "transcript":
+            # 只读。前端在任务跑完后才调它，但接口本身不假设调用顺序：
+            # 没跑完就返回 409 + 当前状态，页面据此继续轮询而不是当成错误。
+            task = self.app.store.get(parts[2])
+            if task is None:
+                self._err(404, "没有这个任务：%s" % parts[2])
+                return
+            if task.status not in (DONE, FAILED):
+                self._json(409, {
+                    "error": "任务还没跑完（当前 %s）" % task.status,
+                    "status": task.status,
+                    "progress": round(task.progress, 4),
+                    "message": task.message,
+                })
+                return
+            body = transcript.build(task.id, task.result)
+            body["status"] = task.status
+            body["error"] = task.error
+            self._json(200, body)
             return
 
         if len(parts) == 3 and parts[:2] == ["api", "tasks"]:
