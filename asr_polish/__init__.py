@@ -41,7 +41,7 @@ from .bili import (
     BiliError,
 )
 
-__version__ = "0.12.2"
+__version__ = "0.13.0"
 
 __all__ = [
     "Lexicon",
