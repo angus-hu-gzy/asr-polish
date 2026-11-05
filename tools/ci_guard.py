@@ -144,7 +144,8 @@ def detect_repo() -> str:
     try:
         url = subprocess.run(
             ["git", "config", "--get", "remote.origin.url"],
-            capture_output=True, text=True, timeout=5).stdout.strip()
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=5).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         url = ""
     return parse_remote(url)

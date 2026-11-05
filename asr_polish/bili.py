@@ -22,6 +22,7 @@ import gzip
 import hashlib
 import http.cookiejar
 import json
+import locale
 import os
 import re
 import shutil
@@ -1031,6 +1032,27 @@ def search_videos(keyword: str, cookie_path: Optional[str] = None,
 
 # ── 必剪云端 ASR ─────────────────────────────────────────────
 
+def _decode_output(raw: Optional[bytes]) -> str:
+    """把外部进程的原始输出解成文本，任何情况下都不抛。
+
+    `subprocess` 的 ``text=True`` 是按**系统区域编码**解码的：中文 Windows 是
+    cp936，英文 Windows/CI 是 cp1252。yt-dlp 往管道里写的是 UTF-8，
+    只要它打一行中文标题或进度，解码就在读线程里抛 UnicodeDecodeError——
+    外面看到的不是「下载失败」，而是 ``'charmap' codec can't decode byte``。
+    先按 UTF-8 解，坏了再退回区域编码（会糊，但至少能读出错误信息）。
+    """
+    if not raw:
+        return ""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        fallback = locale.getpreferredencoding(False) or "utf-8"
+        try:
+            return raw.decode(fallback, "replace")
+        except LookupError:
+            return raw.decode("utf-8", "replace")
+
+
 def _download_audio(video: dict, tmpdir: str,
                     cookie_path: Optional[str] = None) -> Optional[str]:
     """用 yt-dlp 拉 m4a 音频流（无需 ffmpeg）。"""
@@ -1044,9 +1066,14 @@ def _download_audio(video: dict, tmpdir: str,
     if cookie_path and Path(cookie_path).exists():
         args += ["--cookies", str(cookie_path)]
     args.append(video["page_url"])
-    proc = subprocess.run(args, capture_output=True, text=True, timeout=600)
+    try:
+        proc = subprocess.run(args, capture_output=True, timeout=600)
+    except subprocess.TimeoutExpired:
+        raise BiliError("yt-dlp 下载音频超时（10 分钟），视频可能太长或网络不通")
+    except OSError as exc:
+        raise BiliError("yt-dlp 启动失败：%s" % exc)
     if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout or "").strip()
+        detail = (_decode_output(proc.stderr) or _decode_output(proc.stdout)).strip()
         raise BiliError(f"yt-dlp 下载音频失败：{detail[:200]}")
     for f in sorted(os.listdir(tmpdir)):
         if f.startswith("audio.") and not f.endswith(".part"):
