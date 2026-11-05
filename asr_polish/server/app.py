@@ -110,6 +110,9 @@ ul.fl{margin:5px 0 6px;padding-left:16px;font-size:11px;color:var(--muted)}
 ul.fl li{margin:1px 0}
 button.mini{padding:3px 9px;font-size:11px;background:#1a212b}
 button.mini:disabled{opacity:.55;cursor:default}
+a.rd{margin-left:9px;font-size:11px;color:var(--accent);text-decoration:none;
+border-bottom:1px dashed rgba(88,166,255,.45)}
+a.rd:hover{border-bottom-style:solid}
 </style></head>
 <body><div class="wrap">
 <h1>asr-polish 任务面板</h1>
@@ -133,6 +136,15 @@ const $ = id => document.getElementById(id);
 function esc(s){return (s||"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]))}
 const OUT = {complete:["全部成功","ok"], partial:["部分成功","part"],
              empty:["无产出","empty"], failed:["全部失败","bad"]};
+// 「阅读」入口只在任务真的写出了文件时才给。判断依据是 result.files 而不是
+// 「状态是 done」：无字幕的任务也是 done，点进去只会看到一张说「没有字幕」的
+// 说明页，多一次点击反而让人以为哪里坏了。
+function readLink(t, r){
+  const files = (r && r.files) || [];
+  if(!files.length) return "";
+  return `<a class="rd" href="/reader?task=${encodeURIComponent(t.id)}"
+    target="_blank" rel="noopener">阅读 →</a>`;
+}
 function resultBox(t){
   const r = t.result || {};
   const key = r.outcome || (t.status === "failed" ? "failed" : null);
@@ -153,7 +165,7 @@ function resultBox(t){
       <button class="mini retry-failed" data-id="${t.id}">只重跑这 ${fi.length} 条</button>
     </details>`;
   }
-  return `<div style="margin-top:3px"><span class="pill ${meta[1]}">${meta[0]}</span></div>
+  return `<div style="margin-top:3px"><span class="pill ${meta[1]}">${meta[0]}</span>${readLink(t, r)}</div>
     <div class="res">${bits.join(" · ")}</div>${detail}`;
 }
 async function load(){

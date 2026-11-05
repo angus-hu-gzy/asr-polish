@@ -576,6 +576,8 @@ class TestHTTP(unittest.TestCase):
         with urllib.request.urlopen(self.base + "/", timeout=10) as r:
             html = r.read().decode()
         self.assertIn("任务面板", html)
+        # 面板上要有进阅读页的入口，否则抓完字幕还得自己拼 URL
+        self.assertIn("/reader?task=", html)
 
     def test_retry_running_task(self) -> None:
         code, body = self._get("/api/tasks", "POST",
