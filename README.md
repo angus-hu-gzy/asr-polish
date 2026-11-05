@@ -1,6 +1,7 @@
 # asr-polish
 
 [![CI](https://github.com/angus-hu-gzy/asr-polish/actions/workflows/ci.yml/badge.svg)](https://github.com/angus-hu-gzy/asr-polish/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/asr-polish?label=pypi&color=blue)](https://pypi.org/project/asr-polish/)
 [![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green)](./LICENSE)
 [![Zero deps](https://img.shields.io/badge/dependencies-0-brightgreen)]()
