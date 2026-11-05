@@ -140,6 +140,7 @@ asr-polish status                     # 看队列与最近任务
 | `GET /api/tasks?status=&limit=` | 列表 |
 | `POST /api/tasks/{id}/retry` | `failed` 重新排队；`running` 强制重启（旧执行的结果会被丢弃） |
 | `POST /api/tasks/{id}/retry-failed` | 只重跑失败的条目：**新建一个任务**，带 `only`，已成功的文件不动 |
+| `GET /api/tasks/{id}/transcript` | 只读：把已落盘的字幕读成分段（阅读页用，历史任务也能读） |
 | `GET /api/health` | 存活与 worker 占用 |
 
 三件事决定了它的可靠性，都在 `asr_polish/server/` 里：
@@ -148,6 +149,23 @@ asr-polish status                     # 看队列与最近任务
 - **状态在 SQLite，不在内存**。进程重启、页面关掉，任务都还在；失败可重试、能查卡在哪一条。
 - **抢任务用 CAS，不靠运气**。`BEGIN IMMEDIATE` 先拿写锁再 `SELECT + UPDATE`，两个 worker 不可能领到同一行；再加心跳与僵尸回收，进程被 `kill -9` 留下的 `running` 也能被放回队列。
 - **写回要持有所有权**。每次 `claim()` 把 `attempt` 加一，worker 之后的心跳和结论都带 `WHERE id=? AND attempt=?`，写不进去就说明自己已被接管。没有这一条，一个被误判僵尸、又醒过来的 worker 会和接管者同时写同一行——它甚至能把接管者**还在跑**的任务抢先标成完成。
+
+### 抓完之后要能读
+
+字幕落盘之后是一堆 `BV1xx-标题.srt`，想看一眼讲了什么还得打开播放器拖进度条。
+所以跑完的任务后面带一个「阅读 →」，点进去是 `/reader`：`http://127.0.0.1:8040/reader`，
+也可以直接 `?task=T…` 打开某个历史任务、`?q=关键词` 把定位好的链接发给别人。
+
+页面把字幕**按时间轴合并成段落**——一条只有十来个字的 AI 字幕逐条画出来仍然是碎的，
+只是每行多了个时间戳。断段靠三条判据：真实停顿 → 「那 / 所以 / 但是」这类句子起始词 →
+120 字上限。只按长度合并的话，58 条字幕会变成 3 段、每段 200 字。
+
+搜索框里的词当场黄底高亮，回车跳下一处；四态徽章、失败明细、「只重跑这 N 条」跟面板
+是同一套。**没字幕不算出错**：页面会说清「B站上并非每个视频都有字幕，要转写音频得走
+`--asr`」，被风控则直接说「等几分钟，或把 `min-interval` 调大」。
+
+页面是一个 HTML 字符串，无框架、无构建、无外链，断网也能开。正文一律走 `textContent`
+——字幕是别人视频里的文本，拼 `innerHTML` 等于给自己开一个 XSS 口子。
 
 ### 部分成功不等于成功
 
@@ -508,7 +526,9 @@ asr-polish/
 │   │   ├── store.py       #   SQLite 任务表 + 状态机（CAS 抢任务）
 │   │   ├── worker.py      #   worker 池 + 心跳 + 僵尸回收
 │   │   ├── jobs.py        #   任务执行器（把抓取包装成可调度的 job）
-│   │   └── app.py         #   HTTP 路由 + 面板
+│   │   ├── app.py         #   HTTP 路由 + 面板
+│   │   ├── reader.py      #   /reader 阅读页（单文件 HTML，无外链）
+│   │   └── transcript.py  #   只读：已落盘字幕 → 分段（选格式 / 路径校验）
 │   └── data/
 │       └── corrections.json   # 默认术语词表
 ├── eval/
@@ -541,6 +561,7 @@ asr-polish/
     ├── test_server.py         # 状态机 / 并发抢任务 / 重试 / 僵尸回收 / HTTP
     ├── test_jobs_outcome.py   # 批量任务四态 + 只重跑失败条目 + 分P上限
     ├── test_retry_after.py    # Retry-After 两种写法、夹逼、超上限快速失败
+    ├── test_reader.py         # srt 解析（CRLF / 坏块 / 占位块）+ 接口四态
     ├── test_mcp.py            # MCP 协议层（通知不回包 / 坏 JSON 不中断）+ 工具层
     └── test_ci_guard.py       # 标签闸门：按提交判定、标签对象解引用、只拦标签
 ```
@@ -551,11 +572,11 @@ asr-polish/
 
 | 版本 | 一句话 |
 |---|---|
+| **0.11.0** | 加 `/reader` 阅读页：抓到的字幕排成能读的文字稿，搜索高亮 + 时间戳分段 |
 | **0.10.0** | 加 MCP server：agent 在对话里就能取字幕；退避开始听服务端给的 `Retry-After` |
 | **0.9.2** | 首次发到 PyPI，`pip install asr-polish`；这一版只改「怎么装」 |
 | **0.9.1** | 结果区分全部成功 / 部分成功 / 无产出；列出失败明细，`retry-failed` 与 `subs --only` 只补失败的那几条 |
 | **0.9.0** | 任务写回加所有权令牌：被接管（重试 / 僵尸回收）的旧执行无法再写状态，`retry` 对 `running` 从「复制一份」变成「真重启」 |
-| **0.8.0** | 请求限速 + 风控退避 + Cookie 状态提示；批量抓不再把账号抓进风控，`cookie set` 一条命令导入登录态 |
 
 > 0.5.0 有一个 P0 回归（`--out` 帮助文本里 `%APPDATA%` 未转义，argparse 崩溃，CLI 全不可用），
 > 已在 0.5.1 修复。装到 0.5.0 的请直接升级。
