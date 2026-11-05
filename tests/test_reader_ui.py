@@ -81,6 +81,24 @@ class ReaderMarkupTest(unittest.TestCase):
         self.assertIsNotNone(m, "找不到 selectPart")
         self.assertIn("updateStat()", m.group(0))
 
+    def test_search_leaves_hidden_parts_alone(self) -> None:
+        """切分 P 之后，搜索的命中与计数都得跟着这一篇走。
+
+        原来 runSearch 只给可见段落上色，但收集命中时用的是不带过滤的
+        ``mark.hit``：上一篇藏起来的高亮被一起数进来，切过去显示「1 / 3」，
+        按 ↓ 又顺着这些看不见的命中把页面弹回上一篇。
+        """
+        m = re.search(r"function runSearch\(.*?\n\}", _page_script(), re.S)
+        self.assertIsNotNone(m, "找不到 runSearch")
+        body = m.group(0)
+        self.assertIn(".part[hidden] .cue", body)             # 藏起来那篇要擦掉高亮
+        self.assertIn(".part:not([hidden]) mark.hit", body)   # 命中只收看得见的
+
+    def test_switching_part_refreshes_search(self) -> None:
+        """换篇时重搜一次，否则计数和高亮都停在上一个分 P。"""
+        m = re.search(r"function selectPart\(.*?\n\}", _page_script(), re.S)
+        self.assertIn("runSearch(q, true)", m.group(0))
+
 
 @unittest.skipUnless(_NODE, "没有 node，跳过前端逻辑测试")
 class ReaderLogicTest(unittest.TestCase):

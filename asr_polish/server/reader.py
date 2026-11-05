@@ -620,6 +620,10 @@ function selectPart(i, scroll){
     secs[i].scrollIntoView({ block: "start", behavior: "smooth" });
   }
   updateStat();
+  // 换篇之后上一篇的高亮已经不在这一篇里了：不重搜的话，计数还是上一篇的数，
+  // 按 ↓ 会顺着上一篇的命中往前跳。带上 noJump，别把人从这一篇顶上拽走。
+  var q = $("#find").value;
+  if (q) runSearch(q, true);
 }
 
 /* 统计只算当前这一篇。多分 P 时若把各篇加起来，屏幕上摆着 8 段，
@@ -1072,20 +1076,27 @@ function paint(cue, q){
   }
 }
 
-function runSearch(q){
+function runSearch(q, noJump){
   q = (q || "").trim();
   S.marks = []; S.cur = -1;
   // 只在当前显示的分 P 里搜：藏起来的段落既看不见也滚不到，算进计数只会
-  // 让人以为「搜到了却跳不过去」。
-  var cues = document.querySelectorAll("#doc .part:not([hidden]) .cue");
-  for (var i = 0; i < cues.length; i++){
-    paint(cues[i], q);
-    cues[i].classList.remove("flash");
+  // 让人以为「搜到了却跳不过去」。藏起来那一篇的旧高亮也要清掉——留着的话，
+  // 下面按 mark.hit 收集命中时会把上一篇的一起数进来，计数虚高，按 ↓ 还会
+  // 顺着看不见的命中往前跳，一路把页面弹回上一篇。
+  var vis = document.querySelectorAll("#doc .part:not([hidden]) .cue");
+  var hid = document.querySelectorAll("#doc .part[hidden] .cue");
+  for (var i = 0; i < vis.length; i++){
+    paint(vis[i], q);
+    vis[i].classList.remove("flash");
   }
+  for (var j = 0; j < hid.length; j++) paint(hid[j], "");
   if (!q){ $("#count").textContent = ""; return; }
-  S.marks = Array.prototype.slice.call(document.querySelectorAll("#doc mark.hit"));
-  $("#count").textContent = S.marks.length ? "1 / " + S.marks.length : "0 处";
-  if (S.marks.length) jump(0);
+  S.marks = Array.prototype.slice.call(
+    document.querySelectorAll("#doc .part:not([hidden]) mark.hit"));
+  if (!S.marks.length){ $("#count").textContent = "0 处"; return; }
+  // 换篇后的重搜不抢滚动位置：人是在读这一篇，不是要跳到第一篇的第一个命中。
+  if (noJump){ $("#count").textContent = S.marks.length + " 处"; return; }
+  jump(0);
 }
 
 function jump(i){
