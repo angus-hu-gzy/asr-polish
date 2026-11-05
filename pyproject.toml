@@ -10,7 +10,7 @@ requires-python = ">=3.9"
 license = "MIT"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "angus-hu-gzy" }]
-keywords = ["asr", "speech-to-text", "whisper", "术语订正", "转写", "中文", "nlp", "bilibili", "字幕", "subtitle"]
+keywords = ["asr", "speech-to-text", "whisper", "术语订正", "转写", "中文", "nlp", "bilibili", "字幕", "subtitle", "mcp", "model-context-protocol", "agent"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
@@ -37,6 +37,8 @@ dev = ["ruff>=0.6", "build>=1.0"]
 
 [project.scripts]
 asr-polish = "asr_polish.cli:main"
+# MCP server：让 agent 在对话里直接调「取字幕」，零额外依赖
+asr-polish-mcp = "asr_polish.mcp:main"
 
 [tool.setuptools.packages.find]
 include = ["asr_polish*"]

@@ -7,6 +7,7 @@
 - fetch      : 从 B站视频链接取文本（字幕轨优先，无字幕走必剪云端 ASR）
 - subs       : 批量抓字幕，导出 txt / srt / json / md
 - serve      : 把批量抓取变成任务队列，页面关掉任务也不丢
+- mcp        : 同一套抓取包成 MCP 工具，agent 在对话里直接调（stdio，零依赖）
 
 文本加工（可单独使用，不依赖抓取）：
 - correction : 术语订正引擎 —— 修正 ASR 把 SQL/Flask/Python 等术语转成的同音错字
@@ -40,7 +41,7 @@ from .bili import (
     BiliError,
 )
 
-__version__ = "0.9.2"
+__version__ = "0.10.0"
 
 __all__ = [
     "Lexicon",

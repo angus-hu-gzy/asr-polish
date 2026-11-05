@@ -30,6 +30,8 @@ import sys
 import tempfile
 import threading
 import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -602,6 +604,49 @@ def _reset_login_cache() -> None:
         _login_cache.update({"ts": 0.0, "value": None, "path": None})
 
 
+def parse_retry_after(headers) -> Optional[float]:
+    """从响应头里读出服务端要求我们等多少秒；读不到返回 ``None``。
+
+    两种写法都合法：纯秒数（``Retry-After: 120``）和 HTTP 日期
+    （``Retry-After: Wed, 21 Oct 2015 07:28:00 GMT``），后者按「距离现在还差
+    多久」折算，已经过去的时间视为 0。
+
+    读不懂就返回 ``None`` 而不是抛异常：这是**加速信息**，不是必需信息。
+    头缺失、写错、被中间层改写都很常见，退避逻辑应当照常按次数递增走下去。
+    """
+    if headers is None:
+        return None
+    try:
+        value = headers.get("Retry-After")
+    except AttributeError:                       # 不是 mapping/Message
+        return None
+    if value is None:                            # 普通 dict 可能是小写键
+        try:
+            items = headers.items()
+        except AttributeError:
+            return None
+        value = next((v for k, v in items
+                      if str(k).lower() == "retry-after"), None)
+    if not value:
+        return None
+
+    text = str(value).strip()
+    try:
+        return max(float(text), 0.0)
+    except ValueError:
+        pass
+
+    try:
+        when = parsedate_to_datetime(text)
+    except (TypeError, ValueError, IndexError):
+        return None
+    if when is None:
+        return None
+    if when.tzinfo is None:                      # 老格式可能不带时区，按 UTC 算
+        when = when.replace(tzinfo=timezone.utc)
+    return max((when - datetime.now(timezone.utc)).total_seconds(), 0.0)
+
+
 def _http_json(url: str, cookie_path: Optional[str] = None,
                timeout: int = 60) -> dict:
     """GET 一个返回 JSON 的接口。
@@ -622,8 +667,12 @@ def _http_json(url: str, cookie_path: Optional[str] = None,
                 raw = gzip.decompress(raw)
     except urllib.error.HTTPError as e:
         if e.code in (412, 429):
+            # 这两种状态码 B站会带 `Retry-After`——它自己说了「多久后可以再来」，
+            # 比我们按次数猜的 60/180/300 更准。带不出来的情况（代理改写、
+            # 网关吞掉）就交给上层按次数递增。
             raise BiliRiskControl(
-                f"请求被 B站拦截（HTTP {e.code}）", code=e.code) from e
+                f"请求被 B站拦截（HTTP {e.code}）", code=e.code,
+                retry_after=parse_retry_after(e.headers)) from e
         if e.code in (401, 403):
             raise BiliLoginRequired(
                 f"请求被拒绝（HTTP {e.code}），Cookie 可能已失效", code=e.code) from e

@@ -184,6 +184,43 @@ conn.execute("UPDATE tasks SET status='running', worker=?, started_at=? WHERE id
 
 **边界**：单机、单库、无鉴权，默认只监听 `127.0.0.1`——要对外必须先自己套反向代理。它不是分布式队列，多机部署得换 PostgreSQL 或 Redis。写它是为了让你看清这套骨架，不是为了替代 Celery。
 
+### 在 AI 对话里直接用（MCP）
+
+上面三条路（`fetch` / `subs` / `serve`）的入口都是「你记得命令、敲对参数、再去目录里翻文件」。
+但真实场景里人是这么说话的：**「帮我把这条视频的字幕取下来，顺手订正一下」**。
+
+`asr-polish-mcp` 把同一个 `run_subs` 包成 [MCP](https://modelcontextprotocol.io) 工具，
+装完之后在 Claude Desktop / Cursor 这类客户端里说一句就行：
+
+```json
+{
+  "mcpServers": {
+    "asr-polish": {
+      "command": "asr-polish-mcp"
+    }
+  }
+}
+```
+
+装的是命令行脚本没进 `PATH` 的话，用 `"command": "python", "args": ["-m", "asr_polish.mcp"]`。
+
+| 工具 | 干什么 |
+|---|---|
+| `fetch_subtitles` | 取字幕落盘。`target` 支持 BV 号 / `up:` / `season:` / `search:`，返回四态结果与失败明细 |
+| `list_videos` | 只列清单不下载：先看看有什么，再决定抓哪些（避免一次性抓几十条吃风控） |
+| `correct_text` | 术语订正，不联网、不改文件 |
+| `check_login` | 真的请求一次 `nav` 接口验证 Cookie——文件存在、字段齐全都说明不了问题 |
+
+三点取舍：
+
+- **零新增依赖。** MCP 的 stdio 传输就是「一行一条 JSON-RPC 消息」，标准库够了。
+  为此引入官方 SDK 会带进 pydantic / httpx / anyio 一串，与「零第三方依赖」直接冲突。
+- **不另写一套判定。** 工具调的就是 CLI 和服务端在用的那个函数，`complete` / `partial` /
+  `empty` / `failed` 和「只重跑失败条目」的行为完全一致；失败时返回里直接给出 `only` 该怎么传。
+- **多 P 合集默认有上限。** 一条 84 P 的课程在调用方眼里就是「一条视频」，不设限就是
+  84 次请求、166 个文件、几万字节的返回体。默认取前 20 P，并明说「共 84 P 只取了 20 个」；
+  要全取传 `max_parts: 0`。批量仍然是 `serve` 的正路——那里有队列和断点。
+
 ### ④ 批量抓不被封：限速与风控
 
 抓 `up:` 几十条投稿时，每条要打 3～4 个接口（`view` → `nav` → `player/wbi/v2` → 字幕 CDN），全速发就是几百个请求连着出去。B站对这类模式的反应是 `-352 风控校验失败`，而且**之后一段时间内所有接口都拒绝**，不是只拒被拦的那一条。
@@ -199,7 +236,9 @@ asr-polish subs --up 12345 --min-interval 2
 
 注意：速率由它控制，`subs -j` 的并发数不再影响 API 压力（只影响音频下载与本地处理）。
 
-**② 遇风控整体退避，而不是记一条失败。** 风控是按 IP / 账号记的，继续打只会延长限制。现在是 60 → 180 → 300 秒退避后重试同一条，期间持续刷新心跳（不刷会被僵尸回收器当成卡死任务重新排队），面板上能看到「第 2 次被风控，退避 180s 后重试，还需 60s」。累计 9 分钟仍被拦才判失败。
+**② 遇风控整体退避，而不是记一条失败。** 风控是按 IP / 账号记的，继续打只会延长限制。默认 60 → 180 → 300 秒退避后重试同一条，期间持续刷新心跳（不刷会被僵尸回收器当成卡死任务重新排队），面板上能看到「第 2 次被风控，退避 180s 后重试，还需 60s」。累计约 9 分钟仍被拦才判失败。
+
+**但如果 B站自己在响应头里说了要等多久（`Retry-After`），就听它的。** 412 / 429 会带这个头，两种写法都认（秒数、HTTP 日期）；夹在 30～600 秒之间——给 0 秒等于没退避（刚被拦立刻再打，判定更重），说一小时后再来就直接失败并说清原因，而不是 300 秒后继续撞三次。没有这个头时（大多数情况，风控走的是业务码而不是 HTTP 状态）才回落到上面的固定档位。
 
 **③ 区分「没登录」和「太快」。** 这两件事返回码都是 `-352`，处置却相反：前者换 Cookie 有用，后者等一下就好。遇到 `-352` 会先用 `nav` 探一次登录态（缓存 5 分钟），未登录就直接告诉你换 Cookie，不白等。
 
@@ -305,7 +344,7 @@ pip install -e ".[dev]"
 
 > `yt-dlp` 仅在「视频没有字幕轨 → 转走必剪云端 ASR」时才被 import。有字幕的视频（含 B站 AI 字幕）不装它也能取。
 
-装好后即可用命令行工具 `asr-polish`：
+装好后得到两个命令：`asr-polish`（命令行）和 `asr-polish-mcp`（MCP server，供 AI 客户端调用）。
 
 ```bash
 # 从 B站视频取文本（字幕轨优先，无字幕走必剪云端 ASR）
@@ -457,6 +496,7 @@ asr-polish/
 │   ├── __main__.py        # 支持 python -m asr_polish
 │   ├── py.typed           # PEP 561 类型标记
 │   ├── cli.py             # 命令行入口（fetch / subs / serve / submit / status / correct …）
+│   ├── mcp.py             # MCP server（stdio 传输，zero-dep，供 agent 调用）
 │   ├── correction.py      # 术语订正引擎
 │   ├── crosscheck.py      # 多引擎交叉验证
 │   ├── quality.py         # 转写质量自评
@@ -499,20 +539,23 @@ asr-polish/
     ├── test_cli.py            # 命令行健壮性（管道编码、--only）
     ├── test_cookie_import.py  # Cookie 解析与写入（含 #HttpOnly_）
     ├── test_server.py         # 状态机 / 并发抢任务 / 重试 / 僵尸回收 / HTTP
-    ├── test_jobs_outcome.py   # 批量任务四态 + 只重跑失败条目
+    ├── test_jobs_outcome.py   # 批量任务四态 + 只重跑失败条目 + 分P上限
+    ├── test_retry_after.py    # Retry-After 两种写法、夹逼、超上限快速失败
+    ├── test_mcp.py            # MCP 协议层（通知不回包 / 坏 JSON 不中断）+ 工具层
     └── test_ci_guard.py       # 标签闸门：按提交判定、标签对象解引用、只拦标签
 ```
 
 ## 变更记录
 
-完整逐版本记录见 [CHANGELOG.md](./CHANGELOG.md)，每个版本都写明实测数字与判断依据。最近四版：
+完整逐版本记录见 [CHANGELOG.md](./CHANGELOG.md)，每个版本都写明实测数字与判断依据。最近五版：
 
 | 版本 | 一句话 |
 |---|---|
+| **0.10.0** | 加 MCP server：agent 在对话里就能取字幕；退避开始听服务端给的 `Retry-After` |
+| **0.9.2** | 首次发到 PyPI，`pip install asr-polish`；这一版只改「怎么装」 |
 | **0.9.1** | 结果区分全部成功 / 部分成功 / 无产出；列出失败明细，`retry-failed` 与 `subs --only` 只补失败的那几条 |
 | **0.9.0** | 任务写回加所有权令牌：被接管（重试 / 僵尸回收）的旧执行无法再写状态，`retry` 对 `running` 从「复制一份」变成「真重启」 |
 | **0.8.0** | 请求限速 + 风控退避 + Cookie 状态提示；批量抓不再把账号抓进风控，`cookie set` 一条命令导入登录态 |
-| **0.7.1** | 修僵尸回收不看重试上限导致任务无限重跑；状态输出统一中文 |
 
 > 0.5.0 有一个 P0 回归（`--out` 帮助文本里 `%APPDATA%` 未转义，argparse 崩溃，CLI 全不可用），
 > 已在 0.5.1 修复。装到 0.5.0 的请直接升级。

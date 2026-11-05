@@ -227,5 +227,46 @@ class TestOnly(_RunJob):
         self.assertEqual(result["videos"], 5)
 
 
+class TestMaxParts(_RunJob):
+    """多P合集的单条上限：一条 84 P 的视频不该被当成「一条」打 84 次请求。"""
+
+    def test_caps_pages_and_says_so(self) -> None:
+        calls: list = []
+
+        def fetch(bv, page=1, allow_asr=False):
+            calls.append(page)
+            return _res(bv, page)
+
+        bv = "BV1xx411c001"
+        result, _ = self._run(
+            {"target": bv, "outdir": self.tmp, "max_parts": 3},
+            fetch, [bv], info=_info(pages=8))
+        self.assertEqual(calls, [1, 2, 3])
+        self.assertEqual(result["parts_written"], 3)
+        self.assertEqual(result["parts_truncated"], 5)
+        capped = [x for x in result["items"] if x.get("parts_capped")]
+        self.assertEqual(len(capped), 1)
+        self.assertEqual(capped[0]["parts_capped"],
+                         {"total": 8, "taken": 3, "dropped": 5})
+
+    def test_zero_means_no_limit(self) -> None:
+        bv = "BV1xx411c001"
+        result, _ = self._run(
+            {"target": bv, "outdir": self.tmp, "max_parts": 0},
+            lambda b, page=1, allow_asr=False: _res(b, page),
+            [bv], info=_info(pages=4))
+        self.assertEqual(result["parts_written"], 4)
+        self.assertEqual(result["parts_truncated"], 0)
+
+    def test_no_constraint_when_fewer_pages_than_cap(self) -> None:
+        bv = "BV1xx411c001"
+        result, _ = self._run(
+            {"target": bv, "outdir": self.tmp, "max_parts": 20},
+            lambda b, page=1, allow_asr=False: _res(b, page),
+            [bv], info=_info(pages=2))
+        self.assertEqual(result["parts_written"], 2)
+        self.assertFalse(any(x.get("parts_capped") for x in result["items"]))
+
+
 if __name__ == "__main__":
     unittest.main()

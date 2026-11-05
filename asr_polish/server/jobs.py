@@ -52,6 +52,13 @@ class JobFailure(RuntimeError):
 #: 该让任务失败并提示用户降速，而不是继续耗着。
 _RISK_BACKOFF = (60.0, 180.0, 300.0)
 
+#: 服务端给了 ``Retry-After`` 时，对它做上下夹逼。
+#: 下界 30 秒：给 0 等于没退避，刚被拦完立刻再打，判定只会更重。
+#: 上界 600 秒：超过这个数就不在「等一会」的范畴了，直接失败并说清原因，
+#: 比让用户对着进度条干等十分钟好。
+_MIN_BACKOFF = 30.0
+_MAX_BACKOFF = 600.0
+
 #: 退避时把等待切成小段，每段都刷新心跳与进度说明。
 #: 不分段的话，退避 300 秒期间任务没有任何心跳，会被回收器判成僵尸重新排队。
 _BACKOFF_TICK = 15.0
@@ -75,6 +82,24 @@ def _sleep_with_heartbeat(total: float, progress: Progress,
         remaining -= step
 
 
+def _backoff_for(attempt: int, retry_after: Optional[float] = None) -> Optional[float]:
+    """第 ``attempt`` 次重试前该等多久；返回 ``None`` 表示「别等了」。
+
+    - 服务端给了 ``Retry-After`` → 用它的值，但夹在 30~600 秒之间。B站自己
+      说的「多久后可以再来」比我们按次数猜的档位准。
+    - 服务端没给（大多数情况：风控走的是业务码 -352/-412，不经过 HTTP 状态）→
+      回落到 ``_RISK_BACKOFF`` 的固定档位。
+    - 服务端要求的等待超过上限 → 返回 ``None``。这不是「算不出」，而是
+      「等下去也不会有结果」：对方说一小时后再来，重试三次只是把失败延后。
+    """
+    if retry_after is None:
+        return _RISK_BACKOFF[min(attempt, len(_RISK_BACKOFF) - 1)]
+    wait = float(retry_after)
+    if wait > _MAX_BACKOFF:
+        return None
+    return max(wait, _MIN_BACKOFF)
+
+
 def _with_risk_backoff(fn: Callable, progress: Progress, frac: float,
                        what: str) -> object:
     """执行 fn()；遇到风控就退避后重试同一个调用。
@@ -86,6 +111,7 @@ def _with_risk_backoff(fn: Callable, progress: Progress, frac: float,
     ``BiliLoginRequired`` 直接上抛：Cookie 没换，等多久结果都一样。
     """
     last: Optional[BiliRiskControl] = None
+    waited = 0.0
     for attempt in range(len(_RISK_BACKOFF) + 1):
         try:
             return fn()
@@ -100,17 +126,28 @@ def _with_risk_backoff(fn: Callable, progress: Progress, frac: float,
             last = explained
             if attempt >= len(_RISK_BACKOFF):
                 break
-            wait = _RISK_BACKOFF[attempt]
-            _sleep_with_heartbeat(
-                wait, progress, frac,
-                "第 %d 次被风控（%s），退避 %ds 后重试"
-                % (attempt + 1, what, int(wait)))
+            suggested = getattr(explained, "retry_after", None)
+            wait = _backoff_for(attempt, suggested)
+            if wait is None:
+                raise RuntimeError(
+                    "B站要求 %d 秒后再来（Retry-After），超过 %d 秒的等待上限。"
+                    "继续重试只会把失败往后推，所以这里停下。"
+                    "建议：过 %d 分钟再试，或把 --min-interval 调大（例如 3）、"
+                    "降低单次任务条数。"
+                    % (int(suggested), int(_MAX_BACKOFF), int(suggested) // 60 + 1)
+                ) from explained
+            waited += wait
+            note = "第 %d 次被风控（%s）" % (attempt + 1, what)
+            if suggested is not None:
+                # 让用户知道这个数字不是我们猜的，是对方给的——两件事的
+                # 可信度不一样，出问题时排查方向也不同。
+                note += "，B站建议等 %ds" % int(suggested)
+            _sleep_with_heartbeat(wait, progress, frac, note + "，退避中")
     raise RuntimeError(
         "连续 %d 次被风控（最后一次：%s）。已累计退避 %d 秒仍被拦，"
         "继续重试只会延长限制。建议：把 --min-interval 调大（例如 3）、"
         "降低单次任务条数，或更新 Cookie 后重试。"
-        % (len(_RISK_BACKOFF) + 1, last,
-           int(sum(_RISK_BACKOFF)))) from last
+        % (len(_RISK_BACKOFF) + 1, last, int(waited))) from last
 
 
 def resolve_targets(target: str, limit: Optional[int] = None,
@@ -168,6 +205,12 @@ def run_subs(payload: dict, progress: Progress = _noop) -> dict:
         want = {int(x) for x in want_pages.split(",") if x.strip().isdigit()}
 
     progress(0.02, "解析目标")
+    # 单个视频的分P上限。多P合集经常有几十上百 P（课程、连载），而调用方
+    # 说「取这条视频」时并不期望打上百个请求——那等于把批量任务伪装成单条。
+    # 0/None 表示不限制。
+    max_parts = payload.get("max_parts")
+    max_parts = int(max_parts) if max_parts else 0
+    parts_truncated = 0
     only = parse_only_targets(payload.get("only"))
     if only is not None:
         # 重跑指定条目：**不重新解析 target**。UP 主投稿会一直变，重新解析
@@ -197,6 +240,7 @@ def run_subs(payload: dict, progress: Progress = _noop) -> dict:
     total = len(targets)
     items: list[dict] = []
     errors: list[str] = []
+    written_files: list[str] = []
     n_ok = n_nosub = n_fail = 0
 
     for i, bvid in enumerate(targets, 1):
@@ -216,6 +260,15 @@ def run_subs(payload: dict, progress: Progress = _noop) -> dict:
             if bvid in only_pages and only_pages[bvid] is not None:
                 # 重跑时限定到当初失败的那几个分 P，别把已经成功的重做一遍。
                 pages = [p for p in pages if p["index"] in only_pages[bvid]]
+            if max_parts and len(pages) > max_parts:
+                dropped = len(pages) - max_parts
+                parts_truncated += dropped
+                # 不静默截断：用户看到「成了 20 段」却不知道还有 64 段没取，
+                # 会以为这条视频就这么多。单独存一个字段而不是塞 note——
+                # note 会被「这条没有字幕」的提示覆盖掉。
+                row["parts_capped"] = {"total": len(pages), "taken": max_parts,
+                                       "dropped": dropped}
+                pages = pages[:max_parts]
 
             for p in pages:
                 if payload.get("stop"):
@@ -250,8 +303,11 @@ def run_subs(payload: dict, progress: Progress = _noop) -> dict:
                     res.text = "\n".join(fixed)
                 part = p["title"] if total_pages > 1 else ""
                 stem = export.base_name(res, p["title"], total_pages)
-                export.write_all(outdir, stem, formats, res, part,
-                                 skip_existing=bool(payload.get("skip_existing")))
+                paths = export.write_all(outdir, stem, formats, res, part,
+                                         skip_existing=bool(payload.get("skip_existing")))
+                # 记下真实落盘路径：面板要能点开，MCP 那边也要把文件位置
+                # 直接交给调用方，不该让人再去输出目录里翻。
+                written_files.extend(str(x.resolve()) for x in paths)
                 row["parts"] += 1
                 n_ok += 1
         except BiliLoginRequired as e:
@@ -281,6 +337,8 @@ def run_subs(payload: dict, progress: Progress = _noop) -> dict:
         "failed": n_fail,
         "outdir": str(outdir.resolve()),
         "formats": formats,
+        "files": written_files[:500],
+        "parts_truncated": parts_truncated,
         "items": items[:200],
         "failed_items": failed_items[:_MAX_FAILED_KEPT],
         "errors": errors[:_MAX_ERRORS_KEPT],

@@ -7,6 +7,48 @@
 
 ---
 
+## [0.10.0] - 2026-11-05
+
+两个「本来就有、但没接上」的地方：agent 调不到它，服务端说的等待时间没人听。
+
+### 新增
+
+- **MCP server**（`asr-polish-mcp`，stdio 传输）。把同一个 `run_subs` 包成四个工具：
+  `fetch_subtitles` / `list_videos` / `correct_text` / `check_login`。装完之后可以在
+  Claude Desktop、Cursor 这类客户端里直接说「把这条视频的字幕取下来」，不用记命令。
+  **零新增依赖**——MCP 的 stdio 传输就是「一行一条 JSON-RPC 消息」，标准库够了；
+  为此引入官方 SDK 会带进 pydantic / httpx / anyio。
+- 工具结果**复用同一套四态判定**，不是另写一份：`complete` / `partial` / `empty` /
+  `failed`，`failed_items` 里带 `retry` 字段，失败时直接告诉调用方「只重跑这几条」该怎么传参。
+- 支持 MCP 的进度通知（`notifications/progress`），批量抓时「还在动」看得见。
+  只在客户端给了 `progressToken` 时才发，最多每秒一条。
+- **单视频分P上限**（`max_parts`）：一条 84 P 的课程合集，在一个只会说「取这条视频」
+  的调用方眼里就是「一条」，打 84 次请求、写 166 个文件、返回体几万字节。MCP 侧默认压到
+  20，并在返回里明说「共 84 P 只取了 3 个」，不静默截断。
+- 结果里新增 `files`（真实落盘路径）与 `parts_truncated`，面板与 MCP 共用。
+
+### 修复
+
+- **`BiliRiskControl.retry_after` 从来没被读过**。字段从 0.6 起就在，赋过值、也从来没被
+  传进来过——退避永远按硬编码的 60/180/300 走。现在 `_http_json` 遇到 412/429 会真的解析
+  响应头（秒数与 HTTP 日期两种写法都认），`jobs` 优先按服务端给的时间等，夹在 30~600 秒之间：
+  给 0 秒等于没退避（刚被拦立刻再打，判定更重），说一小时后再来就直接失败并说清原因，
+  而不是 300 秒后继续撞三次。
+- 退避耗尽时的报错里，累计秒数改为**实际等了多久**，不再是配置档位之和——用了服务端
+  建议值之后这两个数不再相等。
+
+### 测试
+
+300 项（+36）。新增 `tests/test_mcp.py`（协议层：通知不回包、坏 JSON 不中断、stdout 只准有
+协议消息；工具层：四态透传、失败条目、返回体收窄）与 `tests/test_retry_after.py`
+（两种 Retry-After 写法、读不懂时回落、上下界夹逼、超上限快速失败）。
+
+真跑过的路径：起子进程走完整 stdio 协议，`initialize` → `tools/list` → `correct_text` →
+`check_login`（真的请求了 nav 接口，返回「Cookie 有效，已登录」）；再对一个 84 P 的真实
+合集抓 3 个分P，确认 `parts_truncated=81`、落盘 3 个文件、返回体 600 字节。
+
+---
+
 ## [0.9.2] - 2026-11-05
 
 首次发到 PyPI：`pip install asr-polish`。**代码没有功能变化**，这一版改的是「怎么装」。
