@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -232,9 +233,13 @@ class TestTranscriptEndpoint(_ServerBase):
         self.assertEqual(code, 200)
         self.assertIn('id="target"', html)
         self.assertIn("字幕阅读", html)
-        # 页面必须能离线用：没有任何外链资源
-        self.assertNotIn("http://", html)
-        self.assertNotIn("https://", html)
+        # 页面本身仍然零外链：样式和脚本都内联，断网打开也是完整的。
+        # 唯一的外部地址是 B站官方播放器——而且只在用户点了句子之后才加载
+        # （iframe 初始没有 src），所以离线时它安静地不出现，不会拖白页。
+        self.assertNotIn("<link", html)
+        self.assertNotIn("<script src", html)
+        urls = set(re.findall(r"https?://([^/\s\"'<>)]+)", html))
+        self.assertEqual(urls, {"player.bilibili.com", "www.bilibili.com"})
 
     def test_unknown_task_404(self) -> None:
         code, body = self._get("/api/tasks/NOPE/transcript")
