@@ -1,0 +1,115 @@
+name: Publish
+
+# 发到 PyPI：`pip install asr-polish` 就能用，不用 clone 仓库。
+#
+# 推 v* 标签自动跑。也可以在 Actions 页面手动触发、指定标签补发——
+# v0.9.1 就是这么补的：标签早就推了，这条流程是后加的，不该为了发布去删标签重推。
+#
+# 认证走 **OIDC 信任发布**，仓库里不存任何 token。
+# 一次性的 PyPI 侧配置见 CONTRIBUTING.md「发到 PyPI」。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的标签（如 v0.9.1），留空则用当前分支"
+        required: false
+
+permissions:
+  contents: read
+
+# 发布不能并发：同一版本两次上传会有一半失败，且失败信息很难看
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: build & upload
+    runs-on: ubuntu-latest
+    environment: pypi          # 必须与 PyPI 上「信任发布」里填的环境名一致
+    permissions:
+      id-token: write          # OIDC 换短期凭据，代替长期 API token
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 校验 标签 = __version__ = CHANGELOG
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os, pathlib, re
+          tag = os.environ["TAG"]
+          if not tag.startswith("v"):
+              raise SystemExit(f"这不是个版本标签：{tag}")
+          want = tag.lstrip("v")
+          src = pathlib.Path("asr_polish/__init__.py").read_text(encoding="utf-8")
+          got = re.search(r'__version__\s*=\s*"([^"]+)"', src).group(1)
+          assert got == want, f"标签 {tag} 与 __version__ {got} 不一致"
+          log = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+          assert f"## [{want}]" in log, f"CHANGELOG.md 缺少 {want} 条目"
+          print(f"{tag} 一致性校验通过")
+          PY
+
+      - name: 这个版本是不是已经在 PyPI 上了
+        id: exists
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os, urllib.error, urllib.request
+          name = "asr-polish"
+          ver = os.environ["TAG"].lstrip("v")
+          url = f"https://pypi.org/pypi/{name}/{ver}/json"
+          try:
+              urllib.request.urlopen(
+                  urllib.request.Request(url, headers={"User-Agent": "publish-check"}),
+                  timeout=20)
+              found = True
+          except urllib.error.HTTPError as e:
+              if e.code != 404:
+                  # 403/5xx 都说明「查不清」，不能当成「没发过」——宁可红一次，
+                  # 也不要对着一个未知状态直接上传
+                  raise SystemExit(f"查 PyPI 失败：HTTP {e.code}")
+              found = False
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"exists={'true' if found else 'false'}\n")
+          print(f"{name} {ver} 已存在，跳过上传" if found else f"{name} {ver} 还没发布过")
+          PY
+
+      - name: Build sdist & wheel
+        if: steps.exists.outputs.exists != 'true'
+        run: |
+          python -m pip install build twine
+          python -m build
+          python -m twine check dist/*
+
+      - name: 产物自检（发布前最后一道）
+        if: steps.exists.outputs.exists != 'true'
+        run: |
+          python - <<'PY'
+          import glob, zipfile
+          whl = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(whl).namelist()
+          for must in ("data/corrections.json", "py.typed", "LICENSE", "NOTICE"):
+              assert any(must in n for n in names), f"wheel 缺 {must}"
+          assert not [n for n in names if n.endswith(".pyc") or "__pycache__" in n], "wheel 里混进了 pyc"
+          print("wheel 内容校验通过")
+          PY
+
+      - name: Upload
+        if: steps.exists.outputs.exists != 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: 已经发过了，跳过
+        if: steps.exists.outputs.exists == 'true'
+        run: |
+          echo "::notice::这个版本已经在 PyPI 上，跳过上传（PyPI 不允许覆盖已发布版本）"

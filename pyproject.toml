@@ -27,6 +27,8 @@ dynamic = ["version"]
 [project.urls]
 Homepage = "https://github.com/angus-hu-gzy/asr-polish"
 Repository = "https://github.com/angus-hu-gzy/asr-polish"
+Changelog = "https://github.com/angus-hu-gzy/asr-polish/blob/main/CHANGELOG.md"
+Issues = "https://github.com/angus-hu-gzy/asr-polish/issues"
 
 [project.optional-dependencies]
 bilibili = ["yt-dlp"]
