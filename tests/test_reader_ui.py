@@ -30,11 +30,41 @@ _HARNESS = _HERE / "js" / "reader_logic.js"
 _NODE = shutil.which("node")
 
 
+def _scripts() -> list[str]:
+    return re.findall(r"<script>(.*?)</script>", html(), re.S)
+
+
 def _page_script() -> str:
-    m = re.search(r"<script>(.*?)</script>", html(), re.S)
+    """页面主脚本。
+
+    head 里还有一小段「先把主题定下来」的引导脚本排在前面，所以不能取第一个。
+    改用 ``window.__reader`` 这个钩子认人：按位置取的话，以后谁再往 head 加
+    一段脚本，这里就会悄悄抓错，而抓错的后果是整层逻辑测试全绿却什么也没测。
+    """
+    for block in _scripts():
+        if "window.__reader" in block:
+            return block
+    raise AssertionError("阅读页里没有挂 window.__reader 的主脚本")
+
+
+def _boot_script() -> str:
+    """head 里那段定主题的脚本：必须早于样式表跑，否则夜间会闪一帧白。"""
+    for block in _scripts():
+        if "window.__reader" not in block and "data-theme" in block:
+            return block
+    raise AssertionError("阅读页里没有 head 引导脚本")
+
+
+def _root_block(selector: str) -> str:
+    """取出 ``:root{…}`` / ``:root[data-theme="dark"]{…}`` 这一块的声明。"""
+    m = re.search(re.escape(selector) + r"\s*\{(.*?)\}", html(), re.S)
     if not m:
-        raise AssertionError("阅读页里没有 <script> 块")
+        raise AssertionError("找不到样式块 %s" % selector)
     return m.group(1)
+
+
+def _declared_vars(selector: str) -> set[str]:
+    return set(re.findall(r"--([\w-]+)\s*:", _root_block(selector)))
 
 
 class ReaderMarkupTest(unittest.TestCase):
@@ -128,6 +158,62 @@ class ReaderMarkupTest(unittest.TestCase):
         m = re.search(r"function renderDoc\(.*?\n\}", _page_script(), re.S)
         self.assertIsNotNone(m, "找不到 renderDoc")
         self.assertIn("else restorePos()", m.group(0))
+
+    # ── 夜间模式 ──────────────────────────────────────
+    def test_theme_boot_runs_before_styles(self) -> None:
+        """定主题的那段必须排在 <style> 之前。
+
+        排后面的话，浏览器已经按白天配色画完一帧才切成夜间——夜间用户每次
+        刷新都要被闪一下白，而这正是这个功能本身要解决的问题。
+        """
+        page = html()
+        self.assertLess(page.index(_boot_script()), page.index("<style>"))
+        # 两套都声明给 UA 看，它才不会先按自己的猜测铺一层底色
+        self.assertIn('content="light dark"', page)
+
+    def test_theme_is_local_only(self) -> None:
+        """选择和重点、读位一样只在本机：出现后端同步就是越界了。"""
+        self.assertIn("asr-polish:theme:v1", html())
+        self.assertNotIn("/api/theme", html())
+
+    def test_boot_and_page_share_one_key(self) -> None:
+        """两段脚本各写一遍键名（跨 <script> 块共享不了常量）。
+
+        写岔了的表现很隐蔽：切完当时是好的，下次打开又回去了。这里钉住一致。
+        """
+        key = "asr-polish:theme:v1"
+        self.assertIn(key, _boot_script())
+        self.assertIn(key, _page_script())
+        self.assertEqual(html().count(key), 2)
+
+    def test_no_colour_hardcoded_outside_the_token_blocks(self) -> None:
+        """颜色只能写在两组变量里。
+
+        只要漏一处硬编码，切到夜间它就变成一块漏网的白底——而这恰好是最难
+        用肉眼扫全的东西。唯一的例外是播放器框里的 ``#000``：视频底色，白天
+        夜里都该是黑的。
+        """
+        css = re.search(r"<style>(.*?)</style>", html(), re.S).group(1)
+        css = re.sub(r':root(\[[^\]]*\])?\s*\{[^}]*\}', "", css)
+        left = set(re.findall(r"#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)", css))
+        self.assertEqual(left, {"#000"})
+
+    def test_dark_defines_every_light_token(self) -> None:
+        """夜间那组要把白天每个变量都覆盖掉。
+
+        漏一个，那个元素在夜间还是白天的颜色：白卡片浮在深底上，比整个忘了
+        做夜间模式还显眼。反向不要求，夜间可以有白天没有的变量。
+        """
+        light = _declared_vars(":root")
+        self.assertTrue(len(light) > 20, "变量表怎么这么小")
+        self.assertEqual(light - _declared_vars(':root[data-theme="dark"]'), set())
+
+    def test_theme_writes_only_on_click(self) -> None:
+        """跟随系统的用户不能被悄悄写成固定值，否则系统换了主题他也不跟着换。"""
+        m = re.search(r"function initTheme\(.*?\n\}", _page_script(), re.S)
+        self.assertIsNotNone(m, "找不到 initTheme")
+        self.assertNotIn("lsWrite", m.group(0))
+        self.assertIn("lsWrite(THEME_KEY", _page_script())
 
 
 @unittest.skipUnless(_NODE, "没有 node，跳过前端逻辑测试")
@@ -286,6 +372,51 @@ class ReaderLogicTest(unittest.TestCase):
         """
         # tops 依次是 -42(上一段)、44(再上一段)、96(目标)、183、269
         self.assertEqual(self.d["idxRealLayout"], 2)
+
+    # ── 夜间模式 ──────────────────────────────────────
+    def test_theme_key_shared_with_boot_script(self) -> None:
+        self.assertEqual(self.d["themeKey"], "asr-polish:theme:v1")
+
+    def test_stored_choice_beats_system(self) -> None:
+        """手动选过就听人的，系统怎么设都不管——否则「记住上次选的」就是空话。"""
+        self.assertEqual(self.d["themeStoredDarkOnLight"], "dark")
+        self.assertEqual(self.d["themeStoredLightOnDark"], "light")
+
+    def test_follows_system_when_never_chosen(self) -> None:
+        """没存过就跟随系统：系统深色进夜间，浅色进白天。"""
+        self.assertEqual(self.d["themeSystemDark"], "dark")
+        self.assertEqual(self.d["themeSystemLight"], "light")
+
+    def test_junk_value_falls_back_to_system(self) -> None:
+        """存了个认不出的值（大小写不对、半截 JSON）当没存过。
+
+        不能猜、也不能停在「两套都不对」的状态：退回跟随系统是唯一说得通的
+        默认，而且不会白屏。
+        """
+        self.assertEqual(self.d["themeJunkFollowsSystem"], "dark")
+        self.assertEqual(self.d["themeEmptyFollowsSystem"], "light")
+
+    def test_toggle_flips_both_ways(self) -> None:
+        self.assertEqual(self.d["nextFromLight"], "dark")
+        self.assertEqual(self.d["nextFromDark"], "light")
+
+    def test_label_says_what_clicking_does(self) -> None:
+        """按钮上写的是「点了会变成什么」，title 里把当前状态和目标都说全。
+
+        只放一个月亮图标，用户得先点一次才知道它是干嘛的。
+        """
+        light = self.d["labelLight"]
+        self.assertEqual(light["text"], "🌙 夜间")
+        self.assertIn("当前是白天", light["title"])
+        self.assertIn("点一下切到夜间", light["title"])
+
+        dark = self.d["labelDark"]
+        self.assertEqual(dark["text"], "☀️ 白天")
+        self.assertIn("当前是夜间", dark["title"])
+        self.assertIn("切回白天", dark["title"])
+
+        # 认不出的当前值当白天处理，别给出个空按钮
+        self.assertEqual(self.d["labelJunk"]["text"], "🌙 夜间")
 
 
 if __name__ == "__main__":

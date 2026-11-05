@@ -160,6 +160,22 @@ function main() {
     // 实测的一组：界 69、目标段停在 96、它前面那段下沿在 44。
     // 按「距离最近」会选错到前一段，按「第一个 >= 界」才对。
     idxRealLayout: api.pickCueIndex([-42, 44, 96, 183, 269], 69),
+
+    // ── 夜间模式 ──────────────────────────────────
+    themeKey: api.themeKey(),
+    // 存过就用存的，哪怕和系统相反：用户按过一次，就是他的意思
+    themeStoredDarkOnLight: api.themeFrom("dark", false),
+    themeStoredLightOnDark: api.themeFrom("light", true),
+    themeSystemDark: api.themeFrom(null, true),
+    themeSystemLight: api.themeFrom(null, false),
+    // 存的是认不出的值：当没存过，回去跟随系统
+    themeJunkFollowsSystem: api.themeFrom("DARK", true),
+    themeEmptyFollowsSystem: api.themeFrom("{oops}", false),
+    nextFromLight: api.nextTheme("light"),
+    nextFromDark: api.nextTheme("dark"),
+    labelLight: api.themeLabel("light"),
+    labelDark: api.themeLabel("dark"),
+    labelJunk: api.themeLabel("nope"),
   };
   process.stdout.write(JSON.stringify(out));
 }

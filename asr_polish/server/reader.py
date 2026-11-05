@@ -31,14 +31,94 @@ _HTML = r"""<!DOCTYPE html>
 <html lang="zh-CN"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="light">
+<meta name="color-scheme" content="light dark">
 <title>asr-polish · 字幕阅读</title>
+<script>
+/* 主题必须在第一次绘制之前定下来，所以这段单独放在 head、先于样式表执行。
+   挪到页面末尾那段脚本里会晚一帧——夜间用户会先看见一下白底再变暗，正是
+   最刺眼的那一下。键名与 __reader.themeKey() 是同一个，改一处要改两处。 */
+(function(){
+  var t = null;
+  try {
+    var v = localStorage.getItem("asr-polish:theme:v1");
+    if (v === "dark" || v === "light") t = v;
+  } catch(e){}                      // 隐私模式下读不了：当没存过，别拦着页面
+  if (!t){
+    try {
+      t = (window.matchMedia
+           && window.matchMedia("(prefers-color-scheme: dark)").matches)
+          ? "dark" : "light";
+    } catch(e){ t = "light" }
+  }
+  document.documentElement.setAttribute("data-theme", t);
+})();
+</script>
 <style>
+/* 颜色全在这一组变量里。白天那套是原值，夜间只换下面 [data-theme="dark"]
+   那一块——规则里不写死颜色，切模式就没有「漏掉一个白底块」这种事。 */
 :root{
-  --paper:#fbfaf7; --ink:#1f2328; --muted:#6b7280; --faint:#9aa4b0;
-  --line:#e6e1d6; --accent:#2a6df4; --mark:#ffe98a; --mark-cur:#ffb020;
+  color-scheme:light;
+  /* 纸面 → 面板 → 次级面板，三层由沉到浮 */
+  --paper:#fbfaf7; --panel:#fff; --field:#f7f5ef; --head:#fcfbf7;
+  /* 字色：正文 → 次要 → 最淡，另外几个是局部用的中间档 */
+  --ink:#1f2328; --muted:#6b7280; --faint:#9aa4b0;
+  --sub:#41474f; --quote:#4b5563; --note-strong:#6b6255;
+  --placeholder:#b3aebf;
+  /* 线 */
+  --line:#e6e1d6; --line-soft:#efeadf; --track:#eae5da;
+  /* 主色 */
+  --accent:#2a6df4; --accent-hover:#1e5fe0; --accent-line:#bcd0f7;
+  --accent-glow:rgba(42,109,244,.12); --on-accent:#fff;
+  /* 悬停与浮起的表面 */
+  --btn-hover:#f6f4ee; --btn-hover-line:#d8d2c4; --raise:#f1ede2;
+  --header-bg:rgba(251,250,247,.92);
+  --shadow:0 1px 2px rgba(29,33,41,.06),0 8px 24px rgba(29,33,41,.05);
+  --shadow-pop:0 6px 20px rgba(40,60,50,.14);
+  /* 正文：闪一下、悬停、已标重点 */
+  --code:#f0ece1; --cue-hover:#f5f1e6; --flash:#fff6cc;
+  --marked:#fffdf3; --marked-hover:#fffbe8;
+  --star:#ffb020; --star-idle:#c9c2b2;
+  /* 搜索命中 / 当前那一处命中。--mark-ink 管命中块里的字色：白天沿用正文色，
+     夜间换浅黄——深底上的浅黄块配浅灰字会糊成一片。 */
+  --mark:#ffe98a; --mark-ink:inherit;
+  --mark-cur:#ffb020; --mark-cur-ink:inherit; --cur-glow:rgba(255,176,32,.35);
+  /* 目录 */
+  --toc-hover:#f4f1e9;
+  /* 语义色 */
   --ok:#15803d; --warn:#b45309; --bad:#b91c1c;
-  --panel:#fff; --shadow:0 1px 2px rgba(29,33,41,.06),0 8px 24px rgba(29,33,41,.05);
+  --ok-bg:#f5fbf7; --ok-line:#cfe6d6; --ok-ink:#41684f;
+  --warn-bg:#fffaf0; --warn-line:#f0d9a8;
+  --bad-bg:#fff6f6; --bad-line:#f2c9c9;
+}
+
+/* 夜间：深暖灰底 + 柔和浅灰字，不用纯黑纯白——那组对比太硬，读半小时眼睛
+   就发酸。层级照白天来：纸面最沉、面板浮一档、输入框再亮一档；字色反过来，
+   正文最亮、次要次之、最淡最暗。谁亮谁暗的顺序一处都没颠倒。 */
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --paper:#17150f; --panel:#201d16; --field:#2a261c; --head:#26221a;
+  --ink:#d8d2c4; --muted:#a09989; --faint:#8a8375;
+  --sub:#b6b0a2; --quote:#a9a396; --note-strong:#c3bcaa;
+  --placeholder:#7f7868;
+  --line:#342f24; --line-soft:#2a261c; --track:#2e2a20;
+  --accent:#7fa8ff; --accent-hover:#9dbcff; --accent-line:#3d4c6b;
+  --accent-glow:rgba(127,168,255,.18); --on-accent:#11161f;
+  --btn-hover:#2a261c; --btn-hover-line:#413b2c; --raise:#2b2620;
+  --header-bg:rgba(23,21,15,.92);
+  --shadow:0 1px 2px rgba(0,0,0,.5),0 10px 26px rgba(0,0,0,.38);
+  --shadow-pop:0 8px 24px rgba(0,0,0,.5);
+  --code:#2c271b; --cue-hover:#221f17; --flash:#453a19;
+  --marked:#221f14; --marked-hover:#2b2717;
+  --star:#e0a63c; --star-idle:#6a6355;
+  /* 命中块：普通命中是压暗的琥珀，当前那一处反过来用亮琥珀 + 深字。
+     两者在深底上一眼能分开——一个暗块亮字，一个亮块暗字。 */
+  --mark:#574a1c; --mark-ink:#f0e2b4;
+  --mark-cur:#d99a2b; --mark-cur-ink:#1b1508; --cur-glow:rgba(217,154,43,.4);
+  --toc-hover:#231f16;
+  --ok:#4ade80; --warn:#e2a33c; --bad:#f08a8a;
+  --ok-bg:#16241b; --ok-line:#2c4434; --ok-ink:#a3d4b6;
+  --warn-bg:#2a2114; --warn-line:#4a3a1c;
+  --bad-bg:#2a1717; --bad-line:#4a2626;
 }
 *{box-sizing:border-box}
 html,body{margin:0;padding:0}
@@ -55,7 +135,7 @@ a:hover{text-decoration:underline}
 
 /* ── 顶栏 ─────────────────────────────────────────── */
 header{
-  position:sticky;top:0;z-index:20;background:rgba(251,250,247,.92);
+  position:sticky;top:0;z-index:20;background:var(--header-bg);
   backdrop-filter:saturate(1.4) blur(8px);border-bottom:1px solid var(--line);
 }
 .bar{max-width:940px;margin:0 auto;padding:12px 20px 10px;
@@ -69,23 +149,28 @@ input[type=text]{
   border-radius:9px;padding:8px 12px;outline:none;font-size:14px;
   transition:border-color .15s,box-shadow .15s;
 }
-input[type=text]:focus{border-color:#bcd0f7;box-shadow:0 0 0 3px rgba(42,109,244,.12)}
-input[type=text]::placeholder{color:#b3aebf}
+input[type=text]:focus{border-color:var(--accent-line);
+  box-shadow:0 0 0 3px var(--accent-glow)}
+input[type=text]::placeholder{color:var(--placeholder)}
 .btn{
   border:1px solid var(--line);background:var(--panel);border-radius:9px;
   padding:8px 14px;font-size:14px;white-space:nowrap;
   transition:background .15s,border-color .15s;
 }
-.btn:hover{background:#f6f4ee;border-color:#d8d2c4}
-.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:550}
-.btn.primary:hover{background:#1e5fe0}
+.btn:hover{background:var(--btn-hover);border-color:var(--btn-hover-line)}
+.btn.primary{background:var(--accent);border-color:var(--accent);
+             color:var(--on-accent);font-weight:550}
+.btn.primary:hover{background:var(--accent-hover)}
 .btn:disabled{opacity:.55;cursor:default}
 .btn.sm{padding:5px 11px;font-size:12.5px;border-radius:7px}
+/* 模式切换。固定最小宽度：🌙「夜间」和 ☀️「白天」字数一变，右边这个按钮
+   就换宽度，搜索框跟着抖一下——切的是颜色，不该让版面前后差几像素。 */
+.themetog{min-width:82px;text-align:center}
 
 /* ── 进度 ─────────────────────────────────────────── */
 #run{max-width:940px;margin:0 auto;padding:0 20px 12px}
 #run[hidden]{display:none}
-.runbar{height:3px;background:#eae5da;border-radius:2px;overflow:hidden}
+.runbar{height:3px;background:var(--track);border-radius:2px;overflow:hidden}
 .runbar i{display:block;height:100%;width:0;background:var(--accent);
           transition:width .35s ease}
 .runmeta{display:flex;gap:12px;justify-content:space-between;margin-top:7px;
@@ -103,13 +188,14 @@ main{max-width:1240px;margin:0 auto;padding:22px 20px 120px}
   box-shadow:var(--shadow);
 }
 .notice b{font-weight:650}
-.notice.warn{border-color:#f0d9a8;background:#fffaf0}
-.notice.bad{border-color:#f2c9c9;background:#fff6f6}
-.notice.ok{border-color:#cfe6d6;background:#f5fbf7;padding:10px 14px;font-size:13.5px}
+.notice.warn{border-color:var(--warn-line);background:var(--warn-bg)}
+.notice.bad{border-color:var(--bad-line);background:var(--bad-bg)}
+.notice.ok{border-color:var(--ok-line);background:var(--ok-bg);padding:10px 14px;
+           font-size:13.5px}
 .notice .meta{color:var(--muted);font-size:12.5px;margin-top:6px}
 .notice ol{margin:8px 0 0;padding-left:20px}
 .notice li{margin:2px 0}
-.notice code{background:#f0ece1;padding:1px 5px;border-radius:4px;
+.notice code{background:var(--code);padding:1px 5px;border-radius:4px;
              font-size:12.5px;font-family:ui-monospace,Consolas,monospace}
 
 /* 断点续读的提示条。必须浮动：恢复位置时页面会滚到那一段，流内元素就跟着
@@ -118,9 +204,9 @@ main{max-width:1240px;margin:0 auto;padding:22px 20px 120px}
 .resume{
   position:fixed;left:50%;transform:translateX(-50%);bottom:22px;z-index:30;
   display:flex;align-items:center;gap:12px;max-width:calc(100vw - 32px);
-  padding:9px 13px;background:#f5fbf7;border:1px solid #cfe6d6;border-radius:9px;
-  font-size:12.5px;line-height:1.6;color:#41684f;
-  box-shadow:0 6px 20px rgba(40,60,50,.14);
+  padding:9px 13px;background:var(--ok-bg);border:1px solid var(--ok-line);border-radius:9px;
+  font-size:12.5px;line-height:1.6;color:var(--ok-ink);
+  box-shadow:var(--shadow-pop);
 }
 .resume[hidden]{display:none}
 .resume .sp{flex:1}
@@ -132,8 +218,8 @@ main{max-width:1240px;margin:0 auto;padding:22px 20px 120px}
   border:1px solid var(--line);border-radius:11px;box-shadow:var(--shadow);
 }
 .tools[hidden]{display:none}
-.tools input{flex:1;min-width:170px;background:#f7f5ef;border-color:transparent}
-.tools input:focus{background:var(--panel);border-color:#bcd0f7}
+.tools input{flex:1;min-width:170px;background:var(--field);border-color:transparent}
+.tools input:focus{background:var(--panel);border-color:var(--accent-line)}
 .tools .count{font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums;
               min-width:52px;text-align:right}
 .tools .stat{font-size:12.5px;color:var(--faint);white-space:nowrap;
@@ -154,17 +240,17 @@ main{max-width:1240px;margin:0 auto;padding:22px 20px 120px}
 .marksbox .sp{flex:1}
 .marksbox ul{list-style:none;margin:0;padding:0}
 .marksbox li{display:grid;grid-template-columns:58px 1fr 20px;gap:10px;
-             align-items:start;padding:7px 0;border-top:1px solid #efeadf}
+             align-items:start;padding:7px 0;border-top:1px solid var(--line-soft)}
 .marksbox li:first-child{border-top:none}
 .marksbox .mt{background:none;border:none;padding:0;text-align:right;cursor:pointer;
   font:11.5px/1.9 ui-monospace,Consolas,monospace;color:var(--faint);
   font-variant-numeric:tabular-nums}
 .marksbox .mt:hover{color:var(--accent)}
-.marksbox .mx{font-size:13.5px;line-height:1.7;color:#41474f;cursor:pointer;
+.marksbox .mx{font-size:13.5px;line-height:1.7;color:var(--sub);cursor:pointer;
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .marksbox .mx:hover{color:var(--ink)}
 .marksbox .md{background:none;border:none;padding:0;cursor:pointer;
-  color:#c9c2b2;font-size:12.5px;line-height:1.9}
+  color:var(--star-idle);font-size:12.5px;line-height:1.9}
 .marksbox .md:hover{color:var(--bad)}
 .marksbox .empty{font-size:12.5px;color:var(--muted);padding:2px 0 4px;line-height:1.8}
 
@@ -189,16 +275,16 @@ main{max-width:1240px;margin:0 auto;padding:22px 20px 120px}
   margin:0;font-size:17.5px;line-height:1.95;letter-spacing:.012em;
   text-align:justify;word-break:break-word;
 }
-.cue.flash{background:#fff6cc;box-shadow:0 0 0 8px #fff6cc}
+.cue.flash{background:var(--flash);box-shadow:0 0 0 8px var(--flash)}
 /* 可跳转的段落：整段可点。悬停才把时间戳染成主色，平时不打扰阅读。 */
 .cue.can{cursor:pointer}
-.cue.can:hover{background:#f5f1e6;box-shadow:0 0 0 5px #f5f1e6}
+.cue.can:hover{background:var(--cue-hover);box-shadow:0 0 0 5px var(--cue-hover)}
 .cue.can:hover .t{color:var(--accent)}
 .partnote{
-  border:1px solid var(--line);background:#f7f4ec;border-radius:9px;
+  border:1px solid var(--line);background:var(--field);border-radius:9px;
   padding:9px 12px;margin:0 0 20px;font-size:12.5px;line-height:1.75;color:var(--muted);
 }
-.partnote b{color:#6b6255;font-weight:600}
+.partnote b{color:var(--note-strong);font-weight:600}
 /* 没有时间戳的分 P：把左边那一列也收掉。留着一个空格子会让整篇正文右移
    半个缩进，看起来像是排版错了。 */
 .part.notime .cue{grid-template-columns:1fr 26px}
@@ -210,18 +296,19 @@ main{max-width:1240px;margin:0 auto;padding:22px 20px 120px}
 .cue .mk{
   grid-column:3;justify-self:start;align-self:start;margin-top:.2em;
   border:none;background:none;padding:0 3px;font-size:14px;line-height:1;
-  color:#c9c2b2;opacity:0;cursor:pointer;
+  color:var(--star-idle);opacity:0;cursor:pointer;
   transition:opacity .15s,color .15s;
 }
 .cue:hover .mk{opacity:1}
-.cue .mk:hover{color:var(--mark-cur)}
-.cue.marked .mk{opacity:1;color:var(--mark-cur)}
-.cue.marked{background:#fffdf3;box-shadow:inset 3px 0 0 var(--mark-cur)}
-.cue.marked.can:hover{background:#fffbe8;
-  box-shadow:inset 3px 0 0 var(--mark-cur),0 0 0 5px #fffbe8}
+.cue .mk:hover{color:var(--star)}
+.cue.marked .mk{opacity:1;color:var(--star)}
+.cue.marked{background:var(--marked);box-shadow:inset 3px 0 0 var(--star)}
+.cue.marked.can:hover{background:var(--marked-hover);
+  box-shadow:inset 3px 0 0 var(--star),0 0 0 5px var(--marked-hover)}
 @media (hover:none){ .cue .mk{opacity:.45} }
-mark{background:var(--mark);color:inherit;border-radius:2px;padding:0 1px}
-mark.cur{background:var(--mark-cur);box-shadow:0 0 0 2px rgba(255,176,32,.35)}
+mark{background:var(--mark);color:var(--mark-ink);border-radius:2px;padding:0 1px}
+mark.cur{background:var(--mark-cur);color:var(--mark-cur-ink);
+         box-shadow:0 0 0 2px var(--cur-glow)}
 .empty{padding:70px 0;text-align:center;color:var(--muted);font-size:14px;line-height:2}
 .empty kbd{background:var(--panel);border:1px solid var(--line);border-bottom-width:2px;
            border-radius:5px;padding:1px 6px;font-size:12px;
@@ -238,8 +325,8 @@ mark.cur{background:var(--mark-cur);box-shadow:0 0 0 2px rgba(255,176,32,.35)}
   border-left:2px solid transparent;border-radius:0 6px 6px 0;
   padding:5px 8px 6px 9px;color:var(--muted);font-size:12.5px;line-height:1.5;
 }
-.toc button:hover{background:#f4f1e9;color:var(--ink)}
-.toc button.on{background:#f1ede2;border-left-color:var(--accent);color:var(--ink)}
+.toc button:hover{background:var(--toc-hover);color:var(--ink)}
+.toc button.on{background:var(--raise);border-left-color:var(--accent);color:var(--ink)}
 .toc .n{color:var(--faint);font:11px/1.6 ui-monospace,Consolas,monospace;margin-right:5px;
         white-space:nowrap}
 .toc button.on .n{color:var(--accent)}
@@ -254,7 +341,7 @@ mark.cur{background:var(--mark-cur);box-shadow:0 0 0 2px rgba(255,176,32,.35)}
 }
 .player[hidden]{display:none}
 .player .ph{display:flex;align-items:center;gap:8px;padding:8px 10px;
-            border-bottom:1px solid var(--line);background:#fcfbf7}
+            border-bottom:1px solid var(--line);background:var(--head)}
 .player .pt{flex:1;min-width:0;font-size:12.5px;color:var(--muted);
             white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .player .plink{font-size:12px;white-space:nowrap}
@@ -262,7 +349,7 @@ mark.cur{background:var(--mark-cur);box-shadow:0 0 0 2px rgba(255,176,32,.35)}
    结果重点列表那个 ✕ 拿不到样式，渲染成浏览器默认的凸起按钮。 */
 .pbtn{border:none;background:none;color:var(--faint);font-size:13px;
       line-height:1;padding:3px 6px;border-radius:5px;cursor:pointer}
-.pbtn:hover{background:#f1ede3;color:var(--ink)}
+.pbtn:hover{background:var(--raise);color:var(--ink)}
 .player .pbox{position:relative;width:100%;aspect-ratio:16/9;background:#000}
 .player iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
 .player .pf{padding:7px 10px;font-size:12px;color:var(--muted);
@@ -273,10 +360,10 @@ mark.cur{background:var(--mark-cur);box-shadow:0 0 0 2px rgba(255,176,32,.35)}
 .fails h3{font-size:13.5px;font-weight:600;margin:0 0 10px;color:var(--bad)}
 .fails ul{list-style:none;margin:0 0 14px;padding:0}
 .fails li{display:grid;grid-template-columns:150px 1fr;gap:14px;
-          padding:8px 0;border-bottom:1px solid #f0ece1;font-size:13px}
+          padding:8px 0;border-bottom:1px solid var(--line-soft);font-size:13px}
 .fails li:last-child{border-bottom:none}
 .fails .bv{font-family:ui-monospace,Consolas,monospace;color:var(--muted);font-size:12.5px}
-.fails .why{color:#4b5563;word-break:break-word}
+.fails .why{color:var(--quote);word-break:break-word}
 
 /* 窄屏：一栏往下堆。播放器放到正文上面——它本来就是为了「边看边读」，
    压在正文底下的话，点了句子还得往下翻才能看见。 */
@@ -290,7 +377,7 @@ mark.cur{background:var(--mark-cur);box-shadow:0 0 0 2px rgba(255,176,32,.35)}
   .toc ol{display:flex;gap:6px;overflow-x:auto;max-height:none;padding-bottom:2px}
   .toc li{flex:0 0 auto;margin:0}
   .toc button{border-left:none;border-bottom:2px solid transparent;border-radius:7px;
-              white-space:nowrap;background:#f7f4ec;padding:5px 10px}
+              white-space:nowrap;background:var(--field);padding:5px 10px}
   .toc button.on{border-bottom-color:var(--accent)}
   .toc .tt{-webkit-line-clamp:1;max-width:13em}
 }
@@ -306,6 +393,7 @@ mark.cur{background:var(--mark-cur);box-shadow:0 0 0 2px rgba(255,176,32,.35)}
              placeholder="粘贴 BV 号或视频链接，回车取字幕">
       <button class="btn primary" id="go" type="submit">取字幕</button>
     </form>
+    <button class="btn sm themetog" id="themebtn" type="button">🌙 夜间</button>
   </div>
   <div id="run" hidden>
     <div class="runbar"><i id="fill"></i></div>
@@ -1387,6 +1475,70 @@ function renderFailures(r, t){
   host.appendChild(box);
 }
 
+/* ── 夜间模式 ────────────────────────────────────── */
+/* 只存一个 "light" / "dark"。和重点、读位一样留在本机，没有账号也就没有
+   同步。切换动作只碰 data-theme 这一个属性——颜色全在 CSS 变量里，这边
+   一个具体色值都不写，所以「切了颜色但布局变了」这种事故不存在。 */
+var THEME_KEY = "asr-polish:theme:v1";
+
+function themeKey(){ return THEME_KEY }
+
+/* 没存过就跟随系统；存过就用存的。认不出的值当「没存过」——脏数据不该让
+   页面卡在两套都不对的状态里。 */
+function themeFrom(stored, sysDark){
+  if (stored === "dark" || stored === "light") return stored;
+  return sysDark ? "dark" : "light";
+}
+
+function nextTheme(cur){ return cur === "dark" ? "light" : "dark" }
+
+/* 按钮显示的是「点一下会变成什么」，不是当前状态：现在是白天就显示 🌙。
+   为了让这件事不用猜，title 与 aria-label 都把话说完整。 */
+function themeLabel(t){
+  if (t === "dark"){
+    return { text: "☀️ 白天", title: "当前是夜间模式，点一下切回白天" };
+  }
+  return { text: "🌙 夜间", title: "当前是白天模式，点一下切到夜间（深色底，夜里不刺眼）" };
+}
+
+function sysDark(){
+  try {
+    return !!(window.matchMedia
+              && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  } catch(e){ return false }
+}
+
+function themeNow(){
+  var root = document.documentElement;
+  var v = (root && root.getAttribute) ? root.getAttribute("data-theme") : null;
+  return v === "dark" ? "dark" : "light";
+}
+
+function applyTheme(t){
+  var root = document.documentElement;
+  if (root && root.setAttribute) root.setAttribute("data-theme", t);
+  var btn = $("#themebtn");
+  if (!btn) return;
+  var lb = themeLabel(t);
+  btn.textContent = lb.text;
+  btn.title = lb.title;
+  if (btn.setAttribute) btn.setAttribute("aria-label", lb.title);
+}
+
+/* head 里那段已经定过一次（为了不闪），这里再定一次是为了让按钮文字跟上，
+   顺带兜住「head 那段被 CSP 之类挡掉」的情况。两处算同一个结果，重复无害。 */
+function initTheme(){
+  applyTheme(themeFrom(lsRead(THEME_KEY), sysDark()));
+}
+
+$("#themebtn").addEventListener("click", function(){
+  var t = nextTheme(themeNow());
+  applyTheme(t);
+  lsWrite(THEME_KEY, t);      // 只有手动切才落库：跟随系统时系统变了还得跟着变
+});
+
+initTheme();
+
 /* ── 启动 ────────────────────────────────────────── */
 function idle(){
   var box = el("div", "empty");
@@ -1458,7 +1610,11 @@ window.__reader = {
   parsePos: parsePos,
   posOf: posOf,
   withPos: withPos,
-  pickCueIndex: pickCueIndex
+  pickCueIndex: pickCueIndex,
+  themeKey: themeKey,
+  themeFrom: themeFrom,
+  nextTheme: nextTheme,
+  themeLabel: themeLabel
 };
 })();
 </script>
