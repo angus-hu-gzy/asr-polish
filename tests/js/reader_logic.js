@@ -114,6 +114,66 @@ function main() {
   ];
 
   const store1 = api.parsePos('{"v":1,"parts":{"a":3}}');
+
+  // ── 全文底座 ────────────────────────────────────
+  // 段与段之间留 >0.8 秒的间隔，groupCues 才会断段；贴着排的会被并成一句，
+  // 拿它断言段数就是在测分段算法，不是在测这一层。
+  const fullMulti = api.buildFullText({
+    task: "T-test",
+    parts: [
+      {
+        name: "BV1RXx169Exu-P1-【前言】Python从零入门到精通系统学习大纲.srt",
+        source: "srt",
+        segments: [
+          { start: 0, end: 2, text: "大家好，这一期我们聊聊 Python" },
+          { start: 5, end: 7, text: "先从安装开始" },
+        ],
+      },
+      {
+        name: "BV1RXx169Exu-P2-【基础篇】Python解释器的安装.srt",
+        source: "srt",
+        segments: [
+          { start: 63, end: 66, text: "打开官网下载安装包" },
+          { start: 70, end: 74, text: "下一步下一步就行" },
+        ],
+      },
+    ],
+  }, task);
+
+  // 必剪 ASR：整篇包在一个 0 → 99:59:59 的占位块里。transcript 在 srt 那条路
+  // 上会按行拆开并把 start 置 null，json 那条路不拆——这里故意给它没拆的原始形状，
+  // 看底座兜不兜得住。
+  const fullAsr = api.buildFullText({
+    parts: [{
+      name: "BV1demoASR-必剪转写的一期.srt",
+      source: "srt",
+      segments: [{ start: 0, end: 359999, text: "第一段\n第二段" }],
+    }],
+  }, task);
+
+  // 纯文本导出：一开始就没有时间，一行一段
+  const fullTxt = api.buildFullText({
+    parts: [{
+      name: "BV1txt0000-纯文本导出的一期.srt",
+      source: "txt",
+      segments: [{ start: null, end: null, text: "第一段" },
+                 { start: null, end: null, text: "第二段" }],
+    }],
+  }, task);
+
+  // 跨视频任务（up:/search:）：每个文件都是 P1，不能用 P 号标
+  const fullMixed = api.buildFullText({
+    parts: [
+      { name: "BV1RXx169Exu-第一篇.srt", source: "srt",
+        segments: [{ start: 0, end: 2, text: "第一篇的正文" }] },
+      { name: "BV1demoASR-第二篇.srt", source: "srt",
+        segments: [{ start: 0, end: 2, text: "第二篇的正文" }] },
+    ],
+  }, task);
+
+  const fullEmpty = api.buildFullText({ parts: [] }, task);
+  const fullNull = api.buildFullText(null, task);
+  const mdWhen = new Date(2026, 10, 5, 20, 31);
   const out = {
     playerUrl: api.playerUrl({ bvid: "BV1RXx169Exu", page: 2 }, 62.7),
     playerUrlZero: api.playerUrl({ bvid: "BV1RXx169Exu", page: 1 }, 0),
@@ -176,6 +236,22 @@ function main() {
     labelLight: api.themeLabel("light"),
     labelDark: api.themeLabel("dark"),
     labelJunk: api.themeLabel("nope"),
+
+    // ── 全文底座 ──────────────────────────────────
+    fullMulti: fullMulti,
+    fullMultiPlain: api.buildPlainText(fullMulti),
+    fullMultiMd: api.buildFullMarkdown(fullMulti, mdWhen, task),
+    fullName: api.fullFileName(fullMulti, task),
+    fullAsr: fullAsr,
+    fullAsrPlain: api.buildPlainText(fullAsr),
+    fullAsrMd: api.buildFullMarkdown(fullAsr, mdWhen, task),
+    fullTxt: fullTxt,
+    fullMixed: fullMixed,
+    fullMixedMd: api.buildFullMarkdown(fullMixed, mdWhen, task),
+    fullEmpty: fullEmpty,
+    fullNull: fullNull,
+    fullEmptyPlain: api.buildPlainText(fullEmpty),
+    fullEmptyMd: api.buildFullMarkdown(fullEmpty, mdWhen, task),
   };
   process.stdout.write(JSON.stringify(out));
 }

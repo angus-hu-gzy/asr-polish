@@ -409,6 +409,8 @@ mark.cur{background:var(--mark-cur);color:var(--mark-cur-ink);
     <button class="btn sm" id="prev" title="上一处 (Shift+Enter)">↑</button>
     <button class="btn sm" id="next" title="下一处 (Enter)">↓</button>
     <button class="btn sm" id="mkbtn" type="button" title="看标过的重点">重点 <span id="mkn">0</span></button>
+    <button class="btn sm" id="exportFull" type="button" disabled
+            title="把整篇文字稿导出成 Markdown，每段前面带时间戳。没有正文时这个按钮是灰的">导出全文 md</button>
     <span class="count" id="count"></span>
     <span class="stat" id="stat"></span>
   </div>
@@ -471,7 +473,7 @@ var OUT = {
 };
 var S = { id:null, timer:null, tick:null, startedAt:0, marks:[], cur:-1,
           text:"", parts:0, task:null, mk:[], lsBroken:false, part:0, anyJump:false,
-          posArmed:false };
+          posArmed:false, transcript:null };
 
 /* ── 小工具 ──────────────────────────────────────── */
 function el(tag, cls, text){
@@ -548,6 +550,8 @@ function startTimer(startedAt){
 
 function switchTo(id, note){
   S.id = id;
+  S.transcript = null;              // 换任务了，上一条的全文不能留着被导出
+  $("#exportFull").disabled = true;
   try { history.replaceState(null, "", "?task=" + encodeURIComponent(id)); } catch(e){}
   if (S.timer) { clearTimeout(S.timer); S.timer = null; }
   stopTimer();                       // 否则新任务会沿用上一个任务的开始时间
@@ -787,6 +791,7 @@ function buildToc(infos){
 }
 
 function renderDoc(d, task){
+  S.transcript = d;                  // 全文导出的唯一数据来源，就是这份接口返回
   var outcome = d.outcome || (task && task.result && task.result.outcome) || "complete";
   var meta = OUT[outcome] || [outcome, "warn"];
   var r = (task && task.result) || {};
@@ -800,6 +805,7 @@ function renderDoc(d, task){
 
   if (!d.parts || !d.parts.length){
     notice(meta[1], meta[0], d.hint || "没有可显示的内容");
+    $("#exportFull").disabled = true;   // 没有正文就不给导出，别让人下个空文件
     if (r.parts_truncated) {
       notice("warn", "分 P 被截断", "这条合集共 " + (r.parts_truncated + (r.parts_written||0)) +
              " 个分 P，按单条上限只取了一部分。要全取请用命令行带 max_parts=0 或走任务面板。");
@@ -882,6 +888,7 @@ function renderDoc(d, task){
   $("#stat").textContent = "";
   updateStat();
   $("#tools").hidden = false;
+  $("#exportFull").disabled = false;
   renderFailures(r, task);
   restoreMarks();
   // 带 ?q= 进来的是「我要搜这个词」，位置让位给搜索：搜索要跳到第一处命中，
@@ -1102,13 +1109,38 @@ function markLink(m){
        + "&t=" + Math.floor(m.t);
 }
 
-function mdFileName(title, bvid){
+function mdFileName(title, bvid, suffix){
   // 标题里什么字符都可能有（`/ : < >` 在 Windows 上是非法文件名），统一换成短横，
   // 再把连续的短横压成一个——不然「从零: 入门」会变成「从零--入门」。
   var base = String(title || bvid || "重点")
     .replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, "-")
     .replace(/-+/g, "-").slice(0, 60).replace(/^-+|-+$/g, "");
-  return (base || "重点") + "-重点.md";
+  return (base || "重点") + "-" + (suffix || "重点") + ".md";
+}
+
+/* 下载就这一条路：Blob + a[download]，不新增后端接口。
+   重点导出和全文导出都走它——两套下载逻辑迟早会分叉（revoke 的时机、
+   文件名转义各改一半），而这类分叉只有用户拿到空文件才发现。 */
+function saveBlob(name, text, mime){
+  var blob = new Blob([text], { type: mime });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  // 立刻 revoke 在部分浏览器上会让下载拿到空文件，等一拍再放
+  setTimeout(function(){ URL.revokeObjectURL(url); }, 1500);
+}
+
+/* 按钮上回一句「已导出」，1.6 秒后恢复。导出没有别的反馈，不给这一下
+   用户会怀疑自己点空了、再点一次。 */
+function flashBtn(btn, text){
+  if (!btn) return;
+  var old = btn.textContent;
+  btn.textContent = text;
+  setTimeout(function(){ btn.textContent = old; }, 1600);
 }
 
 function buildMarkdown(list, task, now){
@@ -1147,21 +1179,198 @@ function exportMarks(){
   if (!list.length) return;                 // 没重点就不导出空文件
   var md = buildMarkdown(list, S.task);
   var scope = markScope(S.task, list);
-  var blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
-  var url = URL.createObjectURL(blob);
-  var a = document.createElement("a");
-  a.href = url;
-  a.download = mdFileName(scope.title, scope.single);
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(function(){ URL.revokeObjectURL(url); }, 1500);
-  var btn = $("#export"), old = btn.textContent;
-  btn.textContent = "已导出";
-  setTimeout(function(){ btn.textContent = old; }, 1600);
+  saveBlob(mdFileName(scope.title, scope.single), md, "text/markdown;charset=utf-8");
+  flashBtn($("#export"), "已导出");
 }
 
 $("#export").addEventListener("click", exportMarks);
+
+/* ── 全文：工作台各层共用的底座 ──────────────────── */
+/* 这一层只做一件事：把 transcript 的分段变成「结构化全文」，而且只变一次。
+
+   为什么非要有个函数：总结、问答、测验、合集检索都要吃全文。要是各层自己
+   去遍历 `d.parts[i].segments`，每层都得重新决定一遍「怎么断段、没时间怎么
+   算、BV 号从哪来、分 P 怎么标」——四处各写一遍，就有四处会各错一次，而且
+   改了一处忘掉另外三处时没有任何报错。
+
+   所以规矩定死：**要全文就调 buildFullText，不要在别处遍历 segments。**
+   拿到结构化全文之后再分两路——发给模型用 buildPlainText，给人看用
+   buildFullMarkdown。两者都只消费这一份结构。
+
+   断段用的是 groupCues，和阅读页屏幕上的段落是同一套判据。导出文件和页面对
+   不上时，用户的第一反应是「导错了」，不会想到「分段算法本来就不同」。 */
+
+/* 必剪 ASR 和纯文本导出的 srt，整篇被写成一块 0 → 99:59:59 的占位时间。
+   transcript 在 srt 那条路上已经按行拆开并把 start 置 null，但 json 那条路
+   不拆。所以这里再兜一次：任何一条下游都不该看到 99:59:59 这种假时间——
+   假时间比没时间糟得多，它会被当成真的拿去引用。 */
+var PLACEHOLDER_END = 99 * 3600 + 59 * 60 + 59;
+
+function isPlaceholder(seg){
+  return !!seg && seg.start === 0 && seg.end != null && seg.end >= PLACEHOLDER_END;
+}
+
+function fullSegments(segs){
+  var out = [];
+  (segs || []).forEach(function(s){
+    s = s || {};
+    var text = s.text == null ? "" : String(s.text);
+    if (isPlaceholder(s)){
+      // 整篇包在一个块里：按行拆开，时间置 null。这不是造数据，是「不知道就
+      // 说不知道」——拆开之后每一行仍然没有时间，页面和导出都照实说。
+      text.split("\n").forEach(function(ln){
+        ln = ln.replace(/^\s+|\s+$/g, "");
+        if (ln) out.push({ start: null, end: null, text: ln });
+      });
+      return;
+    }
+    out.push({ start: s.start == null ? null : s.start,
+               end: s.end == null ? null : s.end,
+               text: text });
+  });
+  return out;
+}
+
+/* 结构化全文。以后工作台每一层的入口就是这里。
+
+   返回：
+   {
+     task, paragraphs, chars,
+     parts: [{
+       index, name, title, bvid, page, source,
+       hasTime,        // 这一篇有没有逐句时间；false = 只能当纯文本用
+       label,          // "P2" 或 "第 2 篇"（单篇时为空串）
+       segments: [{ start, end, text }]   // start/end 是秒，没有就是 null
+     }]
+   } */
+function buildFullText(d, task){
+  d = d || {};
+  task = task || S.task || {};
+  var src = d.parts || [];
+  var full = { task: d.task || S.id || "", parts: [], paragraphs: 0, chars: 0 };
+
+  // 同一个视频的多个分 P 标「P2」，多条视频（up: / search:）标「第 2 篇」。
+  // 和左边目录用同一个判据——导出写 P1、目录写第 1 篇会让人以为漏了篇。
+  var sameBv = src.length > 0;
+  var firstBv = src.length ? partMeta(src[0].name, task).bvid : "";
+  for (var k = 1; k < src.length; k++){
+    var bv = partMeta(src[k].name, task).bvid;
+    if (!bv || bv !== firstBv) sameBv = false;
+  }
+
+  src.forEach(function(part, i){
+    var pm = partMeta(part.name, task);
+    var rows = groupCues(fullSegments(part.segments));
+    var hasTime = false;
+    for (var j = 0; j < rows.length; j++){
+      if (rows[j].start != null){ hasTime = true; break; }
+    }
+    full.parts.push({
+      index: i,
+      name: part.name || "",
+      title: pm.title || "",
+      bvid: pm.bvid,
+      page: pm.page,
+      source: part.source || "",
+      hasTime: hasTime,
+      label: src.length > 1 ? (sameBv ? "P" + pm.page : "第 " + (i + 1) + " 篇") : "",
+      segments: rows
+    });
+    full.paragraphs += rows.length;
+    for (var m = 0; m < rows.length; m++) full.chars += rows[m].text.length;
+  });
+  return full;
+}
+
+/* 全文里出现了哪些视频。跨视频的任务（up: / search:）没有统一标题，只能列 BV。 */
+function fullScope(full, task){
+  var bvids = [];
+  (full && full.parts || []).forEach(function(p){
+    if (p.bvid && bvids.indexOf(p.bvid) < 0) bvids.push(p.bvid);
+  });
+  var single = bvids.length === 1 ? bvids[0] : "";
+  return { bvids: bvids, single: single,
+           title: single ? videoTitleOf(task || S.task, single) : "" };
+}
+
+/* 纯文本：以后发给模型用的就是这一份。
+   只留段落、不留时间戳——给模型看的正文，时间戳是噪音；真需要时间的层
+   （比如「这句话在第几分钟」）直接读 buildFullText 的结构，那里一个都没丢。
+   分 P 之间用 `---` 隔开，多篇时每篇前面加一行标题，模型才知道边界在哪。 */
+function buildPlainText(full){
+  full = full || { parts: [] };
+  var parts = full.parts || [];
+  var multi = parts.length > 1;
+  var blocks = [];
+  parts.forEach(function(p){
+    var body = (p.segments || []).map(function(s){
+      return String(s.text || "").replace(/\s*\n\s*/g, " ").trim();
+    }).filter(function(t){ return t; }).join("\n");
+    if (!body) return;
+    var head = multi
+      ? "## " + (p.label ? p.label + " · " : "") + (p.title || p.bvid || p.name) + "\n\n"
+      : "";
+    blocks.push(head + body);
+  });
+  return blocks.join("\n\n---\n\n");
+}
+
+function fullFileName(full, task){
+  var scope = fullScope(full, task || S.task);
+  return mdFileName(scope.title, scope.single, "全文");
+}
+
+/* 导出给人看的全文 md。和「导出重点」不是一份东西：那是几条摘录，这是整篇。 */
+function buildFullMarkdown(full, now, task){
+  full = full || { parts: [] };
+  var parts = full.parts || [];
+  if (!parts.length) return "";        // 没有正文就不给文件，按钮本来就是灰的
+  var scope = fullScope(full, task || S.task);
+  var out = [];
+  // 有标题就顶标题；标题查不到但有唯一 BV 号时用 BV 号顶上。跨视频任务两样
+  // 都没有，写「全文」就够了——别拼成「全文导出 · 全文」这种自己重复自己的东西
+  var head = scope.title || scope.single;
+  out.push(head ? "# " + head + " · 全文" : "# 全文");
+  out.push("");
+  out.push("- 标题：" + (scope.title || "（任务里没有视频标题）"));
+  if (scope.single) out.push("- BV 号：" + scope.single);
+  else out.push("- BV 号：" + scope.bvids.length + " 条 · "
+              + (scope.bvids.join("、") || "未知"));
+  out.push("- 分 P：" + parts.length + " 篇");
+  out.push("- 导出：" + mdStamp(now));
+  out.push("- 正文：" + full.chars.toLocaleString() + " 字 · " + full.paragraphs + " 段");
+  out.push("");
+  out.push("---");
+  out.push("");
+  parts.forEach(function(p, i){
+    out.push("## " + (p.label ? p.label + " · " : "")
+           + (p.title || p.name || ("第 " + (i + 1) + " 篇")));
+    out.push("");
+    if (!p.hasTime){
+      out.push("> 这一篇没有逐句时间戳（必剪 ASR 只给了 0 → 99:59:59 的整块占位时间，"
+             + "或者来自纯文本导出）。下面每段前的 `[无时间戳]` 是标注，不是真实时间。");
+      out.push("");
+    }
+    (p.segments || []).forEach(function(s){
+      var stamp = s.start == null ? "无时间戳" : fmt(s.start);
+      out.push("[" + stamp + "] "
+             + String(s.text || "").replace(/\s*\n\s*/g, " ").trim());
+    });
+    out.push("");
+  });
+  return out.join("\n").replace(/\n+$/, "\n");
+}
+
+function exportFull(){
+  var full = buildFullText(S.transcript, S.task);
+  if (!full.parts.length) return;      // 没有产出就不导出空文件
+  saveBlob(fullFileName(full, S.task),
+           buildFullMarkdown(full, new Date(), S.task),
+           "text/markdown;charset=utf-8");
+  flashBtn($("#exportFull"), "已导出");
+}
+
+$("#exportFull").addEventListener("click", exportFull);
 
 /* ── 断点续读 ────────────────────────────────────── */
 /* 记的是「哪一篇 + 该篇第几段」，不是滚动像素：换个窗口大小像素全变，段落
@@ -1606,6 +1815,11 @@ window.__reader = {
   markLink: markLink,
   mkKey: mkKey,
   fmt: fmt,
+  buildFullText: buildFullText,
+  buildPlainText: buildPlainText,
+  buildFullMarkdown: buildFullMarkdown,
+  fullFileName: fullFileName,
+  fullScope: fullScope,
   posKey: posKey,
   parsePos: parsePos,
   posOf: posOf,

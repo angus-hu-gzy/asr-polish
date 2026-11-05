@@ -215,6 +215,56 @@ class ReaderMarkupTest(unittest.TestCase):
         self.assertNotIn("lsWrite", m.group(0))
         self.assertIn("lsWrite(THEME_KEY", _page_script())
 
+    # ── 全文与导出 ────────────────────────────────────
+    def test_full_export_sits_in_the_toolbar(self) -> None:
+        """全文导出放在搜索条那一行，不塞进重点面板。
+
+        重点面板默认是收起的，放进去等于「先点重点才能导全文」——而全文跟
+        重点没有任何关系，一个是整篇，一个是摘录。放工具栏才一直够得着。
+        """
+        page = self.html
+        self.assertIn('id="exportFull"', page)
+        self.assertLess(page.index('id="mkbtn"'), page.index('id="exportFull"'))
+        # 和重点导出并排，但文案必须分得清是两件事
+        self.assertIn("导出全文 md", page)
+        self.assertIn("导出 md", page)
+
+    def test_full_export_disabled_until_there_is_a_body(self) -> None:
+        """没有产出就不给导出：空文件比按钮点不动更让人困惑。"""
+        self.assertIn('id="exportFull" type="button" disabled', self.html)
+        m = re.search(r"function renderDoc\(.*?\n\}", _page_script(), re.S)
+        self.assertIsNotNone(m, "找不到 renderDoc")
+        body = m.group(0)
+        self.assertIn('$("#exportFull").disabled = true', body)     # 没正文那一支
+        self.assertIn('$("#exportFull").disabled = false', body)    # 渲染完才放开
+
+    def test_full_export_goes_through_the_shared_assembler(self) -> None:
+        """按钮只准调 buildFullText，不许自己遍历 segments。
+
+        一旦有人在回调里另写一遍「怎么取全文」，这个底座就名存实亡了：以后
+        总结层调底座、导出走回调，两条路的段落边界会慢慢分叉，而且不报错。
+        """
+        m = re.search(r"function exportFull\(.*?\n\}", _page_script(), re.S)
+        self.assertIsNotNone(m, "找不到 exportFull")
+        body = m.group(0)
+        self.assertIn("buildFullText(", body)
+        self.assertIn("buildFullMarkdown(", body)
+        self.assertNotIn("segments", body)
+        self.assertNotIn("buildMarkdown(", body)        # 全文不是重点列表
+
+    def test_both_exports_share_one_download_path(self) -> None:
+        """重点导出和全文导出都走同一个 saveBlob。
+
+        各写一套的话，revoke 的时机、文件名转义会各改一半，而这种分叉只有
+        用户下到空文件时才会发现。
+        """
+        s = _page_script()
+        for fn in ("exportMarks", "exportFull"):
+            m = re.search(r"function " + fn + r"\(.*?\n\}", s, re.S)
+            self.assertIsNotNone(m, "找不到 " + fn)
+            self.assertIn("saveBlob(", m.group(0))
+        self.assertEqual(s.count("createObjectURL"), 1)
+
 
 @unittest.skipUnless(_NODE, "没有 node，跳过前端逻辑测试")
 class ReaderLogicTest(unittest.TestCase):
@@ -417,6 +467,114 @@ class ReaderLogicTest(unittest.TestCase):
 
         # 认不出的当前值当白天处理，别给出个空按钮
         self.assertEqual(self.d["labelJunk"]["text"], "🌙 夜间")
+
+    # ── 全文底座（工作台各层的入口）────────────────────
+    def test_full_text_groups_by_part_and_keeps_titles(self) -> None:
+        """按分 P 分组，每篇留着标题——以后总结要按篇归档，没标题分不清谁是谁。"""
+        full = self.d["fullMulti"]
+        self.assertEqual(len(full["parts"]), 2)
+        self.assertEqual([p["label"] for p in full["parts"]], ["P1", "P2"])
+        self.assertEqual(full["parts"][0]["title"], "【前言】Python从零入门到精通系统学习大纲")
+        self.assertEqual(full["parts"][1]["title"], "【基础篇】Python解释器的安装")
+        self.assertEqual(full["parts"][1]["bvid"], "BV1RXx169Exu")
+        self.assertEqual(full["paragraphs"], 4)
+
+    def test_full_text_keeps_seconds_not_strings(self) -> None:
+        """段内时间是秒（float），不是格式化过的字符串。
+
+        以后「这句话在第几分钟」「引到视频哪一秒」都靠它；这里存成 "01:03"
+        就等于把精度丢了，再想算回去得反解析。
+        """
+        segs = self.d["fullMulti"]["parts"][1]["segments"]
+        self.assertEqual([s["start"] for s in segs], [63, 70])
+        self.assertEqual(segs[0], {"start": 63, "end": 66, "text": "打开官网下载安装包"})
+        self.assertTrue(self.d["fullMulti"]["parts"][1]["hasTime"])
+
+    def test_asr_placeholder_loses_its_fake_time(self) -> None:
+        """必剪 ASR 的 0 → 99:59:59 占位块：时间一律 null，并标明没有时间戳。
+
+        留着 99:59:59 比没有时间还糟——下游会把它当成真的去引用。也不能「平均
+        摊」出一串时间，那是编数据。
+        """
+        part = self.d["fullAsr"]["parts"][0]
+        self.assertFalse(part["hasTime"])
+        self.assertEqual([s["start"] for s in part["segments"]], [None, None])
+        self.assertEqual([s["text"] for s in part["segments"]], ["第一段", "第二段"])
+        md = self.d["fullAsrMd"]
+        # 说明文字里提到 99:59:59 是可以的（那是在解释为什么没有时间），
+        # 但每一段前面的标注不能是一个数字时间
+        self.assertNotIn("[99:59:59]", md)
+        stamps = [ln for ln in md.splitlines() if ln.startswith("[")]
+        self.assertEqual(len(stamps), 2)
+        self.assertTrue(all(ln.startswith("[无时间戳]") for ln in stamps), stamps)
+        self.assertIn("[无时间戳] 第一段", md)
+        self.assertIn("没有逐句时间戳", md)
+
+    def test_txt_part_degrades_without_inventing_time(self) -> None:
+        """纯文本导出本来就没有时间：一样是 null，一行一段。"""
+        part = self.d["fullTxt"]["parts"][0]
+        self.assertFalse(part["hasTime"])
+        self.assertEqual(len(part["segments"]), 2)
+        self.assertTrue(all(s["start"] is None for s in part["segments"]))
+
+    def test_multi_video_uses_index_not_page_number(self) -> None:
+        """跨视频任务（up:/search:）里每个文件都是 P1，标 P1/P1 只会让人困惑。"""
+        labels = [p["label"] for p in self.d["fullMixed"]["parts"]]
+        self.assertEqual(labels, ["第 1 篇", "第 2 篇"])
+        self.assertIn("- BV 号：2 条 · BV1RXx169Exu、BV1demoASR", self.d["fullMixedMd"])
+
+    def test_single_part_has_no_label(self) -> None:
+        """单篇不挂 P1：一个文件而已，标个 P 号反而像还有别的没导出来。"""
+        self.assertEqual(self.d["fullAsr"]["parts"][0]["label"], "")
+        self.assertNotIn("## P1", self.d["fullAsrMd"])
+
+    def test_empty_task_stays_empty(self) -> None:
+        """空任务不抛、不造一个空段落出来；三个出口都干净。"""
+        for key in ("fullEmpty", "fullNull"):
+            self.assertEqual(self.d[key]["parts"], [])
+            self.assertEqual(self.d[key]["paragraphs"], 0)
+            self.assertEqual(self.d[key]["chars"], 0)
+        self.assertEqual(self.d["fullEmptyPlain"], "")
+        self.assertEqual(self.d["fullEmptyMd"], "")
+
+    def test_full_markdown_header(self) -> None:
+        md = self.d["fullMultiMd"]
+        self.assertTrue(md.startswith("# 【2024最新】Python从零入门到精通系统学习大纲 · 全文"))
+        self.assertIn("- 标题：【2024最新】Python从零入门到精通系统学习大纲", md)
+        self.assertIn("- BV 号：BV1RXx169Exu", md)
+        self.assertIn("- 分 P：2 篇", md)
+        self.assertIn("- 导出：2026-11-05 20:31", md)
+        self.assertIn("- 正文：41 字 · 4 段", md)
+
+    def test_full_markdown_sections_and_stamps(self) -> None:
+        md = self.d["fullMultiMd"]
+        self.assertIn("## P1 · 【前言】Python从零入门到精通系统学习大纲", md)
+        self.assertIn("## P2 · 【基础篇】Python解释器的安装", md)
+        # 时间戳就是页面上那个 fmt：同一段在两处显示必须一致，否则用户会以为
+        # 导出的是另一份数据
+        self.assertIn("[00:00] 大家好，这一期我们聊聊 Python", md)
+        self.assertIn("[01:03] 打开官网下载安装包", md)
+        # 顺序：P1 两段都在 P2 之前
+        self.assertLess(md.index("[00:05] 先从安装开始"), md.index("## P2"))
+
+    def test_plain_text_is_what_gets_sent_to_a_model(self) -> None:
+        """发给模型的正文：一行一段、分 P 之间 ---、不带时间戳。
+
+        时间戳在结构里一个都没丢，需要的那一层直接读结构；塞进纯文本只是噪音。
+        """
+        txt = self.d["fullMultiPlain"]
+        self.assertIn("## P1 · 【前言】Python从零入门到精通系统学习大纲", txt)
+        self.assertIn("大家好，这一期我们聊聊 Python\n先从安装开始", txt)
+        self.assertIn("\n\n---\n\n", txt)
+        self.assertNotIn("[00:00]", txt)
+        # 单篇不套壳：一句话就是一段
+        self.assertEqual(self.d["fullAsrPlain"], "第一段\n第二段")
+
+    def test_full_filename_follows_the_marks_habit(self) -> None:
+        self.assertEqual(self.d["fullName"],
+                         "【2024最新】Python从零入门到精通系统学习大纲-全文.md")
+        # 同一个标题，重点导出仍是 -重点.md：加了个参数不能改变老行为
+        self.assertEqual(self.d["mdFile"], "Python-从零-入门-精讲-重点.md")
 
 
 if __name__ == "__main__":
