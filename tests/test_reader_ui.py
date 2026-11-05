@@ -92,11 +92,16 @@ class ReaderLogicTest(unittest.TestCase):
                                          encoding="utf-8") as fh:
             fh.write(_page_script())
             cls.script = fh.name
+        # encoding 必须显式给 utf-8：node 输出的是 UTF-8，而 Windows 的默认
+        # 区域编码是 cp1252/gbk，靠 text=True 去猜会在读线程里抛 UnicodeDecodeError，
+        # 然后 stdout 变成 None——本机（UTF-8 区域）不会复现，CI 上必炸。
         out = subprocess.run([_NODE, str(_HARNESS), cls.script],
-                             capture_output=True, text=True, timeout=60)
-        if out.returncode != 0:
-            raise AssertionError("node 跑页面脚本失败：%s\n%s"
-                                 % (out.stdout[-500:], out.stderr[-2000:]))
+                             capture_output=True, encoding="utf-8",
+                             errors="replace", timeout=60)
+        if out.returncode != 0 or not out.stdout:
+            raise AssertionError("node 跑页面脚本失败（退出码 %s）：%s\n%s"
+                                 % (out.returncode, (out.stdout or "")[-500:],
+                                    (out.stderr or "")[-2000:]))
         cls.d = json.loads(out.stdout)
 
     @classmethod
