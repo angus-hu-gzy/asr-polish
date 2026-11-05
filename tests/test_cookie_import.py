@@ -5,6 +5,7 @@
 """
 import http.cookiejar
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -213,6 +214,34 @@ class TestTargetPath(unittest.TestCase):
         with mock.patch.object(bili, "_resolve_cookie_path", return_value=None):
             self.assertEqual(bili.default_cookie_target(),
                              bili._DEFAULT_COOKIE_PATHS[-1])
+
+
+class TestCredentialsStayOutOfTheRepo(unittest.TestCase):
+    """仓库里不许出现任何人的 Cookie。
+
+    这不是洁癖：cookies.txt 一旦进了提交，光删文件没用，历史里永远留着，
+    得改写历史才能清掉。所以不读 .gitignore 猜规则，直接问 git 这个路径
+    会不会被忽略——规则改了、写错了，这里立刻红。
+
+    要测的几个名字都来自真实来源：README 的三条默认路径，
+    以及浏览器插件导出时常用的那个带域名的名字。
+    """
+
+    NAMES = ("cookies.txt", "bilibili_cookies.txt", "www.bilibili.com_cookies.txt")
+
+    def test_git_ignores_exported_cookie_files(self):
+        root = Path(__file__).resolve().parent.parent
+        for name in self.NAMES:
+            with self.subTest(name=name):
+                try:
+                    p = subprocess.run(["git", "check-ignore", "-q", name],
+                                       cwd=str(root), capture_output=True)
+                except FileNotFoundError:
+                    self.skipTest("没有 git，跳过（不影响取字幕）")
+                if p.returncode == 128:
+                    self.skipTest("这里不是 git 仓库（比如从 sdist 跑测试）")
+                self.assertEqual(p.returncode, 0,
+                                 "%s 没有被 .gitignore 排除，拷进项目目录就会被提交" % name)
 
 
 if __name__ == "__main__":

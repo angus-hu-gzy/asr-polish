@@ -24,9 +24,10 @@ tasks.db-shm
 *.sqlite3
 
 # 个人数据 / 凭证
-cookies.txt
-*.cookies.txt
-bilibili_cookies.txt
+# 别按具体名字一个个列：浏览器插件导出的文件名五花八门——cookies.txt、
+# bilibili_cookies.txt、www.bilibili.com_cookies.txt……按后缀统一拦。
+# 漏一个的代价是别人的账号进了提交历史，删文件也删不掉。
+*cookies.txt
 
 # 转写与音频中间产物
 *.m4a
