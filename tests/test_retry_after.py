@@ -15,7 +15,7 @@ from email.utils import format_datetime
 from unittest import mock
 
 from asr_polish import bili
-from asr_polish.bili import BiliRiskControl
+from asr_polish.bili import BiliLoginRequired, BiliRiskControl
 from asr_polish.server import jobs
 
 
@@ -80,11 +80,23 @@ class BackoffChoiceTest(unittest.TestCase):
 
 
 class BackoffLoopTest(unittest.TestCase):
+    """退避算术。
+
+    这里把 ``explain_risk`` 钉住成「原样返回」：真实的它遇到 -352 会去探一次
+    ``nav``，未登录时改判成 ``BiliLoginRequired`` 并直接上抛。那个行为本身是
+    对的（Cookie 没换，等多久都一样），但它取决于**跑测试的机器有没有登录态**
+    ——开发机有 Cookie、CI 没有，同一个测试就会一边过一边错。这一批测试要验的
+    是「等几秒」，不是「怎么分类」，所以分类这一步固定住。
+    """
+
     def setUp(self) -> None:
         self.slept: list[float] = []
         p = mock.patch.object(jobs, "_sleep", self.slept.append)
         p.start()
         self.addCleanup(p.stop)
+        q = mock.patch.object(jobs, "explain_risk", side_effect=lambda e: e)
+        q.start()
+        self.addCleanup(q.stop)
 
     def _run(self, exc_factory, times=1):
         calls = {"n": 0}
@@ -140,6 +152,28 @@ class BackoffLoopTest(unittest.TestCase):
             jobs._with_risk_backoff(boom, lambda *a: None, 0.0, "取字幕")
         # 60 + 180 + 300 = 540，报错里应该是这个实际数字
         self.assertIn("540", str(cm.exception))
+
+
+class LoginBeatsBackoffTest(unittest.TestCase):
+    """-352 有两种成因，处置相反。这条锁住「未登录就别等」那一半。
+
+    它是 CI 替我发现的：开发机有 Cookie，`explain_risk` 探完 nav 认为是速率
+    问题，于是正常退避；CI 上没有 Cookie，探完改判成登录问题直接上抛。同一个
+    测试在两边结论不同——说明这段分类逻辑确实在起作用，只是测试不该依赖它。
+    """
+
+    def test_not_logged_in_raises_without_waiting(self):
+        slept: list[float] = []
+
+        def boom():
+            raise BiliRiskControl("被拦", code=-352)
+
+        with mock.patch.object(jobs, "_sleep", slept.append), \
+                mock.patch.object(jobs, "explain_risk",
+                                  return_value=BiliLoginRequired("该换 Cookie 了", code=-352)):
+            with self.assertRaises(BiliLoginRequired):
+                jobs._with_risk_backoff(boom, lambda *a: None, 0.0, "取字幕")
+        self.assertEqual(slept, [])               # 一秒都没等
 
 
 if __name__ == "__main__":
