@@ -7,6 +7,67 @@
 
 ---
 
+## [0.15.1] - 2026-11-06
+
+说明书改写成了给 AI 读的那一种，另外堵掉一个凭证泄漏的口子。
+
+### 新增
+
+- **`FOR_AI.md`**（260 行，可整篇粘进对话）。前提是：真正用这个项目的人，很可能是把仓库
+  截图丢给自己的 AI、让它去装。那说明书的读者就不是人，是 AI。这两类读者要的东西几乎相反。
+  里面先让 AI 判断自己有没有本机权限——能跑命令走命令行，只能改配置文件走 MCP，
+  **碰不到用户电脑就停下，不许编步骤**（纯网页聊天窗口装不了 Python，照着编的教程做只会更糟）。
+  终点不定义成「装好了」，而是 `notes/INDEX.md` + 每条视频一个笔记文件。
+- **README 开头「不会装？让 AI 替你装」**。一段可直接复制的话，加一个 raw 链接——
+  AI 读不到本地文件时能直接抓。
+- **README「用谁的账号、存在哪、发给谁」**。三问三答：用的是**你自己的** B站账号；cookie 只存在
+  本机三条默认路径；只随 `*.bilibili.com` 的请求出去，下载字幕那次是 CDN 域名、不带。
+  另加两句容易误解的：必剪 ASR 只带 `User-Agent`、不以你的身份；网页总结走的是模型 key。
+  以及一句：别转发 `cookies.txt`，谁拿到谁就是你。
+- **`MANIFEST.in`**。sdist 带上 `FOR_AI.md` / `CHANGELOG.md` / `CONTRIBUTING.md` / `docs/`
+  / `tools/`，以及 `tests/js/reader_logic.js`。之前只有 README 和 LICENSE 在包里，从 PyPI
+  下的源码包里找不到 `FOR_AI.md`——而它的用处恰恰是「把仓库丢给 AI，让它照这个装」。
+
+### 修复
+
+- **cookie 文件名漏网。** `.gitignore` 原来按名字逐个列：`cookies.txt` / `*.cookies.txt` /
+  `bilibili_cookies.txt`。而浏览器 cookie 导出插件最常产出的那个名字是
+  `www.bilibili.com_cookies.txt`——一个都不匹配，也正是 README 第二条默认路径的名字。
+  谁把导出的文件拷进项目目录方便测试、再 `git add -A`，账号就进了提交历史，之后删文件也没用。
+  改成 `*cookies.txt` 一条通吃。
+
+### 判断
+
+- **文档也要有闸门。** 说明书里的命令会烂：半年后参数改名、入口变了，文档还写着老命令，
+  AI 会非常自信地照着执行、非常自信地宣布成功。所以 `tests/test_for_ai_doc.py` 把文档里每条
+  `asr-polish` 命令都丢给 `cli.build_parser()` 真解析一遍，`-f` 的格式必须对 `export.FORMATS`
+  存在，MCP 工具名必须对 `mcp._TOOLS` 存在。写这份文档时它抓到三个错：写了不存在的
+  `--dry-run`、把 `--limit 0` 当「只看不抓」（其实是不限）、让用户把 cookie 粘到终端
+  （`cookie set` 本来就读剪贴板）。
+- **不按具体文件名列忽略规则。** 列不全就是漏一个口子，而漏的那个正好是最常见的名字。
+- **没有验收点的说明书等于没写。** 每步都写「成功长什么样」——不给验收点，AI 会幻觉式
+  宣布完成，这是这类文档最常见的死法。
+
+### 没变的
+
+- 一行代码没动。抓取、限速、风控退避、状态机、`transcript` 接口、`buildFullText` /
+  `buildPlainText` / `buildFullMarkdown`、阅读页的所有功能，行为全不变。
+- 走 `FOR_AI.md` 这条路**不需要模型 key**：组织内容的是用户那个 AI，key 只在「总结」按钮要。
+
+### 测试
+
+473 项（+14）。`test_for_ai_doc.py` 9 项钉住文档与代码不脱钩（含「不许 `curl | sh`」，只扫
+代码块）；`test_readme.py` 4 项：README 列的默认 cookie 路径必须与 `bili._DEFAULT_COOKIE_PATHS`
+**完全相等**，那句转发警告不许被精简掉；`test_cookie_import.py` 新增
+`TestCredentialsStayOutOfTheRepo`：不读 `.gitignore` 猜规则，直接 `git check-ignore` 问三种
+真实导出文件名。
+
+sdist 另外做了一次「解包后跑测试」：把 `dist/*.tar.gz` 解出来，在解包目录里 `pytest`，
+**473 passed**。这一步抓到了 `tests/js/reader_logic.js` 不在包里（解包后 51 项红）——
+之前每一版的源码包其实都是这个状态，只是没人解包跑过测试。
+
+---
+
 ## [0.15.0] - 2026-11-05
 
 这一篇讲什么，能看能跳了。

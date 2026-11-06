@@ -1,0 +1,19 @@
+# sdist 里要带上「人读的」和「AI 读的」两份说明书。
+# setuptools 默认只带 README.md 和 LICENSE/NOTICE，其余全在包外，
+# 结果是从 PyPI 下载的源码包里找不到 FOR_AI.md —— 而它的用处恰恰是
+# 「把仓库丢给 AI，让它照这个装」，装完却读不到，等于没写。
+include FOR_AI.md
+include CHANGELOG.md
+include CONTRIBUTING.md
+
+# 每个版本的发布说明：sdist 里留一份，离线也能查某个版本改了什么
+recursive-include docs *.md
+
+# tests/ 的 .py 不用管：distutils 的默认清单里本来就有 tests/test*.py，一直跟着 sdist 走。
+# 但它只收 .py，tests/js/reader_logic.js 不在默认清单里 —— 漏了这一个文件，
+# 解包跑 pytest 会红 51 项（前端纯函数的夹具脚本全在它里面）。所以显式带上。
+recursive-include tests *.js
+
+# tools/ 里有 pre-push 钩子和 ci_guard.py，参与贡献时要跑
+recursive-include tools *.py
+include tools/hooks/pre-push
