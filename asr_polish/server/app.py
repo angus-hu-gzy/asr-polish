@@ -134,7 +134,7 @@ a.rd:hover{border-bottom-style:solid}
 </div>
 <script>
 const $ = id => document.getElementById(id);
-function esc(s){return (s||"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]))}
+function esc(s){return String(s==null?"":s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]))}
 const OUT = {complete:["全部成功","ok"], partial:["部分成功","part"],
              empty:["无产出","empty"], failed:["全部失败","bad"]};
 // 「阅读」入口只在任务真的写出了文件时才给。判断依据是 result.files 而不是
@@ -265,6 +265,22 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args) -> None:
         self.app.note("%s %s" % (self.command, fmt % args))
 
+    def handle_one_request(self) -> None:
+        """一个请求结束就把这个线程的 DB 连接还掉。
+
+        ThreadingHTTPServer 是一请求一线程，线程本地缓存对它没有「复用」可言：
+        线程死了，连接只剩 Store._all 里那一条引用。面板每 3 秒轮询一次
+        `/api/tasks`、每 15 秒一次 `/api/health`，一小时就是一千多条连接。
+        不清的话 Linux 上撞 ulimit（之后所有 API 一起 500）、Windows 上库文件
+        一直被占着。
+        """
+        try:
+            super().handle_one_request()
+        finally:
+            app = getattr(self.server, "app", None)
+            if app is not None:
+                app.store.release_thread()
+
     def _send(self, code: int, body: bytes, ctype: str) -> None:
         self.send_response(code)
         self.send_header("Content-Type", ctype)
@@ -391,8 +407,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._err(400, "请求体不是合法 JSON（或超过 1MB）")
                 return
             kind = data.get("kind") or "subs"
-            if not data.get("target"):
-                self._err(400, "缺少 target")
+            target = data.get("target")
+            # 只认真字符串。target 传成数字时，任务能建成功但面板渲染会抛
+            # （`esc(123)` 里没有 .replace），load() 每 3 秒 reject 一次，
+            # 整个任务列表永久停在上一帧；kind 传成数组则直接在 SQL 绑定处炸，
+            # 连接被断开、客户端只看到 RemoteDisconnected。
+            if not isinstance(kind, str) or not isinstance(target, str) \
+                    or not target.strip():
+                self._err(400, "kind / target 必须是字符串，且 target 不能为空")
                 return
             payload = {k: v for k, v in data.items() if k != "kind"}
             task = self.app.store.create(kind, payload)

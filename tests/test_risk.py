@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import tempfile
@@ -197,6 +198,107 @@ class TestApiUsesCheckCode(unittest.TestCase):
         self.assertEqual(sum(1 for c in calls if "nav" in c), 1)
 
 
+# ── 必剪 ASR 的异常类型 ────────────────────────────────────
+
+class TestBcutErrorsAreBiliErrors(unittest.TestCase):
+    """必剪链路漏出非 BiliError，整批结果就会被一个异常带走。
+
+    上层（jobs / cli）只在 per-item 处 catch BiliError。URLError、JSONDecodeError、
+    KeyError 任何一个漏出来，都会穿过 `for p in pages` 的容错，把已经抓到的
+    条目、已落盘的文件全部丢掉，CLI 还会直接把 traceback 打在终端上。
+    """
+
+    def _call(self, exc=None, http=None, audio=None):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "audio.m4a")
+            Path(path).write_bytes(b"fake-audio")
+            patches = []
+            if exc is not None:
+                patches.append(mock.patch.object(bili, "_download_audio",
+                                                 side_effect=exc))
+            elif audio is not None:
+                patches.append(mock.patch.object(bili, "_download_audio",
+                                                 side_effect=audio))
+            else:
+                patches.append(mock.patch.object(bili, "_download_audio",
+                                                 return_value=path))
+            patches.append(mock.patch.object(bili, "_bcut_http",
+                                             side_effect=http))
+            for p in patches:
+                p.start()
+            try:
+                return bili.transcribe_bcut({"bvid": "BV1xx", "cid": 1})
+            finally:
+                for p in reversed(patches):
+                    p.stop()
+
+    def test_network_error_becomes_bili_error(self) -> None:
+        with self.assertRaises(BiliError) as ctx:
+            self._call(http=urllib.error.URLError("connection reset"))
+        self.assertNotIsInstance(ctx.exception, BiliRiskControl)
+
+    def test_html_gateway_becomes_bili_error(self) -> None:
+        exc = json.JSONDecodeError("Expecting value", "<html>", 0)
+        with self.assertRaises(BiliError):
+            self._call(http=exc)
+
+    def test_missing_field_becomes_bili_error(self) -> None:
+        """接口字段改名（比如 per_size 消失）不该是 KeyError 直穿。"""
+        with self.assertRaises(BiliError) as ctx:
+            self._call(http=lambda *a, **k: {"code": 0, "data": {}})
+        self.assertIn("KeyError", str(ctx.exception))
+
+    def test_existing_bili_error_is_not_rewrapped(self) -> None:
+        """已经是给人看的提示，不要再套一层「必剪 ASR 失败」。"""
+        with self.assertRaises(BiliError) as ctx:
+            self._call(audio=BiliError("yt-dlp 下载音频失败：403"))
+        self.assertEqual(str(ctx.exception), "yt-dlp 下载音频失败：403")
+
+
+# ── wbi 密钥缓存 ────────────────────────────────────────────
+
+class TestWbiCacheExpiry(unittest.TestCase):
+    """mixin_key 按自然日轮换，常驻进程必须自己过期。
+
+    不过期的后果不是「签名失败」这么直白：B站按风控回，上层开始退避
+    60+180+300 秒并提示「把请求间隔调大」——真正该做的是重取密钥。
+    """
+
+    def setUp(self) -> None:
+        bili._wbi_cache.clear()
+        self.calls: list[str] = []
+
+    def _nav(self, url, cookie_path=None, timeout=60):    # noqa: ANN001
+        self.calls.append(url)
+        return {"code": 0, "data": {"wbi_img": {
+            "img_url": _WBI_IMG, "sub_url": _WBI_SUB}}}
+
+    def test_cache_hit_within_ttl(self) -> None:
+        with mock.patch.object(bili, "_http_json", side_effect=self._nav):
+            first = bili._wbi_mixin_key()
+            second = bili._wbi_mixin_key()
+        self.assertEqual(first, second)
+        self.assertEqual(len(self.calls), 1, "TTL 内不该重复取 nav")
+
+    def test_expired_cache_refetches(self) -> None:
+        with mock.patch.object(bili, "_http_json", side_effect=self._nav):
+            bili._wbi_mixin_key()
+        # 把时间戳拨到 TTL 之前（0.0 即 epoch，必然过期）
+        bili._wbi_cache[""] = (bili._wbi_cache[""][0], 0.0)
+        with mock.patch.object(bili, "_http_json", side_effect=self._nav):
+            bili._wbi_mixin_key()
+        self.assertEqual(len(self.calls), 2, "过期后必须重新取")
+
+    def test_risk_response_drops_cache(self) -> None:
+        """密钥轮换了也会表现成风控；清缓存让下一次重新取，能自愈。"""
+        with mock.patch.object(bili, "_http_json", side_effect=self._nav):
+            bili._wbi_mixin_key()
+        self.assertTrue(bili._wbi_cache)
+        with self.assertRaises(BiliRiskControl):
+            bili._check_code({"code": -352, "message": "风控校验失败"}, "测试")
+        self.assertEqual(bili._wbi_cache, {})
+
+
 # ── 退避重试 ────────────────────────────────────────────────
 
 class TestRiskBackoff(unittest.TestCase):
@@ -378,6 +480,30 @@ class TestCookieStatus(unittest.TestCase):
         self.assertFalse(st["found"])
         self.assertIsNone(st["path"])
         self.assertIn("UP 主", st["note"])
+
+    def test_explicit_missing_path_is_an_error(self) -> None:
+        """指定了不存在的 Cookie 就报错，别悄悄改用别的文件。
+
+        静默回退的后果：用户以为换了 Cookie，实际还在用旧的，于是反复
+        遇到 -352 / 未登录，而面板上显示的路径和他指定的看起来一样。
+        """
+        with self.assertRaises(BiliError) as ctx:
+            bili._resolve_cookie_path(os.path.join(self.tmp, "nope.txt"),
+                                      strict=True)
+        self.assertIn("不存在", str(ctx.exception))
+
+    def test_opener_refuses_missing_explicit_path(self) -> None:
+        with self.assertRaises(BiliError):
+            bili._opener(os.path.join(self.tmp, "nope.txt"))
+
+    def test_status_reports_fallback_from_explicit_path(self) -> None:
+        good = self._write(_GOOD_COOKIE)
+        with mock.patch.object(bili, "_DEFAULT_COOKIE_PATHS", (Path(good),)):
+            st = bili.cookie_status(os.path.join(self.tmp, "nope.txt"))
+        self.assertTrue(st["found"])
+        self.assertEqual(st["path"], good)
+        self.assertEqual(st["level"], "warn", "用户指定的那份没生效，不能给绿灯")
+        self.assertIn("不存在", st["note"])
 
     def test_valid_cookie(self) -> None:
         st = bili.cookie_status(self._write(_GOOD_COOKIE))

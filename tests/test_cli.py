@@ -84,5 +84,53 @@ class TestSubsOnly(unittest.TestCase):
         self.assertIn("全部成功", err.getvalue())
 
 
+class TestNoOutputIsNotSuccess(unittest.TestCase):
+    """零产出不能报「全部成功」。
+
+    `--pages 5` 打在只有 3 个分 P 的视频上，每条视频的 pages 都被过滤成空，
+    以前落到「结果：全部成功（0 段）」并退出 0——输出目录是空的，脚本化调用
+    会把「什么都没做」当成成功。服务端 `_judge` 对同一形状返回 empty，两套
+    判定本来就该一致。
+    """
+
+    def _run(self, argv):
+        err = io.StringIO()
+        with mock.patch("sys.stderr", err):
+            try:
+                cli.main(argv)
+                code = 0
+            except SystemExit as exc:
+                code = exc.code
+        return code, err.getvalue()
+
+    def _out(self):
+        import shutil
+        import tempfile
+        out = tempfile.mkdtemp(prefix="asrcli_")
+        self.addCleanup(shutil.rmtree, out, True)
+        return out
+
+    def test_pages_beyond_range_is_not_success(self):
+        from asr_polish import bili
+        info = {"title": "标题", "cid": 1, "duration": 10,
+                "pages": [{"cid": i, "part": "P%d" % i, "duration": 5}
+                          for i in (1, 2, 3)]}
+        with mock.patch.object(bili, "get_video_info", lambda *a, **k: info), \
+                mock.patch.object(bili, "fetch",
+                                  side_effect=AssertionError("越界的 P 不该去抓")):
+            code, err = self._run(["subs", "BV1xx411c003", "--pages", "5",
+                                   "-o", self._out()])
+        self.assertEqual(code, 2)
+        self.assertIn("没有产出", err)
+        self.assertNotIn("全部成功", err)
+
+    def test_unparsable_pages_errors_out(self):
+        """`1-3` 解析不出数字，不该带着空集往下跑。"""
+        code, err = self._run(["subs", "BV1xx411c003", "--pages", "1-3",
+                               "-o", self._out()])
+        self.assertEqual(code, 2)
+        self.assertIn("一个数字都没解析出来", err)
+
+
 if __name__ == "__main__":
     unittest.main()

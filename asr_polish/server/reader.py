@@ -608,7 +608,7 @@ var OUT = {
 };
 var S = { id:null, timer:null, tick:null, startedAt:0, marks:[], cur:-1,
           text:"", parts:0, task:null, mk:[], lsBroken:false, part:0, anyJump:false,
-          posArmed:false, transcript:null,
+          posArmed:false, transcript:null, gen:0,
           /* 总结这一层的临时状态。sumMem 是内存里的那份缓存：localStorage
              写不进去时（隐私模式）这一页仍然要能看，不能存一遍就消失。 */
           sumBusy:false, sumErr:null, sumMem:null, sumAnchor:"", sumWarned:false };
@@ -687,6 +687,10 @@ function startTimer(startedAt){
 }
 
 function switchTo(id, note){
+  // 代次 +1：上一轮还没回来的请求（poll / loadTranscript）到此作废。
+  // 只 clearTimeout 管不到已经 await 出去的那次——它回来时会把旧任务的
+  // 失败原因、分 P 元信息写到新任务的页面上，甚至让「点句子跳转」打开上一个视频。
+  S.gen++;
   S.id = id;
   S.transcript = null;              // 换任务了，上一条的全文不能留着被导出
   $("#exportFull").disabled = true;
@@ -724,7 +728,9 @@ async function submit(ev){
 async function poll(){
   if (!S.id) return;
   if (S.timer) clearTimeout(S.timer);
+  var gen = S.gen;
   var res = await call("GET", "/api/tasks/" + encodeURIComponent(S.id));
+  if (gen !== S.gen) return;      // 期间换任务了，这份响应不属于当前页面
   if (res.code === 404){
     setRun(false);
     notice("bad", "任务不存在", "可能已被清理：" + S.id);
@@ -747,7 +753,11 @@ async function poll(){
 
 /* ── 正文 ────────────────────────────────────────── */
 async function loadTranscript(task){
-  var res = await call("GET", "/api/tasks/" + encodeURIComponent(S.id) + "/transcript");
+  var gen = S.gen;
+  // 拉的是传进来这个任务的正文，不是「此刻 S.id 指向的那个」——两者在切换
+  // 任务的那一瞬间会叉开，用后者等于把新任务的文字渲染到旧任务的元信息上。
+  var res = await call("GET", "/api/tasks/" + encodeURIComponent(task.id) + "/transcript");
+  if (gen !== S.gen) return;      // 期间换任务了，别渲染到新页面上
   if (res.code === 409){          // 后端说还没跑完，继续等
     poll();
     return;

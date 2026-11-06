@@ -86,6 +86,35 @@ def test_import_into_file():
         assert sql["variants"] == ["色考", "色口"]
 
 
+def test_failed_write_keeps_original():
+    """写盘失败不能把用户原有的词表截断。
+
+    `write_text` 是先截断再逐块写：写到一半被杀、磁盘满、或者两个导入同时
+    跑，他一条条手写的那份就成了半截 JSON。先写临时文件、再原子替换，
+    失败时原文件一个字节都不动。
+    """
+    from unittest import mock
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "lex.json"
+        original = {"version": 1, "name": "mine",
+                    "entries": [{"correct": "SQL", "variants": ["色考"]}]}
+        p.write_text(json.dumps(original, ensure_ascii=False), encoding="utf-8")
+
+        with mock.patch.object(lexicon_io, "replace_with_retry",
+                               side_effect=OSError("磁盘满")):
+            try:
+                lexicon_io.import_into_lexicon_file(
+                    p, [{"correct": "Vue", "variants": ["维优"]}])
+            except OSError:
+                pass
+            else:
+                raise AssertionError("写盘失败应当上抛，不能假装成功")
+
+        assert json.loads(p.read_text(encoding="utf-8")) == original
+        assert not [f for f in Path(td).iterdir() if f.suffix == ".tmp"], \
+            "失败后不该留下临时文件"
+
+
 def test_load_with_utf8_bom():
     # Windows 记事本「UTF-8 带 BOM」很常见，读取不应崩
     from asr_polish.lexicon import Lexicon

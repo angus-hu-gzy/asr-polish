@@ -214,6 +214,17 @@ class Store:
                 pass
             self._local.conn = None
 
+    def release_thread(self) -> None:
+        """当前线程用完了，把连接还掉。
+
+        线程本地缓存只对**长期存活**的线程划算（worker）。HTTP 服务是
+        `ThreadingHTTPServer`：每条连接一个线程，一个请求就结束。给这种线程
+        缓存连接等于只往 `_all` 里塞、没人收——面板每 3 秒轮询一次，一小时
+        就是一千多条连接、几千个文件句柄，Linux 上 ulimit 一到，所有 DB 操作
+        一起报「unable to open database file」。
+        """
+        self._reset_conn()
+
     def close(self) -> None:
         """关闭**所有线程**创建过的连接。
 

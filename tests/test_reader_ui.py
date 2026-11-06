@@ -339,6 +339,27 @@ class ReaderMarkupTest(unittest.TestCase):
         self.assertIsNotNone(m, "找不到 renderSummary")
         self.assertIn("summarySig(", m.group(0))
 
+    def test_switching_task_invalidates_in_flight_responses(self) -> None:
+        """切任务时，上一轮的请求可能还在路上。
+
+        clearTimeout 只停得掉还没发出的那一次；已经 await 出去的那次回来时，
+        会把旧任务的失败原因、分 P 元信息写到新任务页面上，甚至让「点句子」
+        跳到上一个视频。所以要一个代次标记，回来先对一眼。
+        """
+        s = _page_script()
+        switch = re.search(r"function switchTo\(.*?\n\}", s, re.S)
+        self.assertIsNotNone(switch, "找不到 switchTo")
+        self.assertIn("S.gen++", switch.group(0))
+
+        poll = re.search(r"async function poll\(.*?\n\}", s, re.S).group(0)
+        self.assertIn("gen !== S.gen", poll)
+
+        load = re.search(r"async function loadTranscript\(.*?\n\}", s, re.S).group(0)
+        self.assertIn("gen !== S.gen", load)
+        # 拉的是「传进来这个任务」的正文，不是「此刻 S.id 指的那个」——
+        # 两者在切换那一瞬间会叉开。
+        self.assertIn("encodeURIComponent(task.id)", load)
+
     def test_unverifiable_anchors_are_not_clickable(self) -> None:
         """没有出处的时间不给点击。
 

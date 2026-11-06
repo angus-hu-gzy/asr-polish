@@ -19,10 +19,13 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
+from ._atomic import replace_with_retry
 from .lexicon import DEFAULT_LEXICON_PATH
 
 # 变体字段内的分隔符（CSV/TXT 里变体之间用这些隔开）
@@ -208,6 +211,32 @@ def load_lexicon_data(path: str | Path) -> dict[str, Any]:
     return json.loads(Path(path).read_text(encoding="utf-8-sig"))
 
 
+def _dump_json(data: dict[str, Any]) -> str:
+    return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+
+
+def _write_json_atomic(path: Path, data: dict[str, Any]) -> None:
+    """先写同目录临时文件，再原子替换。
+
+    `path.write_text` 是先截断再逐块写：写到一半被杀、磁盘满、或者两个导入
+    同时跑，用户的整份自定义词表就成了半截 JSON——那是他一条条手写出来的东西，
+    不能因为一次写盘事故全丢。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent),
+                               prefix="." + path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(_dump_json(data))
+        replace_with_retry(Path(tmp), path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def import_into_lexicon_file(
     lexicon_path: str | Path,
     incoming_entries: list[dict[str, Any]],
@@ -229,11 +258,7 @@ def import_into_lexicon_file(
     existing = data.get("entries", [])
     merged_entries, added, merged = merge_entries(existing, incoming_entries)
     data["entries"] = merged_entries
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    _write_json_atomic(p, data)
     return added, merged
 
 
@@ -244,8 +269,5 @@ def export_lexicon(
     """把词表导出为 JSON 文件，返回输出路径。"""
     data = load_lexicon_data(lexicon_path)
     out = Path(out_path)
-    out.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    _write_json_atomic(out, data)
     return str(out)

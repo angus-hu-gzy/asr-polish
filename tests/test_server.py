@@ -492,6 +492,56 @@ class TestJobs(unittest.TestCase):
                          ["txt", "srt"])
 
 
+class TestKeepalive(unittest.TestCase):
+    """ASR 那段十几分钟没有输出的黑洞，必须自己续命。
+
+    不续命就会被回收器当僵尸：任务回到队列、另一个 worker 重新下载重新上传，
+    老 worker 跑完因令牌失效丢弃结果，三轮后失败理由写着「心跳超时」。
+    """
+
+    def _spy(self):
+        from asr_polish.server.jobs import _Keepalive
+        calls = []
+        # every 会被夹到 0.1s 下限（防止间隔为 0 时疯狂写库），测试按 0.1 设计
+        keep = _Keepalive(lambda f, m: calls.append((f, m)), 0.3, "ASR 识别中",
+                          every=0.1)
+        return keep, calls
+
+    def test_ticks_while_busy(self) -> None:
+        keep, calls = self._spy()
+        with keep:
+            time.sleep(0.35)
+        self.assertGreaterEqual(len(calls), 2, "耗时调用期间一次心跳都没发")
+        self.assertEqual(calls[0], (0.3, "ASR 识别中"))
+
+    def test_stops_after_exit(self) -> None:
+        keep, calls = self._spy()
+        with keep:
+            time.sleep(0.25)
+        n = len(calls)
+        time.sleep(0.25)
+        self.assertEqual(len(calls), n, "伴跑线程没有停下来")
+
+    def test_stops_on_exception(self) -> None:
+        keep, calls = self._spy()
+        with self.assertRaises(ValueError):
+            with keep:
+                time.sleep(0.15)
+                raise ValueError("boom")
+        n = len(calls)
+        time.sleep(0.25)
+        self.assertEqual(len(calls), n)
+
+    def test_progress_failure_does_not_break_the_job(self) -> None:
+        from asr_polish.server.jobs import _Keepalive
+
+        def boom(_f, _m):
+            raise RuntimeError("库暂时挂了")
+
+        with _Keepalive(boom, 0.1, "x", every=0.1):
+            time.sleep(0.25)          # 不抛就算过
+
+
 class TestHTTP(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -524,6 +574,35 @@ class TestHTTP(unittest.TestCase):
                 return r.status, json.loads(r.read().decode())
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read().decode())
+
+    def test_request_threads_do_not_leak_db_connections(self) -> None:
+        """一请求一线程，线程本地缓存不能只进不出。
+
+        面板每 3 秒轮询一次；一条连接不还，一小时就是一千多条、几千个句柄，
+        Linux 上 ulimit 一到所有 DB 操作一起报 unable to open database file。
+        """
+        before = len(self.store._all)
+        for _ in range(6):
+            self._get("/api/tasks")
+        for _ in range(40):                      # 释放发生在响应写出之后，等一拍
+            if len(self.store._all) <= before:
+                break
+            time.sleep(0.05)
+        self.assertLessEqual(len(self.store._all), before,
+                             "请求线程的 SQLite 连接用完没有归还")
+
+    def test_create_rejects_non_string_target(self) -> None:
+        """target 传成数字会让面板每次 load() 都抛，任务列表永久停住。"""
+        code, body = self._get("/api/tasks", "POST",
+                               {"kind": "subs", "target": 123})
+        self.assertEqual(code, 400)
+        self.assertIn("字符串", body["error"])
+
+    def test_create_rejects_non_string_kind(self) -> None:
+        """kind 传成数组会在 SQL 绑定处抛，连接被断开只有 RemoteDisconnected。"""
+        code, body = self._get("/api/tasks", "POST",
+                               {"kind": ["subs"], "target": "BV1x"})
+        self.assertEqual(code, 400)
 
     def test_health(self) -> None:
         code, body = self._get("/api/health")

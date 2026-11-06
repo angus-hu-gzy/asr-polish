@@ -14,7 +14,9 @@
 """
 from __future__ import annotations
 
+import threading
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -80,6 +82,52 @@ def _sleep_with_heartbeat(total: float, progress: Progress,
         progress(frac, "%s，还需 %ds" % (note, int(remaining + 0.999)))
         _sleep(step)
         remaining -= step
+
+
+#: ASR 那类「一步顶十几分钟」的调用，多久续一次命。
+#: 取 20 秒：比默认的僵尸判定（600 秒）小一个数量级，又不至于每条视频狂写库。
+_KEEPALIVE_EVERY = 20.0
+
+
+class _Keepalive:
+    """跑一个耗时调用期间，用一个伴跑线程定期调 progress 续命。
+
+    要解决的是一个真实的死法：走 ASR 兜底时 `fetch()` 里是「下载音频（timeout
+    600s）→ 上传分片 → 轮询云端转写（最多 900s）」，**整段没有一次 progress**。
+    而回收器按 `updated_at` 判僵尸，默认 600 秒——于是任务被放回队列，另一个
+    worker 领走后重新下载、重新上传，老 worker 跑完却因为令牌失效把结果丢掉。
+    三轮之后任务是 failed，错误写着「心跳超时」，视频本身完全正常。
+
+    伴跑线程只刷时间戳，不改业务状态；progress 本身有节流，多调几次不会写爆。
+    """
+
+    def __init__(self, progress: Progress, frac: float, note: str,
+                 every: float = _KEEPALIVE_EVERY) -> None:
+        self._progress = progress
+        self._frac = frac
+        self._note = note
+        self._every = max(0.1, float(every))
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def __enter__(self) -> "_Keepalive":
+        def tick() -> None:
+            while not self._stop.wait(self._every):
+                try:
+                    self._progress(self._frac, self._note)
+                except Exception:
+                    pass          # 续命失败不能把正在干的活带崩
+
+        self._thread = threading.Thread(target=tick, name="job-keepalive",
+                                        daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc) -> bool:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        return False
 
 
 def _backoff_for(attempt: int, retry_after: Optional[float] = None) -> Optional[float]:
@@ -273,11 +321,17 @@ def run_subs(payload: dict, progress: Progress = _noop) -> dict:
             for p in pages:
                 if payload.get("stop"):
                     break
+                # 开了 ASR 就带上伴跑心跳：下载音频 + 上传 + 云端转写是一段
+                # 十几分钟没有输出的黑洞，不续命就会被当成僵尸。
+                keep = (_Keepalive(progress, frac_hint,
+                                   "第 %s P：ASR 识别中" % p["index"])
+                        if payload.get("asr") else nullcontext())
                 try:
-                    res = _with_risk_backoff(
-                        lambda bv=bvid, ix=p["index"]: fetch(
-                            bv, page=ix, allow_asr=bool(payload.get("asr"))),
-                        progress, frac_hint, "取第 %s P" % p["index"])
+                    with keep:
+                        res = _with_risk_backoff(
+                            lambda bv=bvid, ix=p["index"]: fetch(
+                                bv, page=ix, allow_asr=bool(payload.get("asr"))),
+                            progress, frac_hint, "取第 %s P" % p["index"])
                 except BiliError as e:
                     n_fail += 1
                     msg = str(e)

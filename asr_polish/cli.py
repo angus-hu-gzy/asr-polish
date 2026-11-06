@@ -214,6 +214,12 @@ def _cmd_subs(args: argparse.Namespace) -> None:
     want: Optional[set] = None
     if args.pages.strip().lower() != "all":
         want = {int(x) for x in args.pages.split(",") if x.strip().isdigit()}
+        if not want:
+            # `--pages 1-3`、`--pages 1，2`（中文逗号）都会解析出空集，
+            # 继续往下跑就是「每条视频的 pages 都被过滤成空」然后报「全部成功」。
+            print(f"错误：--pages 一个数字都没解析出来（{args.pages!r}）。"
+                  "写法是 1,3,5 或 all", file=sys.stderr)
+            sys.exit(2)
 
     #: Cookie 失效时整批立刻收手。否则几十条视频会一条条地失败，
     #: 每条都等一个 --min-interval，用户干等几分钟才看到「全是登录问题」。
@@ -320,7 +326,12 @@ def _cmd_subs(args: argparse.Namespace) -> None:
     nosub = sum(r["nosub"] for r in rows)
     fail = sum(r["fail"] for r in rows)
     done = sum(1 for r in rows if r["ok"])
-    if not fail and not nosub:
+    if not ok and not nosub and not fail:
+        # 一段都没处理：`--pages 5` 打在只有 3 个分 P 的视频上就是这个形状。
+        # 以前这里落到「全部成功（0 段）」并退出 0，脚本化调用会把什么都没做
+        # 当成成功——输出目录是空的，用户也看不出来哪里错了。
+        verdict = "没有产出：没有可处理的条目（检查 --pages 是否越界）"
+    elif not fail and not nosub:
         verdict = "全部成功（%d 段）" % ok
     elif fail and not ok and not nosub:
         verdict = "全部失败"
@@ -340,7 +351,9 @@ def _cmd_subs(args: argparse.Namespace) -> None:
     if retry and not abort.is_set():
         print("\n只重跑失败的 %d 条（已成功的不会重做）：\n  asr-polish subs "
               "--only %s" % (len(retry), " ".join(retry)), file=sys.stderr)
-    if fail and not ok:
+    if not ok and (fail or not nosub):
+        # 一段都没拿到：要么全失败，要么一条都没轮到（--pages 越界）。
+        # 「有字幕需求但没有一条拿到」另算，那种情况输出里已经写明原因。
         sys.exit(2)
 
 

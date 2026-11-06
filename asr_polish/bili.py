@@ -33,6 +33,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from functools import wraps
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -107,6 +108,16 @@ _RISK_CODES = frozenset({-352, -412, -799, -509})
 #: 需要登录态才能继续的返回码。
 _LOGIN_CODES = frozenset({-101, -111})
 
+#: wbi 的 mixin_key 按自然日轮换。缓存必须带时间戳：`serve` 是常驻进程，
+#: 不带的话跨过轮换点之后每个请求都用旧密钥签名，B站一律回风控——然后
+#: 上层才开始「退避 4 次约 9 分钟」，理由写成「被风控了，把间隔调大」，而
+#: 真正该做的是重取密钥。取 6 小时：一天多打 4 次 nav，换来跨天不失效。
+_WBI_TTL = 6 * 3600.0
+
+#: {cookie_path: (mixin_key, 取到的时刻)}
+_wbi_cache: dict = {}
+
+
 #: 全局节流器。默认 1 秒一个 API 请求——批量抓时这是「不被封」和「不太慢」
 #: 之间的保守取值，可用 configure() / CLI --min-interval 调整。
 _throttle = Throttle(min_interval=1.0)
@@ -154,6 +165,10 @@ def _check_code(data: dict, what: str) -> None:
         raise BiliLoginRequired(
             f"{what}需要登录态（code {code_i}：{msg}）", code=code_i)
     if code_i in _RISK_CODES:
+        # 签名密钥轮换（或我们缓存的那份已经过期）也会表现成风控：w_rid 对不上，
+        # 服务端按「校验失败」处理。清掉缓存，下一次请求重新取——这样即使 TTL
+        # 判断错了、或者 B站提前换了密钥，也能自愈，不至于一直用旧密钥退避到死。
+        _wbi_cache.clear()
         raise BiliRiskControl(
             f"{what}触发风控（code {code_i}：{msg}）", code=code_i)
     raise BiliError(f"{what}失败（code {code_i}：{msg}）")
@@ -175,16 +190,26 @@ class FetchResult:
 
 # ── 基础 HTTP ────────────────────────────────────────────────
 
-def _resolve_cookie_path(cookie_path: Optional[str] = None) -> Optional[Path]:
+def _resolve_cookie_path(cookie_path: Optional[str] = None,
+                         strict: bool = False) -> Optional[Path]:
     """定位 cookies.txt：显式路径优先，其次按 _DEFAULT_COOKIE_PATHS 自动查找。
 
     三处（opener / fetch / cookie_status）共用这一个函数，避免各自的查找顺序
     悄悄跑偏——README 承诺了三条路径，代码就必须都认。
+
+    ``strict=True`` 时，显式给出的路径不存在就报错，**不悄悄换用默认文件**。
+    静默回退的后果很难排查：用户以为换了 Cookie，实际还在用旧的那份，于是
+    反复遇到 -352 / 未登录，面板上显示的路径还和他指定的一模一样。
     """
     if cookie_path:
         cand = Path(cookie_path).expanduser()
         if cand.exists():
             return cand
+        if strict:
+            raise BiliError(
+                "指定的 Cookie 文件不存在：%s\n"
+                "  不会自动改用别的文件（那会让你以为换了 Cookie，其实还在用旧的）。"
+                "确认路径，或去掉 --cookie 让它按默认位置查找。" % cand)
     for p in _DEFAULT_COOKIE_PATHS:
         if p.exists():
             return p
@@ -196,7 +221,7 @@ def _opener(cookie_path: Optional[str] = None):
 
     UP 主投稿、合集这类接口对未登录请求会直接返回「风控校验失败」，必须带登录态。
     """
-    path = _resolve_cookie_path(cookie_path)
+    path = _resolve_cookie_path(cookie_path, strict=True)
     if path is None:
         return urllib.request.build_opener()
     jar = _load_jar(path)
@@ -254,14 +279,23 @@ def cookie_status(cookie_path: Optional[str] = None,
     level 取 ok / warn / error，面板直接按它上色。
     """
     path = _resolve_cookie_path(cookie_path)
+    asked = Path(cookie_path).expanduser() if cookie_path else None
     if path is None:
+        note = ("没有找到 Cookie 文件。未登录时 UP 主投稿与合集接口必然返回"
+                "「风控校验失败」，只能抓单个 BV 号。")
+        if asked is not None:
+            note = "指定的 %s 不存在。" % asked + note
         return {
             "path": None, "found": False, "parsable": False,
             "has_sessdata": False, "age_days": None, "logged_in": None,
-            "level": "error",
-            "note": "没有找到 Cookie 文件。未登录时 UP 主投稿与合集接口必然返回"
-                    "「风控校验失败」，只能抓单个 BV 号。",
+            "level": "error", "note": note,
         }
+
+    # 显式指定了另一份、但实际用的是回退到的那份：必须说出来，否则用户会
+    # 以为「我明明换了 Cookie 怎么还不行」。
+    mismatch = ""
+    if asked is not None and not asked.exists():
+        mismatch = "指定的 %s 不存在，实际用的是 %s。" % (asked, path)
 
     age_days: Optional[float] = None
     try:
@@ -290,6 +324,11 @@ def cookie_status(cookie_path: Optional[str] = None,
         note = "Cookie 已 %d 天未更新，可能已过期" % int(age_days)
     else:
         level, note = "ok", "已配置 Cookie"
+
+    if mismatch:
+        note = mismatch + note
+        if level == "ok":
+            level = "warn"          # 用户指定的那份没生效，别给绿灯
 
     return {
         "path": str(path), "found": True, "parsable": parsable,
@@ -878,14 +917,13 @@ def _fetch_subtitle_detail(video: dict,
 
 # ── 多 P 展开 / 批量列表 ─────────────────────────────────────
 
-_wbi_cache: dict = {}
-
 
 def _wbi_mixin_key(cookie_path: Optional[str] = None) -> str:
-    """取 wbi 的 mixin_key。B站每天轮换，进程内缓存。"""
+    """取 wbi 的 mixin_key。B站每天轮换，进程内缓存（带 TTL，见 _WBI_TTL）。"""
     key = cookie_path or ""
-    if key in _wbi_cache:
-        return _wbi_cache[key]
+    hit = _wbi_cache.get(key)
+    if hit and time.time() - hit[1] < _WBI_TTL:
+        return hit[0]
     nav = _http_json("https://api.bilibili.com/x/web-interface/nav",
                      cookie_path=cookie_path)
     wbi = ((nav.get("data") or {}).get("wbi_img") or {})
@@ -900,7 +938,7 @@ def _wbi_mixin_key(cookie_path: Optional[str] = None) -> str:
         raise BiliError(
             "wbi 密钥长度异常（%d，应为 64），B站接口可能已变更" % len(raw))
     mixin = "".join(raw[i] for i in _WBI_MIXIN_TAB)[:32]
-    _wbi_cache[key] = mixin
+    _wbi_cache[key] = (mixin, time.time())
     return mixin
 
 
@@ -1081,6 +1119,27 @@ def _download_audio(video: dict, tmpdir: str,
     return None
 
 
+def _as_bili_error(fn):
+    """把必剪链路上的任何异常翻译成 BiliError。
+
+    必剪那套接口是裸 urlopen + `r["data"]` 硬下标，出错方式五花八门：
+    网络抖动（URLError）、网关回 HTML（JSONDecodeError）、字段改名
+    （KeyError）、分片重传 4 次（RuntimeError）。上层（jobs / CLI）只认
+    BiliError——漏出去任何一个，`for p in pages` 的 per-item 容错就失效，
+    整批已抓到的结果跟着一起丢，CLI 还会直接打 traceback。
+    """
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except BiliError:
+            raise                       # 已经是能给用户看的话，别包二遍
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError) as e:
+            raise BiliError("必剪 ASR 失败（%s）：%s" % (type(e).__name__, e)) from e
+    return wrapper
+
+
+@_as_bili_error
 def transcribe_bcut(video: dict, cookie_path: Optional[str] = None,
                     max_wait: int = 900) -> Optional[str]:
     """必剪云端转写，返回带换行的文本，失败返回 None。"""
