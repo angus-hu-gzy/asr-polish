@@ -6,4 +6,29 @@
 #       git push --no-verify origin v1.0.0
 #
 # 只管标签，推分支一律放行——日常提交不值得为此等 CI。
-exec "${PYTHON:-python}" "$(git rev-parse --show-toplevel)/tools/ci_guard.py" --hook
+#
+# 为什么要探测解释器：不能直接写 `python`。Windows 上 Microsoft Store 会放一个
+# 名字叫 python 的假程序——command -v 找得到、也能执行，但一跑就弹商店然后
+# 非零退出，钩子会以一个看不懂的方式失败。本机装的是 `py`（Python 启动器）。
+# 所以挨个试，真的能跑 `-c ""` 才算数。
+
+pick_python() {
+    for cand in "$@"; do
+        [ -n "$cand" ] || continue
+        if command -v "$cand" >/dev/null 2>&1 && "$cand" -c "" >/dev/null 2>&1; then
+            printf '%s' "$cand"
+            return 0
+        fi
+    done
+    return 1
+}
+
+PY=$(pick_python "${PYTHON:-}" python3 python py)
+if [ -z "$PY" ]; then
+    echo "pre-push: 找不到能用的 Python（试过 \$PYTHON / python3 / python / py）。" >&2
+    echo "          装一个，或 export PYTHON=<解释器> 指过去。" >&2
+    echo "          这次推送没做 CI 检查，照常放行。" >&2
+    exit 0
+fi
+
+exec "$PY" "$(git rev-parse --show-toplevel)/tools/ci_guard.py" --hook

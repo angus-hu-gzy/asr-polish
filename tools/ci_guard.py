@@ -30,6 +30,12 @@
 判定按**提交**而不是按「某一次运行」：同一个 sha 上可能有两次运行（推 main 一次、
 推标签一次），任何一次红都算红。v0.8.0 正是「main 绿、标签红」，只看最新一次
 运行会漏掉。
+
+还有第三个坑，发布 0.15.0 时踩到的：`?head_sha=` 走的是 GitHub 的索引，刚推
+上去的几十秒里查回来是空数组——不是「没跑」，是「索引还没建」。空数组会让闸门
+判成「没有跑过」（退出码 2），而 `--wait` 只等 running，于是刚推完 main 立刻打
+标签的人会被告知「这个提交没跑过 CI」。现在两个都补了：查空就退化到最近一页
+本地挑；`--wait` 对 missing 也给一段宽限（索引延迟不会太久）。
 """
 from __future__ import annotations
 
@@ -162,7 +168,7 @@ def parse_remote(url: str) -> str:
 
 def resolve_sha(ref: str) -> str:
     out = subprocess.run(["git", "rev-parse", ref], capture_output=True,
-                         text=True, timeout=10)
+                         text=True, encoding="utf-8", errors="replace", timeout=10)
     if out.returncode != 0:
         raise SystemExit("找不到这个提交：%s" % ref)
     return out.stdout.strip()
@@ -176,13 +182,12 @@ def deref_commit(sha: str) -> str:
     永远放行自己该拦的东西。第一次装钩子时就是这个坑：拦是拦住了，理由却是错的。
     """
     out = subprocess.run(["git", "rev-parse", sha + "^{commit}"],
-                         capture_output=True, text=True, timeout=10)
+                         capture_output=True, text=True, encoding="utf-8",
+                         errors="replace", timeout=10)
     return out.stdout.strip() if out.returncode == 0 else sha
 
 
-def fetch_runs(repo: str, sha: str, timeout: float = 10.0) -> list:
-    """取这个提交可能相关的运行。公开仓库不带 token 也能读（每小时 60 次）。"""
-    url = "%s/repos/%s/actions/runs?per_page=40&head_sha=%s" % (API, repo, sha)
+def _runs_json(url: str, repo: str, timeout: float) -> list:
     try:
         data = json.loads(_open(url, timeout).decode("utf-8"))
     except urllib.error.HTTPError as exc:
@@ -196,15 +201,30 @@ def fetch_runs(repo: str, sha: str, timeout: float = 10.0) -> list:
     return data.get("workflow_runs") or []
 
 
+def fetch_runs(repo: str, sha: str, timeout: float = 10.0) -> list:
+    """取这个提交可能相关的运行。公开仓库不带 token 也能读（每小时 60 次）。
+
+    `head_sha` 过滤依赖 GitHub 的索引，刚 push 完的那几十秒经常返回空——那不是
+    「没跑过」，是「还没建好索引」。所以查空时退化到最近一页（不带过滤）本地挑，
+    多花一次请求换掉一个假阴性。
+    """
+    runs = _runs_json("%s/repos/%s/actions/runs?per_page=40&head_sha=%s"
+                      % (API, repo, sha), repo, timeout)
+    if runs:
+        return runs
+    return _runs_json("%s/repos/%s/actions/runs?per_page=100" % (API, repo),
+                      repo, timeout)
+
+
 # --------------------------------------------------------------------------- #
 # 输出
 # --------------------------------------------------------------------------- #
 
-def describe(runs: list, sha: str, state: str) -> str:
+def describe(runs: list, sha: str) -> str:
     mine = [r for r in runs if (r.get("head_sha") or "").startswith(sha[:7])]
     if not mine:
         return ("这个提交在 Actions 上没有任何运行记录。\n"
-                "  多半是刚 push、CI 还没起来，等一两分钟再看；\n"
+                "  多半是刚 push、索引还没建好，等一两分钟再看（加 --wait 会自动等）；\n"
                 "  也可能这个提交根本没触发 CI（改了无关路径、或者 workflow 有 paths 过滤）。")
     lines = []
     for r in mine:
@@ -220,14 +240,40 @@ def check(repo: str, sha: str) -> tuple:
     return state, runs
 
 
+#: 刚推上去时 GitHub 的索引还没建好，`?head_sha=` 会返回空。这段时间按「还在
+#: 建索引」处理，最多给它这么久——再久就真是这个提交不触发 CI 了。
+MISSING_GRACE = 90.0
+
+
+def poll(check_one, sha: str, wait: float, interval: float) -> tuple:
+    """反复查，直到有确定结论或者时间用完。
+
+    - running：等到 wait 用完为止（等的是 CI 跑完，可能要好几分钟）。
+    - missing：只等 MISSING_GRACE 秒（等的是索引建好，通常几十秒）。
+    """
+    now = time.time()
+    running_deadline = now + max(0.0, wait)
+    missing_deadline = now + min(max(0.0, wait), MISSING_GRACE)
+    while True:
+        state, runs = check_one(sha)
+        now = time.time()
+        if state == "running" and now < running_deadline:
+            _warn("  %s 的 CI 还在跑，等 %ds…" % (sha[:7], interval))
+        elif state == "missing" and now < missing_deadline:
+            _warn("  %s 还没查到运行记录（索引可能没建好），等 %ds…" % (sha[:7], interval))
+        else:
+            return state, runs
+        time.sleep(interval)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         prog="ci_guard",
         description="打标签前确认这个提交的 CI 绿了没有（0 绿 / 1 红或未完成 / 2 查不到）")
     ap.add_argument("--sha", default="HEAD", help="要检查的提交（默认 HEAD）")
     ap.add_argument("--repo", default=None, help="owner/name（默认从 origin 读）")
-    ap.add_argument("--wait", type=float, default=0,
-                    help="还在跑就轮询等待的秒数（默认不等）")
+    ap.add_argument("--wait", type=float, default=None,
+                    help="还在跑就轮询等待的秒数（默认：钩子里 60，命令行 0）")
     ap.add_argument("--interval", type=float, default=15, help="轮询间隔秒数")
     ap.add_argument("--hook", action="store_true",
                     help="pre-push 模式：从 stdin 读 refs，只拦标签")
@@ -249,21 +295,18 @@ def main(argv=None) -> int:
     else:
         targets = [(args.sha, resolve_sha(args.sha))]
 
+    # 钩子默认等一分钟：刚推完 main 就打标签是常见节奏，一次 push 多等几十秒，
+    # 换掉「查不到 → 你手动再跑一遍」的来回。
+    wait = args.wait if args.wait is not None else (60.0 if args.hook else 0.0)
+
     rc = 0
     for name, sha in targets:
-        deadline = time.time() + max(0.0, args.wait)
-        while True:
-            state, runs = check(repo, sha)
-            if state == "running" and time.time() < deadline:
-                _warn("  %s 的 CI 还在跑，等 %ds…" % (sha[:7], args.interval))
-                time.sleep(args.interval)
-                continue
-            break
+        state, runs = poll(lambda s: check(repo, s), sha, wait, args.interval)
 
         text, code = STATE_TEXT[state]
         label = name if args.hook else sha[:7]
         print("%s  %s" % (label, text), flush=True)
-        print(describe(runs, sha, state), flush=True)
+        print(describe(runs, sha), flush=True)
         if state != "success":
             rc = max(rc, code)
 

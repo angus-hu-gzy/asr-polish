@@ -1,0 +1,5 @@
+# 钩子是 sh 脚本，必须 LF。
+# 本仓库在 Windows 上开发，core.autocrlf 是 true——不加这条，clone 下来
+# shebang 会变成 "#!/bin/sh\r"，Git Bash 报 bad interpreter，推标签直接被拒，
+# 而错误信息完全看不出是换行符的问题。
+tools/hooks/* text eol=lf
