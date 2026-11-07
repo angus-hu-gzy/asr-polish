@@ -604,6 +604,41 @@ class TestHTTP(unittest.TestCase):
                                {"kind": ["subs"], "target": "BV1x"})
         self.assertEqual(code, 400)
 
+    def _one_task(self) -> str:
+        _, body = self._get("/api/tasks", "POST",
+                            {"kind": "subs", "target": "BV1ask"})
+        return body["id"]
+
+    def test_ask_wires_kind_through(self) -> None:
+        """问答应把失败原因的种类原样带回前端，而不是一句「问答失败」。
+
+        这里用空 key 触发 no_key：它在发请求之前就断掉，所以这条测试不联网，
+        但它真的走了「路由 → qa.call → SummaryError → JSON」整条路。
+        """
+        tid = self._one_task()
+        code, body = self._get("/api/tasks/%s/ask" % tid, "POST",
+                               {"model": {"base": "http://127.0.0.1:1/v1",
+                                          "model": "m", "key": ""},
+                                "text": "正文", "question": "这一篇讲了什么？"})
+        self.assertEqual(code, 400)
+        self.assertEqual(body["kind"], "no_key")
+        self.assertIn("API key", body["error"])
+
+    def test_ask_needs_a_question(self) -> None:
+        tid = self._one_task()
+        code, body = self._get("/api/tasks/%s/ask" % tid, "POST",
+                               {"model": {"base": "http://127.0.0.1:1/v1",
+                                          "model": "m", "key": "sk-fake"},
+                                "text": "正文", "question": "   "})
+        self.assertEqual(code, 400)
+        self.assertEqual(body["kind"], "empty")
+        self.assertIn("问题", body["error"])
+
+    def test_ask_unknown_task_404(self) -> None:
+        code, body = self._get("/api/tasks/NOPE/ask", "POST",
+                               {"text": "正文", "question": "问"})
+        self.assertEqual(code, 404)
+
     def test_health(self) -> None:
         code, body = self._get("/api/health")
         self.assertEqual(code, 200)

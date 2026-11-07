@@ -15,6 +15,7 @@ POST   /api/tasks/{id}/retry 手动重试（failed 重新排队；running 强制
 POST   /api/tasks/{id}/retry-failed  只重跑失败的条目（新建一个任务）
 GET    /api/tasks/{id}/transcript    只读：把已落盘的字幕读成分段（阅读页用）
 POST   /api/tasks/{id}/summary       单篇总结：转发给 OpenAI 兼容的模型服务
+POST   /api/tasks/{id}/ask           单篇问答：同样转发，回答要带原文时间
 GET    /api/health           健康检查
 GET    /                     面板
 GET    /reader               阅读页
@@ -32,7 +33,7 @@ from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
 from ..bili import cookie_status, current_min_interval, throttle_waited
-from . import summary, transcript
+from . import qa, summary, transcript
 from .reader import html as reader_html
 from .store import DONE, FAILED, PENDING, RUNNING, Store
 from .worker import WorkerPool
@@ -499,6 +500,41 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 out = summary.call(data.get("model") or {}, data.get("text") or "")
+            except summary.SummaryError as e:
+                self._json(e.status, {"error": e.message, "kind": e.kind})
+                return
+            self._json(200, out)
+            return
+
+        if len(parts) == 4 and parts[:2] == ["api", "tasks"] \
+                and parts[3] == "ask":
+            # 单篇问答。和 /summary 同一套约束：服务端不读磁盘、不读 transcript，
+            # 正文由前端用 buildPlainText 拼好发过来；key 只在这次请求的内存里
+            # 走一遍，不落盘、不进 app.note、不进错误消息。
+            #
+            # 和 /summary 的差别只有两处：多一个 question、多一段 history。
+            # history 由前端裁剪（它知道哪一轮是哪一篇），服务端再裁一次——
+            # 前端传多少是它的事，上下文窗口和账单是这里的事。
+            data = self._body()
+            if data is None:
+                self._err(400, "请求体不是合法 JSON（或超过 1MB）")
+                return
+            task = self.app.store.get(parts[2])
+            if task is None:
+                self._err(404, "没有这个任务：%s" % parts[2])
+                return
+            # hasTime 只认真正的布尔值。前端传 "false" 这种字符串时按「有时间」
+            # 处理：宁可让模型多标几个时间戳（前端会逐个核对、编的会被标无出处），
+            # 也不要因为它标了时间就当成没时间。
+            has_time = data.get("hasTime")
+            if not isinstance(has_time, bool):
+                has_time = True
+            try:
+                out = qa.call(data.get("model") or {},
+                              data.get("text") or "",
+                              data.get("question") or "",
+                              data.get("history") or [],
+                              has_time)
             except summary.SummaryError as e:
                 self._json(e.status, {"error": e.message, "kind": e.kind})
                 return
