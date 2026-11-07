@@ -1339,6 +1339,9 @@ function renderDoc(d, task){
       cue.appendChild(txt);
       cue._text = p.text;
       cue._start = p.start;
+      // 段落的结束时间要留着：笔记里的锚点是原始段首，而这里是合过段的，
+      // 粒度不同，找落点必须靠「sec 落在哪一段的区间里」，不能只比起始秒。
+      cue._end = p.end;
       cue._meta = pm;
       cue._jump = jump;
       cue.dataset.key = mkKey(part.name, p.start, p.text);
@@ -3627,6 +3630,32 @@ $("#notesbtn").addEventListener("click", function(){
 $("#ntclose").addEventListener("click", function(){ openNotes(false) });
 $("#ntbtn").addEventListener("click", function(){ saveNotes() });
 
+/* 从一串「带起止时间的段落」里挑出 sec 该落在哪一段，返回下标（挑不出给 -1）。
+
+   两条规则，顺序不能换：
+   1. 区间里**包含** sec 的那一段。阅读页的段落是合过的（groupCues：几句并成一段，
+      最长 120 字），而笔记里的锚点是原始段首——粒度不同。只比「起点谁更近」会
+      把人送到下一段：一句讲在 134.82 秒，包含它的那一段起点可能在 125 秒，而下一
+      段从 137.92 秒起，差 2.92 秒反而更"近"，于是点在「苍穹外卖」上的锚点跳到了
+      下一段去。
+   2. 没有包含的，取起点最近的——sec 落在两段之间的空隙（停顿）里时只能这样。
+   多个区间重叠时取起点更晚的那个：更内层，也更具体。 */
+function seekCueIndex(spots, sec){
+  if (!spots || !spots.length || sec == null || isNaN(sec)) return -1;
+  var hit = -1, hitStart = -Infinity, near = -1, nearD = Infinity;
+  for (var i = 0; i < spots.length; i++){
+    var s = spots[i];
+    if (!s || s.start == null) continue;
+    if (s.end != null && sec >= s.start && sec <= s.end){
+      if (s.start > hitStart){ hit = i; hitStart = s.start }
+      continue;
+    }
+    var d = Math.abs(s.start - sec);
+    if (d < nearD){ nearD = d; near = i }
+  }
+  return hit >= 0 ? hit : near;
+}
+
 /* 从笔记页点一条出处进来时，落在这一段上（`?t=秒&part=第几篇`）。
    参数名和笔记页用的三个一致；两个都没给就照旧回到上次读到的位置。 */
 function revealAt(sec, partIdx){
@@ -3638,19 +3667,20 @@ function revealAt(sec, partIdx){
   if (partIdx != null && !isNaN(partIdx) && secs[partIdx]) order = [partIdx];
   else for (var i = 0; i < secs.length; i++) order.push(i);
 
-  var bestCue = null, bestD = Infinity, bestPart = -1;
+  var spots = [], where = [];
   order.forEach(function(k){
     var cues = secs[k].querySelectorAll(".cue");
     for (var j = 0; j < cues.length; j++){
-      var st = cues[j]._start;
-      if (st == null) continue;
-      var d = Math.abs(st - sec);
-      if (d < bestD){ bestD = d; bestCue = cues[j]; bestPart = k }
+      var c = cues[j];
+      if (c._start == null) continue;
+      spots.push({ start: c._start, end: c._end });
+      where.push({ cue: c, part: k });
     }
   });
-  if (!bestCue) return false;
-  selectPart(bestPart, false);
-  focusCue(bestCue);
+  var idx = seekCueIndex(spots, sec);
+  if (idx < 0) return false;
+  selectPart(where[idx].part, false);
+  focusCue(where[idx].cue);
   return true;
 }
 
@@ -4142,6 +4172,10 @@ window.__reader = {
   withQuiz: withQuiz,
   storedNoteOf: storedNoteOf,
   noteFor: noteFor,
+  // 两个「挑一段」是不同的问题：pickCueIndex 挑视口顶部那一段（续读用），
+  // seekCueIndex 挑 sec 该落在哪一段（从笔记跳回来用）。
+  pickCueIndex: pickCueIndex,
+  seekCueIndex: seekCueIndex,
   revealAt: revealAt
 };
 })();

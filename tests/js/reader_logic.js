@@ -487,6 +487,20 @@ function main() {
     noteEmpty: [api.noteFor([], "a"), api.noteFor(null, "a"),
                 api.noteFor(noteList, ""), api.noteFor(noteList, undefined)],
 
+    // 落点：sec 落在哪一段的区间里就选哪一段。只按「起点谁近」会选到下一段——
+    // 本段起点可能早在十秒前，而下一段起点只差三秒。
+    pickInside: api.seekCueIndex([{ start: 125, end: 137.7 },
+                                  { start: 137.92, end: 141 }], 135),
+    pickInsideLast: api.seekCueIndex([{ start: 0, end: 5 },
+                                      { start: 5.2, end: 9 }], 8.9),
+    pickGap: api.seekCueIndex([{ start: 0, end: 5 }, { start: 9, end: 12 }], 6.8),
+    pickOverlap: api.seekCueIndex([{ start: 0, end: 20 }, { start: 10, end: 30 }], 15),
+    pickSkipNull: api.seekCueIndex([{ start: null, end: null },
+                                    { start: 3, end: 6 }], 4),
+    pickEmpty: [api.seekCueIndex([], 3), api.seekCueIndex(null, 3),
+                api.seekCueIndex([{ start: 0, end: 5 }], null),
+                api.seekCueIndex([{ start: 0, end: 5 }], NaN)],
+
     // 写一篇不动别的篇；也不改传进来的那个对象
     quizWrite: quizStoreWrite,
     quizWriteKeepsA: quizStoreWrite.parts["a.srt"] !== undefined,

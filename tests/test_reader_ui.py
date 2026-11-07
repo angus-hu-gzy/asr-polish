@@ -1420,5 +1420,55 @@ class ReaderNotesEntryTest(unittest.TestCase):
         self.assertEqual(self.d["noteEmpty"], [None, None, None, None])
 
 
+class ReaderJumpTargetTest(unittest.TestCase):
+    """点笔记里的出处回到阅读页，落在哪一段。
+
+    这一条差点漏过去：实测点「苍穹外卖」的 `t=135`，页面滚到了下一段。原因是
+    阅读页的段落是合过的（几句并成一段），而笔记里的锚点是**原始段首**——包含
+    134.82 秒那一段的起点在 125 秒，而下一段从 137.92 秒起，只差 2.92 秒，按
+    「起点谁近」就选了它。落错段比不跳更糟：人会以为自己记错了原文。
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False,
+                                         encoding="utf-8") as fh:
+            fh.write(_page_script())
+            cls.script = fh.name
+        out = subprocess.run([_NODE, str(_HARNESS), cls.script],
+                             capture_output=True, encoding="utf-8",
+                             errors="replace", timeout=60)
+        if out.returncode != 0 or not out.stdout:
+            raise AssertionError("node 跑页面脚本失败（退出码 %s）：%s\n%s"
+                                 % (out.returncode, (out.stdout or "")[-500:],
+                                    (out.stderr or "")[-2000:]))
+        cls.d = json.loads(out.stdout)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        Path(cls.script).unlink(missing_ok=True)
+
+    def test_prefers_the_paragraph_that_contains_it(self) -> None:
+        """135 秒在 125→137.7 这一段里，哪怕下一段的起点更近。"""
+        self.assertEqual(self.d["pickInside"], 0)
+
+    def test_last_second_of_a_paragraph_is_still_that_paragraph(self) -> None:
+        self.assertEqual(self.d["pickInsideLast"], 1)
+
+    def test_gap_between_paragraphs_falls_back_to_nearest(self) -> None:
+        """两段之间那截停顿没有归属，退回「起点最近」——6.8 秒离 9 更近。"""
+        self.assertEqual(self.d["pickGap"], 1)
+
+    def test_overlapping_paragraphs_take_the_inner_one(self) -> None:
+        """区间重叠时取起点更晚的那个：更内层、更具体，也可能是人点的那一句。"""
+        self.assertEqual(self.d["pickOverlap"], 1)
+
+    def test_paragraph_without_time_is_skipped(self) -> None:
+        self.assertEqual(self.d["pickSkipNull"], 1)
+
+    def test_no_candidate_is_minus_one(self) -> None:
+        self.assertEqual(self.d["pickEmpty"], [-1, -1, -1, -1])
+
+
 if __name__ == "__main__":
     unittest.main()
