@@ -80,6 +80,17 @@ jobs:
           python -c "import asr_polish; from asr_polish.lexicon import Lexicon; print(asr_polish.__version__, len(Lexicon().entries), '条词条')"
           asr-polish correct "用接生解析数据"
 
+      # 文件清单对不对，`tar tzf` 数不出来——0.15.1 就是这么漏掉 tests/js/reader_logic.js
+      # 的（解包跑测试红 51 项）；0.16.0 又漏了 .gitattributes（红 1 项）。两次都是
+      # 源码包自己跑不过自己的测试。所以这一步不解包跑一遍，就等于没检查。
+      - name: 解包 sdist 跑测试（源码包要能自证）
+        run: |
+          python -m pip install pytest
+          mkdir -p /tmp/sdist
+          tar xzf dist/*.tar.gz -C /tmp/sdist
+          cd /tmp/sdist/asr_polish-*
+          python -m pytest -q
+
   eval:
     name: 准确性评测
     runs-on: ubuntu-latest

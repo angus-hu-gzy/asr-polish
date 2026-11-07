@@ -17,3 +17,8 @@ recursive-include tests *.js
 # tools/ 里有 pre-push 钩子和 ci_guard.py，参与贡献时要跑
 recursive-include tools *.py
 include tools/hooks/pre-push
+
+# .gitattributes 钉住钩子的换行（CRLF 的 shebang 会让 Git Bash 报 bad interpreter）。
+# 它本身不进包也就算了——但 tests/test_ci_guard.py 会打开它核对这条规则，缺了就是
+# FileNotFoundError：解包跑测试红 1 项，而源码包正是要能自证的那一份。
+include .gitattributes
