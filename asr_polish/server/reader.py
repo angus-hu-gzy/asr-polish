@@ -799,10 +799,12 @@ async function submit(ev){
   if (!raw) return;
   $("#go").disabled = true;
   resetNotice(); clear($("#doc")); clear($("#fails")); $("#tools").hidden = true;
-  // formats 必须是 srt：阅读页要按时间戳分段，txt 里没有时间。
+  // formats 里必须有 srt：阅读页要按时间戳分段，txt 里没有时间。
+  // 顺带把 txt 一起写上，和面板建出来的任务保持同一种产物——同一个任务在
+  // 哪里建的，落盘的东西不该不一样。
   // 这里只是把现有接口已有的 payload 字段填上，没有改接口。
   var res = await call("POST", "/api/tasks",
-                       { kind: "subs", target: raw, formats: ["srt"] });
+                       { kind: "subs", target: raw, formats: ["srt", "txt"] });
   $("#go").disabled = false;
   if (!res.ok){
     notice("bad", "没能提交任务", res.data.error || ("HTTP " + res.code));
@@ -941,8 +943,12 @@ function partNote(part, pm){
     why = "这一篇定位不到视频：产物文件名里没有 BV 号（`--only` 重跑或手工放进"
         + "输出目录的文件会这样），所以点句子不跳转。读和搜索都照常。";
   } else if (part.source === "txt"){
-    why = "这一篇来自纯文本导出，没有时间戳，所以点句子不能跳转。"
-        + "想要跳转的话，任务提交时 formats 带上 srt。";
+    // 落盘时只要了 txt。这句得说清「怎么补」，不能只说「不能跳」：
+    // 面板提交默认已经带 srt 了，还能走到这儿的只有更早的任务和命令行建的，
+    // 两种人都得知道下一次该怎么写。
+    why = "这一篇来自纯文本导出（落盘时只写了 txt），没有时间戳，所以点句子不能跳转。"
+        + "重抓一次并带上 srt 就能跳：命令行加 `--format srt`，"
+        + "接口里写 `formats: [\"srt\", \"txt\"]`。";
   } else {
     why = "这一篇没有逐句时间戳：必剪 ASR 只给了 0 → 99:59:59 的一整块占位时间，"
         + "整篇是按行拆开的。跳转会落到视频开头，看着像跳错，所以这里不给跳。";

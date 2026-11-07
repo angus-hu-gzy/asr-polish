@@ -465,6 +465,28 @@ class ReaderMarkupTest(unittest.TestCase):
         self.assertIn("!part.hasTime", body)       # 无时间的篇原样留方括号、不画锚点
         self.assertIn("if (part.hasTime && !valid)", body)
 
+    def test_txt_only_part_says_how_to_fix_it(self) -> None:
+        """只落了 txt 的篇：不光说不能跳，还要说下一次怎么写。
+
+        原来这句是「任务提交时 formats 带上 srt」——从面板建任务的人凑巧没有
+        地方填 formats，看到等于没看到。现在面板和阅读页提交都默认带上，还能
+        走到这儿的只有命令行建的更早的任务，所以两种写法都要点名。
+        """
+        body = re.search(r"function partNote\(.*?\n\}", _page_script(), re.S)
+        self.assertIsNotNone(body, "找不到 partNote")
+        self.assertIn("--format srt", body.group(0))
+        self.assertIn('formats: [\\"srt\\", \\"txt\\"]', body.group(0))
+
+    def test_submit_asks_for_a_time_axis(self) -> None:
+        """阅读页自己提交任务时，srt 与 txt 一起要。
+
+        只要 txt 的任务在这个页面上是「点不动、标不出锚点」的半残品；只要 srt
+        又和面板建出来的任务产物不一样。同一个任务在哪儿建的，落盘不该两样。
+        """
+        body = re.search(r"async function submit\(.*?\n\}", _page_script(), re.S)
+        self.assertIsNotNone(body, "找不到 submit")
+        self.assertIn('formats: ["srt", "txt"]', body.group(0))
+
     def test_empty_conversation_offers_examples(self) -> None:
         s = _page_script()
         m = re.search(r"var QA_SUG = \[(.*?)\];", s, re.S)
