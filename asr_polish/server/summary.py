@@ -117,18 +117,19 @@ def base_url(raw: str) -> str:
 # 提示词与请求体
 # --------------------------------------------------------------------------- #
 
-def build_request(base: str, model: str, key: str, text: str) -> urllib.request.Request:
+def build_request(base: str, model: str, key: str,
+                  messages: list) -> urllib.request.Request:
     """拼一次 chat/completions 请求。
 
     不传 `response_format`：OpenAI 有，很多兼容服务没有，带上会被直接拒绝
     （400 unknown parameter）。结构靠提示词约束 + parse_reply 兜底，兼容性优先。
+
+    `messages` 由调用方给：总结是「提示词 + 正文」两条，问答还要多几轮历史。
+    这里不替调用方决定会话长什么样。
     """
     payload = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": PROMPT},
-            {"role": "user", "content": text},
-        ],
+        "messages": messages,
         "temperature": 0.2,
         "stream": False,
     }
@@ -274,8 +275,13 @@ def normalize(obj: dict) -> dict:
     return {"tldr": tldr, "points": points, "concepts": concepts}
 
 
-def parse_reply(raw: str) -> dict:
-    """模型响应体（chat/completions 的完整 JSON）→ 结构化摘要。"""
+def _content_of(raw: str) -> str:
+    """响应体（chat/completions 的完整 JSON）→ 助手说的话。
+
+    只认信封这一层：不是 JSON、里面写着 error、没有 choices[0].message.content，
+    三种都当场报掉。**解析回答的内容是各层自己的事**——总结要 JSON、问答要
+    带方括号时间戳的散文，共用的只有「把信封拆开」这一步。
+    """
     try:
         env = json.loads(raw)
     except (ValueError, TypeError):
@@ -297,8 +303,12 @@ def parse_reply(raw: str) -> dict:
         # 少数服务把 content 写成 [{type:text, text:...}] 的分段
         content = "".join(seg.get("text", "") for seg in content
                           if isinstance(seg, dict))
+    return content if isinstance(content, str) else ""
 
-    body = _strip_fence(content if isinstance(content, str) else "")
+
+def parse_content(content: str) -> dict:
+    """助手说的话 → 结构化摘要（模型输出这一层）。"""
+    body = _strip_fence(content or "")
     obj = _first_json_object(body)
     if not obj:
         raise SummaryError(
@@ -309,6 +319,15 @@ def parse_reply(raw: str) -> dict:
         raise SummaryError(
             "parse", "模型返回的 JSON 解析不了：%s" % obj[:200], 502) from None
     return normalize(data)
+
+
+def parse_reply(raw: str) -> dict:
+    """模型响应体（chat/completions 的完整 JSON）→ 结构化摘要。
+
+    留着这个入口是因为「拿到一整段响应就该能解析」是最省事的用法；内部两步
+    拆开之后，问答那边可以直接复用 ``_content_of``，不必先包一层假的信封。
+    """
+    return parse_content(_content_of(raw))
 
 
 # --------------------------------------------------------------------------- #
@@ -399,10 +418,12 @@ def transport_error(exc: Exception) -> SummaryError:
 # 主入口
 # --------------------------------------------------------------------------- #
 
-def call(cfg: dict, text: str, timeout: float = DEFAULT_TIMEOUT) -> dict:
-    """发一次总结请求。成功返回 ``{"summary": …, "model": …}``。
+def require_cfg(cfg: dict) -> dict:
+    """把设置里那三样收成干净的一份，缺什么就报什么。
 
-    `cfg` 就是前端设置面板里那三样：``{"base", "model", "key"}``。
+    顺序（key → 模型名 → 地址）和第 1 层一致。地址那一项故意不在这里检查：
+    空地址由 ``base_url`` 报，消息里带着「填到 /v1 为止」这类具体指引，
+    在两处各写一份只会慢慢说得不一样。
     """
     cfg = cfg or {}
     base = (cfg.get("base") or "").strip()
@@ -416,18 +437,20 @@ def call(cfg: dict, text: str, timeout: float = DEFAULT_TIMEOUT) -> dict:
             "费用按它的规则算，所以用你自己的 key。", 400)
     if not model:
         raise SummaryError("bad_base", "设置里没填模型名，例如 deepseek-chat。", 400)
+    return {"base": base, "model": model, "key": key}
 
-    body = (text or "").strip()
-    if not body:
-        raise SummaryError("empty", "这一篇没有正文，没什么可总结的。", 400)
-    if len(body) > MAX_TEXT:
-        raise SummaryError(
-            "empty",
-            "这一篇有 %d 字，超过单次 %.0f 万字的处理上限。"
-            "先分段读，或者换一个上下文更长的模型。"
-            % (len(body), MAX_TEXT / 10000.0), 413)
 
-    req = build_request(base, model, key, body)
+def complete(cfg: dict, messages: list,
+             timeout: float = DEFAULT_TIMEOUT) -> dict:
+    """发一次 chat/completions，返回 ``{"content": 助手说的话, "model": 模型名}``。
+
+    总结和问答共用这一段：校验配置、拼端点、带 key、把提供方的错误翻成人话。
+    两层的差别只在 `messages` 怎么拼、回答怎么解析，所以不复制第二份——复制
+    出去的那一份不会跟着改（以后加超时重试、加代理设置），而这类分叉在
+    「只有一条路会被跑到」的时候没人发现。
+    """
+    cfg = require_cfg(cfg)
+    req = build_request(cfg["base"], cfg["model"], cfg["key"], messages)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", "replace")
@@ -440,5 +463,26 @@ def call(cfg: dict, text: str, timeout: float = DEFAULT_TIMEOUT) -> dict:
     except OSError as e:
         raise transport_error(e) from None
 
-    out = parse_reply(raw)
-    return {"summary": out, "model": model}
+    return {"content": _content_of(raw), "model": cfg["model"]}
+
+
+def call(cfg: dict, text: str, timeout: float = DEFAULT_TIMEOUT) -> dict:
+    """发一次总结请求。成功返回 ``{"summary": …, "model": …}``。
+
+    `cfg` 就是前端设置面板里那三样：``{"base", "model", "key"}``。
+    """
+    cfg = require_cfg(cfg)
+
+    body = (text or "").strip()
+    if not body:
+        raise SummaryError("empty", "这一篇没有正文，没什么可总结的。", 400)
+    if len(body) > MAX_TEXT:
+        raise SummaryError(
+            "empty",
+            "这一篇有 %d 字，超过单次 %.0f 万字的处理上限。"
+            "先分段读，或者换一个上下文更长的模型。"
+            % (len(body), MAX_TEXT / 10000.0), 413)
+
+    out = complete(cfg, [{"role": "system", "content": PROMPT},
+                         {"role": "user", "content": body}], timeout)
+    return {"summary": parse_content(out["content"]), "model": out["model"]}
