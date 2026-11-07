@@ -373,6 +373,121 @@ class ReaderMarkupTest(unittest.TestCase):
         self.assertIn("r.idx >= 0", body)
         self.assertEqual(body.count("addEventListener"), 1)
 
+    # ── 单篇问答 ──────────────────────────────────────
+    def test_ask_entry_sits_in_the_header_and_panel_in_the_flow(self) -> None:
+        """入口在顶栏，面板在正文上方——和总结同一个位置，不另起浮层。
+
+        工具栏（.tools）在 1440 宽下本来就是一整行，第 1 层把总结按钮挪进顶栏
+        就是为了这个；问答同理，不能再往工具栏里塞。
+        """
+        page = self.html
+        self.assertIn('id="askbtn" type="button"', page)
+        self.assertLess(page.index('class="bar"'), page.index('id="askbtn"'))
+        self.assertLess(page.index('id="askbtn"'), page.index("</header>"))
+        self.assertIn('class="qa" id="qa"', page)
+        # 面板必须在 main 里、在正文舞台之前：它不挡正文，也不浮动盖住谁
+        self.assertLess(page.index('id="qa"'), page.index('class="stage"'))
+        for box in ("qain", "qabtn", "qalist", "qanote", "qaclear"):
+            self.assertIn('id="%s"' % box, page)
+
+    def test_ask_button_says_what_is_missing(self) -> None:
+        """没配好就说缺什么，沿用总结按钮那一套（文案 + 虚线框 + title）。
+
+        另外这里比总结多一样：输入框那一行有地方，所以按钮左边直接写出「缺 API key」，
+        不必让人把鼠标停在按钮上才知道差什么。
+        """
+        self.assertIn('id="qamiss"', self.html)
+        m = re.search(r"function updateAskButton\(.*?\n\}", _page_script(), re.S)
+        self.assertIsNotNone(m, "找不到 updateAskButton")
+        body = m.group(0)
+        self.assertIn("modelReady(", body)
+        self.assertIn("先配模型", body)
+        self.assertIn("off", body)
+        self.assertIn("qamiss", body)
+        self.assertIn("missing.join", body)
+
+    def test_every_question_is_a_paid_call(self) -> None:
+        """每次提问都是一次计费调用，界面上必须说清楚，而且常驻。
+
+        这句是价格标签，不是免责声明：用户隔一会儿来问一句，只在第一次弹的
+        提示等于没说过。
+        """
+        page = self.html
+        self.assertIn("每点一次「提问」都真的调一次模型服务", page)
+        self.assertIn("按你填的那家计费", page)
+        self.assertIn("最近 6 轮", page)
+
+    def test_conversation_is_local_only(self) -> None:
+        """对话只存浏览器：没有账号，也就不该有第二份。"""
+        page = self.html
+        self.assertIn("asr-polish:qa:v1:", page)
+        self.assertNotIn("/api/qa", page)          # 没有把对话交给后端存
+
+    def test_ask_never_runs_on_page_load(self) -> None:
+        """打开页面、切任务、切分 P 都不许顺手调模型。"""
+        s = _page_script()
+        for fn in ("renderDoc", "switchTo", "selectPart", "renderQa"):
+            m = re.search(r"function " + fn + r"\(.*?\n\}", s, re.S)
+            self.assertIsNotNone(m, "找不到 " + fn)
+            self.assertNotIn("askQuestion(", m.group(0), fn + " 里不该调模型")
+        # 只有两处会发问：示例问题、输入框提交
+        self.assertEqual(s.count("askQuestion("), 3)   # 定义 1 + 调用 2
+
+    def test_switching_part_repaints_the_conversation(self) -> None:
+        """多分 P：每篇一份对话，切到哪篇看哪篇。"""
+        m = re.search(r"function selectPart\(.*?\n\}", _page_script(), re.S)
+        self.assertIn("renderQa()", m.group(0))
+        m = re.search(r"function switchTo\(.*?\n\}", _page_script(), re.S)
+        self.assertIn('$("#qa").hidden = true', m.group(0))
+
+    def test_stale_conversation_is_checked_against_the_text(self) -> None:
+        """拿着旧对话配新字幕，比没有对话更糟：问题问的是旧内容。"""
+        m = re.search(r"function renderQa\(.*?\n\}", _page_script(), re.S)
+        self.assertIsNotNone(m, "找不到 renderQa")
+        self.assertIn("summarySig(", m.group(0))
+
+    def test_answer_without_anchors_says_so(self) -> None:
+        """一条有效出处都没有时明说，不能悄悄摆得和有出处的一样可信。"""
+        s = _page_script()
+        m = re.search(r"function answerEl\(.*?\n\}", s, re.S)
+        self.assertIsNotNone(m, "找不到 answerEl")
+        body = m.group(0)
+        self.assertIn("本次回答没有可验证的出处，仅供参考。", body)
+        self.assertIn("!valid", body)
+
+    def test_part_without_time_warns_at_the_top(self) -> None:
+        """没有逐句时间的篇：说明在顶上、常驻，而且一个锚点都不给。"""
+        page = self.html
+        self.assertIn("这一篇没有逐句时间戳，回答无法定位到视频", page)
+        # 说明在对话列表之前：读到回答的最后才发现「定位不了」，等于白读
+        self.assertLess(page.index('id="qanote"'), page.index('id="qalist"'))
+        body = re.search(r"function answerEl\(.*?\n\}", _page_script(), re.S).group(0)
+        self.assertIn("!part.hasTime", body)       # 无时间的篇原样留方括号、不画锚点
+        self.assertIn("if (part.hasTime && !valid)", body)
+
+    def test_empty_conversation_offers_examples(self) -> None:
+        s = _page_script()
+        m = re.search(r"var QA_SUG = \[(.*?)\];", s, re.S)
+        self.assertIsNotNone(m, "找不到示例问题")
+        self.assertEqual(len(re.findall(r'"', m.group(1))), 6)   # 三句
+        self.assertIn("这篇主要讲了什么？", m.group(1))
+        m = re.search(r"function renderSuggestions\(.*?\n\}", s, re.S)
+        self.assertIn("askQuestion(", m.group(0))
+
+    def test_summary_and_ask_anchors_do_not_share_click_state(self) -> None:
+        """两边各自的「第二次点击」要分开记。
+
+        混在一起时：在总结里点过 01:03，再到问答里点同一个 01:03，会直接跳视频
+        而不是先回到那一段——一次点击干了两件事。
+        """
+        m = re.search(r"function anchorEl\(.*?\n\}", _page_script(), re.S)
+        body = m.group(0)
+        self.assertIn("scope", body)
+        self.assertIn("S.sumAnchor = key", body)
+        # 问答那边必须传自己的作用域
+        s = _page_script()
+        self.assertIn('anchorEl(r, part, "qa")', s)
+
 
 @unittest.skipUnless(_NODE, "没有 node，跳过前端逻辑测试")
 class ReaderLogicTest(unittest.TestCase):
@@ -782,6 +897,82 @@ class ReaderLogicTest(unittest.TestCase):
     def test_writing_a_summary_does_not_mutate_the_input(self) -> None:
         self.assertEqual(self.d["sumWrite"]["parts"]["b.srt"]["sig"], "9:9:新|新")
         self.assertEqual(self.d["sumWriteLeavesOrig"], "2:9:x|y")
+
+    # ── 单篇问答 ──────────────────────────────────────
+    def test_citation_split_only_takes_bracketed_stamps(self) -> None:
+        """只认方括号里的 [分:秒]。
+
+        裸的 12:34 在回答里可能是比例、比数、页码；认错了就是给一句普通的话
+        配了个跳转，比没有锚点更误导人。
+        """
+        self.assertEqual(self.d["citesPlain"], [{"text": "没有时间的一句话"}])
+        one = self.d["citesOne"]
+        self.assertEqual(one[1]["raw"], "[01:03]")
+        self.assertEqual(one[1]["t"], 63)
+        self.assertEqual(one[0]["text"], "先装 Python ")
+        # 两句引用挨着写也要各算各的
+        self.assertEqual([r["t"] for r in self.d["citesAdjacent"]], [63, 70])
+        self.assertEqual(self.d["citesHms"][1]["t"], 3725)
+        # 不是时间的方括号原样留着，不许被当成引用切走
+        self.assertEqual(self.d["citesJunk"], [{"text": "[abc] 和 [12:34:56:78]"}])
+        self.assertEqual(self.d["citesEmpty"], [])
+
+    def test_answer_citations_are_checked_against_real_segments(self) -> None:
+        """模型给的时间要拿真实段首核一遍，对不上的不给锚点。"""
+        runs = self.d["linesOk"][0]["runs"]
+        cites = [r for r in runs if r.get("cite")]
+        self.assertEqual([c["idx"] for c in cites], [0, 1])
+        made_up = [r for r in self.d["linesMadeUp"][0]["runs"] if r.get("cite")]
+        self.assertEqual([r["idx"] for r in made_up], [-1, -1])   # 00:00 和 07:12
+        # 空行保留成段落间隔，两段之间不能粘成一段
+        self.assertTrue(self.d["linesMadeUp"][1]["blank"])
+        self.assertEqual([r["idx"] for r in self.d["linesMadeUp"][2]["runs"]
+                          if r.get("cite")], [0])
+
+    def test_answer_on_a_part_without_time_never_anchors(self) -> None:
+        """这一篇本来没有逐句时间：模型硬给一个也一律无出处。"""
+        runs = self.d["linesNoTime"][0]["runs"]
+        cites = [r for r in runs if r.get("cite")]
+        self.assertEqual(len(cites), 1)
+        self.assertEqual(cites[0]["idx"], -1)
+
+    def test_ask_source_reuses_the_summary_assembler(self) -> None:
+        """正文只有一份拼法：问答用的就是 buildSummarySource 的结果。
+
+        唯一的差别是摘掉总结那句「所有要点的 t 请写成 null」——问答没有「要点」，
+        那句话混在正文里会被当成原文。摘掉之后「这一篇没有时间」由服务端提示词说。
+        """
+        p1 = self.d["askSrcP1"]
+        self.assertTrue(p1["hasTime"])
+        self.assertTrue(p1["text"].startswith("[01:03] "), p1["text"][:20])
+        asr = self.d["askSrcAsr"]
+        self.assertFalse(asr["hasTime"])
+        self.assertNotIn("t 请写成 null", asr["text"])
+        self.assertTrue(asr["text"].startswith("第一段"), asr["text"][:20])
+
+    def test_conversation_store_is_per_part(self) -> None:
+        store = self.d["qaStore"]
+        # 空的（msgs 是空数组）和坏的（msgs 不是数组）都不占位
+        self.assertEqual(sorted(store["parts"]), ["a.srt"])
+        # 只有「问」没有「答」的那一轮要丢掉：半截对话喂不回模型
+        self.assertEqual([m["q"] for m in store["parts"]["a.srt"]["msgs"]], ["问1"])
+        self.assertEqual(store["parts"]["a.srt"]["msgs"][0]["a"], "答1 [01:03]")
+        self.assertEqual(self.d["qaKeyName"], "asr-polish:qa:v1:T-test")
+
+    def test_bad_conversation_stores_fall_back(self) -> None:
+        for store in self.d["qaBad"]:
+            self.assertEqual(store, {"v": 1, "parts": {}}, store)
+
+    def test_clearing_keeps_the_other_parts(self) -> None:
+        """「清空对话」清的是当前这一篇，不是全部。"""
+        cleared = self.d["qaClear"]
+        self.assertEqual(sorted(cleared["parts"]), ["b.srt"])
+        self.assertEqual(cleared["parts"]["b.srt"]["msgs"][0]["q"], "q2")
+
+    def test_writing_a_conversation_does_not_mutate_the_input(self) -> None:
+        written = self.d["qaWrite"]
+        self.assertIn("d.srt", written["parts"])
+        self.assertEqual(written["parts"]["a.srt"]["msgs"][0]["q"], "旧问")
 
 
 if __name__ == "__main__":

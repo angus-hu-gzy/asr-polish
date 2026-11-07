@@ -341,6 +341,57 @@ function main() {
     sumWrite: api.withSum(sumStore, "b.srt",
       { sig: "9:9:新|新", at: "", model: "", summary: { tldr: "新的", points: [], concepts: [] } }),
     sumWriteLeavesOrig: sumStore.parts["b.srt"].sig,
+
+    // ── 单篇问答 ────────────────────────────────────
+    qaKeyName: api.qaKey("T-test"),
+    // 只认方括号：一句普通的话不许被切成引用
+    citesPlain: api.splitCites("没有时间的一句话"),
+    citesOne: api.splitCites("先装 Python [01:03]，再配 PATH"),
+    citesAdjacent: api.splitCites("[01:03][01:10]"),
+    citesHms: api.splitCites("在 [1:02:05] 那里"),
+    // 不是时间的方括号原样留着：[abc] 不是时间，[12:34:56:78] 也不是
+    citesJunk: api.splitCites("[abc] 和 [12:34:56:78]"),
+    citesEmpty: api.splitCites(""),
+
+    // 引用核对：能对上的给 idx，编出来的 idx 是 -1
+    linesOk: api.answerLines(
+      "先装 Python [01:03]，再配 PATH [01:10]。", fullMulti.parts[1].segments, true),
+    linesMadeUp: api.answerLines(
+      "开头 [00:00]，编的 [07:12]。\n\n第二段 [01:03]",
+      fullMulti.parts[1].segments, true),
+    // 这一篇本来没有逐句时间：模型给了时间也一律无出处
+    linesNoTime: api.answerLines(
+      "先装 Python [01:03]。", fullAsr.parts[0].segments, false),
+
+    // 问答的正文：和总结同一份，但摘掉了「所有要点的 t 请写成 null」那句
+    askSrcP1: api.buildAskSource(fullMulti, 1),
+    askSrcAsr: api.buildAskSource(fullAsr, 0),
+
+    qaStore: api.parseQaStore(JSON.stringify({
+      v: 1,
+      parts: {
+        "a.srt": { sig: "2:9:x|y", at: "2026-11-06 13:00", model: "m",
+                   msgs: [{ q: "问1", a: "答1 [01:03]", at: "2026-11-06 13:00" },
+                          { q: "  ", a: "空问题" },
+                          "不是对象",
+                          { q: "问2" }] },
+        "b.srt": { msgs: "不是数组" },
+        "c.srt": { sig: "1:1:a|b", msgs: [] },
+      },
+    })),
+    qaBad: [api.parseQaStore("{oops"), api.parseQaStore("[1,2]"),
+            api.parseQaStore('{"v":1,"parts":[]}')],
+    qaOfA: api.qaOf(api.parseQaStore(JSON.stringify({
+      v: 1, parts: { "a.srt": { sig: "s", msgs: [{ q: "问", a: "答" }] } },
+    })), "a.srt"),
+    qaWrite: api.withQa(api.parseQaStore(JSON.stringify({
+      v: 1, parts: { "a.srt": { sig: "s", msgs: [{ q: "旧问", a: "旧答" }] } },
+    })), "d.srt", { sig: "9:9:x|y", msgs: [{ q: "q", a: "a" }] }),
+    // 清空只清这一篇：别的篇的上下文不能被顺手删掉
+    qaClear: api.withoutQa(api.parseQaStore(JSON.stringify({
+      v: 1, parts: { "a.srt": { sig: "s", msgs: [{ q: "q", a: "a" }] },
+                       "b.srt": { sig: "t", msgs: [{ q: "q2", a: "a2" }] } },
+    })), "a.srt"),
   };
   process.stdout.write(JSON.stringify(out));
 }

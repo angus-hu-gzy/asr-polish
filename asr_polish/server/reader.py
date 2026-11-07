@@ -169,6 +169,9 @@ input[type=text]::placeholder{color:var(--placeholder)}
 /* 「先配模型」和「总结」字数差三个，不固定宽度的话填完配置的一瞬间左边的
    搜索框会跟着变宽——为了一次状态变化抖一下版面，不值得。 */
 .sumbtn{min-width:80px;text-align:center}
+/* 「问答」只有两个字，也钉一下宽度：它在「总结」右边，那边一改字数这边就挪，
+   两个按钮的相对位置每次都得重新找。 */
+.askbtn{min-width:60px;text-align:center}
 
 /* ── 进度 ─────────────────────────────────────────── */
 #run{max-width:940px;margin:0 auto;padding:0 20px 12px}
@@ -419,19 +422,21 @@ mark.cur{background:var(--mark-cur);color:var(--mark-cur-ink);
 .summary .cl b{color:var(--note-strong);font-weight:600}
 .summary .cl span{color:var(--muted)}
 /* 锚点：一个小时间按钮。能点的悬停变主色；无出处的就是个灰字，不给手型、
-   也不给悬停反馈——看起来能点却点不动，比看起来不能点更让人恼火。 */
-.summary .anchor{
+   也不给悬停反馈——看起来能点却点不动，比看起来不能点更让人恼火。
+   总结和问答共用这一套：同一个「时间是不是真的」的判断，长成一样最省事。 */
+.summary .anchor,.qa .anchor{
   display:inline-block;margin-left:8px;padding:0 5px;border-radius:5px;
   border:1px solid var(--line);background:var(--panel);vertical-align:1px;
   font:11.5px/1.7 ui-monospace,Consolas,monospace;color:var(--faint);
   font-variant-numeric:tabular-nums;cursor:pointer;
 }
-.summary .anchor:hover{border-color:var(--accent-line);color:var(--accent);
-  background:var(--accent-glow)}
-.summary .anchor.none{border-color:transparent;background:none;cursor:default;
-  color:var(--faint)}
-.summary .anchor.none:hover{color:var(--faint);background:none;border-color:transparent}
-.summary .note{
+.summary .anchor:hover,.qa .anchor:hover{border-color:var(--accent-line);
+  color:var(--accent);background:var(--accent-glow)}
+.summary .anchor.none,.qa .anchor.none{border-color:transparent;background:none;
+  cursor:default;color:var(--faint)}
+.summary .anchor.none:hover,.qa .anchor.none:hover{color:var(--faint);
+  background:none;border-color:transparent}
+.summary .note,.qa .note{
   margin:0 0 12px;padding:8px 11px;border-radius:8px;font-size:12.5px;
   line-height:1.75;background:var(--warn-bg);border:1px solid var(--warn-line);
   color:var(--note-strong);
@@ -439,6 +444,56 @@ mark.cur{background:var(--mark-cur);color:var(--mark-cur-ink);
 .summary .s-empty{font-size:13px;color:var(--muted);line-height:1.9}
 .summary .s-err{font-size:13px;line-height:1.85;color:var(--bad);word-break:break-word}
 .summary .s-err .fix{display:block;margin-top:7px;color:var(--muted);font-size:12.5px}
+
+/* 问答：和总结同一块地方、同一种排法——正文上方、流内展开，不盖住正文。
+   两处差别是它比总结长得多，所以对话列表自己有最大高度，超过就在框里滚；
+   不设的话问上十轮，正文会被顶到三屏以外，「问答区」变成了「问答页」。 */
+.qa{
+  max-width:46em;margin:0 auto 22px;background:var(--panel);
+  border:1px solid var(--line);border-radius:11px;padding:13px 15px 15px;
+  box-shadow:var(--shadow);
+}
+.qa[hidden]{display:none}
+.qa .qh{display:flex;align-items:center;gap:9px;margin-bottom:10px}
+.qa h3{margin:0;font-size:13.5px;font-weight:600}
+.qa .sp{flex:1}
+.qa .qstat{font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums}
+/* 没有逐句时间那一篇的说明放在顶上，常驻：它不是每条回答的脚注，是这一篇的
+   前提。放在回答下面的话，读完一整段才发现「定位不了」，等于白读。 */
+.qa .qanote{
+  margin:0 0 12px;padding:8px 11px;border-radius:8px;font-size:12.5px;
+  line-height:1.75;background:var(--warn-bg);border:1px solid var(--warn-line);
+  color:var(--note-strong);
+}
+.qa .qalist{max-height:52vh;overflow:auto;margin:0 0 11px}
+.qa .turn{margin:0 0 15px}
+.qa .turn:last-child{margin-bottom:0}
+.qa .q{margin:0 0 6px;font-size:13px;line-height:1.7;color:var(--muted)}
+.qa .q b{margin-right:7px;font-weight:600;color:var(--note-strong)}
+.qa .a{font-size:14px;line-height:1.85;color:var(--sub);word-break:break-word}
+.qa .a p{margin:0 0 7px}
+.qa .a p:last-child{margin-bottom:0}
+/* 回答下方那句「没有可验证的出处」比总结里的提示更该显眼一点：它说的是
+   「这一段话别当真」，而不是「这里有点小问题」。 */
+.qa .a .note{margin:9px 0 0}
+.qa .qasug{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 11px}
+.qa .sug{border:1px dashed var(--line);background:var(--panel);border-radius:999px;
+  padding:4px 11px;font-size:12.5px;color:var(--muted)}
+.qa .sug:hover{border-color:var(--accent-line);color:var(--accent);
+  background:var(--accent-glow)}
+.qa .qaf{margin:0}
+.qa .qaf input{background:var(--field);border-color:transparent}
+.qa .qaf input:focus{background:var(--panel);border-color:var(--accent-line)}
+/* 缺什么就写在按钮左边。总结button那边是靠 title 说的（顶栏没有位置），
+   这里面一行有地方，写出来比让人把鼠标停在按钮上强。 */
+.qa .qmiss{font-size:12px;color:var(--warn);white-space:nowrap}
+/* 价格标签：每点一次就是一次计费调用。这句必须常驻，不能只在首次提示——
+   用户是隔一会儿来问一句的，提示过就消失的写法等于没说过。 */
+.qa .qcost{margin:9px 0 0;font-size:12px;line-height:1.75;color:var(--faint)}
+.qa .qempty{font-size:13px;color:var(--muted);line-height:1.9}
+.qa .qbusy{font-size:13px;color:var(--muted);padding:4px 0}
+.qa .qerr{font-size:13px;line-height:1.85;color:var(--bad);word-break:break-word}
+.qa .qerr .fix{display:block;margin-top:7px;color:var(--muted);font-size:12.5px}
 
 /* 失败明细 */
 .fails{margin:26px 0 0;border-top:1px solid var(--line);padding-top:18px}
@@ -482,6 +537,8 @@ mark.cur{background:var(--mark-cur);color:var(--mark-cur-ink);
             title="配置模型服务：总结要用它。三样只存在这个浏览器里">⚙ 模型</button>
     <button class="btn sm off sumbtn" id="sumbtn" type="button"
             title="先在设置里填服务地址、模型名、API key">先配模型</button>
+    <button class="btn sm askbtn" id="askbtn" type="button" disabled
+            title="就这一篇提问。回答里的每条事实都要带原文时间，点时间能回到原文">问答</button>
     <button class="btn sm themetog" id="themebtn" type="button">🌙 夜间</button>
   </div>
   <div id="run" hidden>
@@ -550,6 +607,30 @@ mark.cur{background:var(--mark-cur);color:var(--mark-cur-ink);
     <div id="sumbody"></div>
   </div>
 
+  <div class="qa" id="qa" hidden>
+    <div class="qh">
+      <h3 id="qah">这一篇的问答</h3>
+      <span class="sp"></span>
+      <span class="qstat" id="qastat"></span>
+      <button class="btn sm" id="qaclear" type="button"
+              title="只清掉这一篇的对话，别的篇不动；清完再提问就是新对话">清空对话</button>
+      <button class="pbtn" id="qaclose" type="button" title="收起问答">✕</button>
+    </div>
+    <div class="qanote" id="qanote" hidden></div>
+    <div class="qalist" id="qalist"></div>
+    <div class="qasug" id="qasug" hidden></div>
+    <form class="qaf" id="qaf" autocomplete="off">
+      <input id="qain" type="text" spellcheck="false"
+             placeholder="就这一篇问点什么，回答会标出原文时间…">
+      <span class="qmiss" id="qamiss" hidden></span>
+      <button class="btn sm primary" id="qabtn" type="submit">提问</button>
+    </form>
+    <p class="qcost">
+      每点一次「提问」都真的调一次模型服务，按你填的那家计费——刷新之后重问也要再花一次。
+      只把最近 6 轮带过去，更早的留在页面上、不发。
+    </p>
+  </div>
+
   <div class="marksbox" id="marksbox" hidden>
     <div class="mh">
       <h3 id="mkh">重点</h3>
@@ -611,7 +692,10 @@ var S = { id:null, timer:null, tick:null, startedAt:0, marks:[], cur:-1,
           posArmed:false, transcript:null, gen:0,
           /* 总结这一层的临时状态。sumMem 是内存里的那份缓存：localStorage
              写不进去时（隐私模式）这一页仍然要能看，不能存一遍就消失。 */
-          sumBusy:false, sumErr:null, sumMem:null, sumAnchor:"", sumWarned:false };
+          sumBusy:false, sumErr:null, sumMem:null, sumAnchor:"", sumWarned:false,
+          /* 问答这一层。qaMem 和 sumMem 同一个用途：localStorage 写不进去时，
+             这一页里问过的必须还看得见。 */
+          qaBusy:false, qaErr:null, qaMem:null, qaWarned:false };
 
 /* ── 小工具 ──────────────────────────────────────── */
 function el(tag, cls, text){
@@ -701,7 +785,10 @@ function switchTo(id, note){
   $("#tools").hidden = true;
   $("#marksbox").hidden = true;        // 换任务了，重点列表先收起来
   $("#summary").hidden = true;         // 总结是按任务存的，别把上一条的摆在眼前
+  $("#qa").hidden = true;              // 对话同理：上一条任务的问答不能留在新页面上
   S.sumMem = {}; S.sumErr = null; S.sumAnchor = "";
+  S.qaMem = {}; S.qaErr = null; S.qaBusy = false;
+  updateAskEntry();
   if (note) notice("ok", note, "");
   poll();
 }
@@ -888,6 +975,9 @@ function selectPart(i, scroll){
   if (q) runSearch(q, true);
   // 总结是按篇存的：切到哪一篇就看哪一篇，没做过的显示「还没生成」。
   if (!$("#summary").hidden) renderSummary();
+  // 对话也一样：每篇一份，切篇就换一份。旧请求回来时会存回它自己那一篇，
+  // 所以这里只管画当前这一篇。
+  if (!$("#qa").hidden) renderQa();
 }
 
 /* 统计只算当前这一篇。多分 P 时若把各篇加起来，屏幕上摆着 8 段，
@@ -959,6 +1049,7 @@ function renderDoc(d, task){
     notice(meta[1], meta[0], d.hint || "没有可显示的内容");
     $("#exportFull").disabled = true;   // 没有正文就不给导出，别让人下个空文件
     updateSumButton();
+    updateAskEntry();                  // 没有正文，问答入口也点不动
     if (r.parts_truncated) {
       notice("warn", "分 P 被截断", "这条合集共 " + (r.parts_truncated + (r.parts_written||0)) +
              " 个分 P，按单条上限只取了一部分。要全取请用命令行带 max_parts=0 或走任务面板。");
@@ -1043,6 +1134,7 @@ function renderDoc(d, task){
   $("#tools").hidden = false;
   $("#exportFull").disabled = false;
   updateSumButton();                 // 有正文了，总结才可能点得动
+  updateAskEntry();                  // 问答入口同理
   renderFailures(r, task);
   restoreMarks();
   // 带 ?q= 进来的是「我要搜这个词」，位置让位给搜索：搜索要跳到第一处命中，
@@ -1780,16 +1872,25 @@ function errFix(kind){
   if (kind === "rate")
     return "等几分钟再点，顺便看看账号额度。";
   if (kind === "parse")
-    return "换个指令跟随好一些的模型再试——这一位没按 JSON 输出。";
+    return "换个指令跟随好一些的模型再试——这一位没按格式输出。";
+  // 「model」这一支是提供方那边出的错（5xx、或者 4xx 但不是 key/限流/地址）。
+  // 原来这里返回空串，界面上就只剩一句错误原文，用户不知道下一步该做什么。
+  if (kind === "model")
+    return "按上面那句原因判断：服务那边出问题就过一会儿再试；"
+         + "说不支持这个模型或参数就换一个。";
   return "";
 }
 
-function anchorEl(r, part){
+/* 一个锚点按钮。`scope` 分隔「谁点了它」：总结和问答共用这一段，但两者各自
+   记自己上一次点的是哪一个——混在一起的话，在总结里点过 01:03、再到问答里点
+   01:03，会直接跳视频，而不是先回到那一段。 */
+function anchorEl(r, part, scope){
   var ok = r.idx >= 0;
   var label = ok ? fmt(part.segments[r.idx].start)
                  : (r.t == null ? "无出处" : fmt(r.t));
   var b = el("button", "anchor" + (ok ? "" : " none"), label);
   b.type = "button";
+  var key = (scope || "sum") + ":" + label + "@" + r.idx;
   if (!ok){
     b.title = r.t == null
       ? "这条要点没有时间戳：模型没给，或者这一篇本来就没有逐句时间"
@@ -1806,11 +1907,11 @@ function anchorEl(r, part){
       return;
     }
     // 已经落在这儿了，再点一次才是「去视频里看」——一次点击不该同时干两件事
-    if (S.sumAnchor === label + "@" + r.idx){
+    if (S.sumAnchor === key){
       if (cue._jump) showPlayer(cue._meta, cue._start);
       return;
     }
-    S.sumAnchor = label + "@" + r.idx;
+    S.sumAnchor = key;
     focusCue(cue);
   });
   return b;
@@ -2016,14 +2117,16 @@ $("#modelsave").addEventListener("click", function(){
     ? "已保存，只在这个浏览器里。"
     : "存不进浏览器（隐私模式或禁用了站点数据）：这次能用，刷新就没了。";
   updateSumButton();
+  updateAskButton();                 // 填完配置，两个入口一起活过来
   if (ok) setTimeout(function(){ openModelBox(false) }, 700);
 });
 
 $("#modelclear").addEventListener("click", function(){
   lsDel(modelKey());
   $("#mbase").value = ""; $("#mname").value = ""; $("#mkey").value = "";
-  $("#modelnote").textContent = "已清除。总结按钮会重新变灰。";
+  $("#modelnote").textContent = "已清除。总结和提问都会回到「先配模型」。";
   updateSumButton();
+  updateAskButton();
 });
 
 $("#sumbtn").addEventListener("click", function(){
@@ -2048,6 +2151,428 @@ $("#sumbtn").addEventListener("click", function(){
 
 $("#sumclose").addEventListener("click", function(){ $("#summary").hidden = true });
 $("#sumregen").addEventListener("click", function(){ generateSummary() });
+
+
+/* ── 单篇问答（学习工作台第 2 层）───────────────────── */
+/* 比第 1 层多一样东西：上下文。所以除了「回答必须带出处」，还要回答三个问题——
+   历史存哪、带几轮过去、字幕变了怎么办。
+
+   规矩和第 1 层一样：**没有出处的话不当权威**。模型给的时间一律拿去和真实的
+   段首核对，对不上的灰着、点不动；一条都对不上，就在回答下面明说。
+
+   历史只存浏览器，按「任务 + 分 P 名」分组，和划重点、读位、总结一个路数。 */
+
+var QA_PREFIX = "asr-polish:qa:v1:";
+/* 和服务端 qa.MAX_ROUNDS 对齐。两边各裁一次是有意的：前端裁是为了请求别太大，
+   服务端裁是为了账单别失控——前端是可以被绕过去的，账单不是。 */
+var QA_ROUNDS = 6;
+/* 示例问题。空对话最难开头，给三个能直接点的，省掉「我该问什么」这一步。 */
+var QA_SUG = ["这篇主要讲了什么？", "作者给的步骤是什么？", "他最强调的一点是什么？"];
+
+function qaKey(taskId){ return QA_PREFIX + taskId }
+
+/* 把一段回答切成「文字 / 时间引用」两种片段。纯函数。
+   只认方括号里的 [分:秒]：裸的 12:34 在回答里可能是比例、比数、页码，误伤的
+   代价是给一句普通的话配了个跳转；而提示词已经要求模型用方括号。
+   秒数换算复用 parseStamp——和总结那边同一套，不另写一份。 */
+var CITE_RE = /\[(\d{1,3}(?::\d{2}){1,2})\]/g;
+
+function splitCites(text){
+  var out = [], last = 0, m;
+  text = String(text == null ? "" : text);
+  CITE_RE.lastIndex = 0;
+  while ((m = CITE_RE.exec(text)) !== null){
+    if (m.index > last) out.push({ text: text.slice(last, m.index) });
+    out.push({ cite:true, raw:m[0], t:parseStamp(m[1]) });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push({ text: text.slice(last) });
+  return out;
+}
+
+/* 回答 → 一行行「片段」。核对就在这一步做完：这条引用对得上第几段，这里定。
+   纯函数，测试直接断言 idx；DOM 由 answerEl 拼。
+
+   这一篇本来没有逐句时间（必剪 ASR / 纯文本）时，模型就算给了时间也一律
+   idx = -1——它不可能知道，给了就是编的。 */
+function answerLines(answer, segs, hasTime, tol){
+  var out = [];
+  String(answer == null ? "" : answer).split(/\r?\n/).forEach(function(line){
+    line = line.replace(/\s+$/, "");
+    if (!line){ out.push({ blank:true, runs:[] }); return }
+    var runs = splitCites(line).map(function(r){
+      if (!r.cite) return { text: r.text };
+      var idx = (hasTime && r.t != null) ? matchStamp(segs, r.t, tol) : -1;
+      return { cite:true, raw:r.raw, t:r.t, idx:idx };
+    });
+    out.push({ blank:false, runs:runs });
+  });
+  return out;
+}
+
+/* 对话的存法：{v:1, parts:{"<分 P 名>": {sig, at, model, msgs:[{q,a,at}]}}}
+   解析态度和 parseSumStore 一样：坏 JSON、条目缺 msgs、msgs 不是数组，都当
+   没存过；单条脏数据只丢它自己，不能一条坏数据废掉整段会话。 */
+function parseQaStore(raw){
+  var empty = { v:1, parts:{} };
+  if (!raw) return empty;
+  try {
+    var d = JSON.parse(raw);
+    if (!d || typeof d !== "object") return empty;
+    var src = d.parts;
+    if (!src || typeof src !== "object"
+        || Object.prototype.toString.call(src) === "[object Array]") return empty;
+    var parts = {};
+    for (var k in src){
+      if (!Object.prototype.hasOwnProperty.call(src, k)) continue;
+      var it = src[k];
+      if (!it || typeof it !== "object") continue;
+      var msgs = it.msgs;
+      if (Object.prototype.toString.call(msgs) !== "[object Array]") continue;
+      var rows = [];
+      for (var i = 0; i < msgs.length; i++){
+        var m = msgs[i];
+        if (!m || typeof m.q !== "string" || typeof m.a !== "string") continue;
+        if (!m.q.replace(/\s/g, "") || !m.a.replace(/\s/g, "")) continue;
+        rows.push({ q: m.q, a: m.a, at: typeof m.at === "string" ? m.at : "" });
+      }
+      if (!rows.length) continue;
+      parts[k] = {
+        sig: typeof it.sig === "string" ? it.sig : "",
+        at:  typeof it.at  === "string" ? it.at  : "",
+        model: typeof it.model === "string" ? it.model : "",
+        msgs: rows
+      };
+    }
+    return { v:1, parts: parts };
+  } catch(e){ return empty }
+}
+
+function qaOf(store, name){
+  if (!store || !store.parts || !name) return null;
+  return store.parts[name] || null;
+}
+
+/* 读-改-写不碰传进来的对象：中间抛了，半截数据不该流回去（同 withPos / withSum）。 */
+function withQa(store, name, item){
+  var out = {};
+  var src = (store && store.parts) || {};
+  for (var k in src){
+    if (Object.prototype.hasOwnProperty.call(src, k)) out[k] = src[k];
+  }
+  out[name] = item;
+  return { v:1, parts: out };
+}
+
+/* 清空只要「去掉这一篇」。别的篇的对话是别的上下文，一并清掉等于顺手把人家
+   在第二篇问的东西删了，而这个按钮写的是「清空对话」，不是「清空全部」。 */
+function withoutQa(store, name){
+  var out = {};
+  var src = (store && store.parts) || {};
+  for (var k in src){
+    if (Object.prototype.hasOwnProperty.call(src, k) && k !== name) out[k] = src[k];
+  }
+  return { v:1, parts: out };
+}
+
+/* ── 问答：读写与渲染 ─────────────────────────────── */
+
+function qaItemFor(name){
+  if (!name) return null;
+  if (S.qaMem && S.qaMem[name]) return S.qaMem[name];
+  return qaOf(parseQaStore(lsRead(qaKey(S.id))), name);
+}
+
+function saveQaItem(name, item){
+  if (!name) return false;
+  if (!S.qaMem) S.qaMem = {};
+  S.qaMem[name] = item;
+  if (!S.id) return false;
+  var ok = lsWrite(qaKey(S.id),
+                   JSON.stringify(withQa(parseQaStore(lsRead(qaKey(S.id))), name, item)));
+  if (!ok && !S.qaWarned){
+    S.qaWarned = true;
+    notice("warn", "对话存不进浏览器",
+      "这个浏览器不允许页面写 localStorage（隐私模式，或禁用了站点数据）。"
+      + "这一段对话在这一页里照常看，但刷新就没了。");
+  }
+  return ok;
+}
+
+/* 发给问答的正文：本体和总结一模一样（同一个 buildSummarySource：按行对齐、行首补
+   [分:秒]），只摘掉它给总结加的那句「所有要点的 t 请写成 null」。
+
+   为什么摘：问答这边没有「要点」这个概念，那句话混在正文里会被当成原文的一部分。
+   「这一篇没有逐句时间」这件事由服务端的提示词说——说的是同一件事，但用的是问答
+   的说法。不复制 buildSummarySource 的第二份：对齐规则只有一处，改也只改一处。 */
+var SUM_NO_TIME_HEAD = /^（这一篇没有逐句时间戳[^）]*）\n\n/;
+
+function buildAskSource(full, i){
+  var src = buildSummarySource(full, i);
+  if (!src.hasTime) src.text = src.text.replace(SUM_NO_TIME_HEAD, "");
+  return src;
+}
+
+/* 一条回答。返回节点；顺带把「有没有有效出处」这件事办掉。
+   没有时间戳的篇不画灰字锚点——满屏「无出处」会让人以为功能坏了，而真原因
+   在问答区顶上那条常驻说明里。 */
+function answerEl(text, part){
+  var ans = el("div", "a");
+  var segs = part.segments || [];
+  var lines = answerLines(text, segs, !!part.hasTime);
+  var valid = 0;
+  lines.forEach(function(ln){
+    if (ln.blank) return;               // 空行只当段落间隔，段间距已经有
+    var p = el("p");
+    ln.runs.forEach(function(r){
+      if (!r.cite){ p.appendChild(document.createTextNode(r.text)); return }
+      if (!part.hasTime){
+        p.appendChild(document.createTextNode(r.raw));   // 原样留着方括号，不加锚点
+        return;
+      }
+      if (r.idx >= 0) valid++;
+      p.appendChild(anchorEl(r, part, "qa"));
+    });
+    ans.appendChild(p);
+  });
+  if (part.hasTime && !valid){
+    // 摆得和有出处的回答一样可信，是这个功能最不该做的事
+    ans.appendChild(el("div", "note", "本次回答没有可验证的出处，仅供参考。"));
+  }
+  return ans;
+}
+
+function renderSuggestions(show){
+  var box = $("#qasug");
+  clear(box);
+  box.hidden = !show;
+  if (!show) return;
+  QA_SUG.forEach(function(s){
+    var b = el("button", "sug", s);
+    b.type = "button";
+    b.addEventListener("click", function(){ askQuestion(s) });
+    box.appendChild(b);
+  });
+}
+
+function renderQa(){
+  var box = $("#qa");
+  if (!box || box.hidden) return;
+  var list = $("#qalist");
+  clear(list);
+  $("#qastat").textContent = "";
+  updateAskButton();
+
+  var cur = currentPart();
+  if (!cur.part){
+    $("#qah").textContent = "问答";
+    list.appendChild(el("div", "qempty", "这一篇没有正文，问不了。"));
+    renderSuggestions(false);
+    return;
+  }
+  $("#qah").textContent = "这一篇的问答"
+    + (cur.part.label ? " · " + cur.part.label : "");
+
+  // 没有逐句时间这件事写在顶上、常驻：它是这一篇的前提，不是每条回答的脚注
+  var note = $("#qanote");
+  clear(note);
+  note.hidden = !!cur.part.hasTime;
+  if (!cur.part.hasTime){
+    note.appendChild(document.createTextNode(
+      "这一篇没有逐句时间戳，回答无法定位到视频（必剪 ASR 和纯文本导出会这样）。"
+      + "内容照常答，只是不给时间锚点。"));
+  }
+
+  var item = qaItemFor(cur.part.name);
+  var rounds = (item && item.msgs) || [];
+  // 拿着旧对话配新字幕，比没有对话更糟：问题问的是旧内容，回答的引用全指错地方
+  if (item && item.sig !== summarySig(cur.part)){
+    list.appendChild(el("div", "note",
+      "字幕变过了（任务重跑过，或者这一篇被重新抓了一遍），这一段对话对不上现在的"
+      + "正文，所以不再显示。再问一句就是新的，起点从这里开始。"));
+    rounds = [];
+    $("#qastat").textContent = "缓存已失效";
+  }
+
+  rounds.forEach(function(r){
+    var t = el("div", "turn");
+    var q = el("p", "q");
+    q.appendChild(el("b", null, "问"));
+    q.appendChild(document.createTextNode(r.q));
+    t.appendChild(q);
+    t.appendChild(answerEl(r.a, cur.part));
+    list.appendChild(t);
+  });
+
+  if (S.qaBusy){
+    list.appendChild(el("div", "qbusy",
+      "正在问模型…它要把这一篇读完再回答，可能要半分钟。"));
+  }
+  if (S.qaErr && S.qaErr.part === cur.part.name){
+    var p = el("div", "qerr", S.qaErr.message);
+    var fix = S.qaErr.fix || errFix(S.qaErr.kind);
+    if (fix) p.appendChild(el("span", "fix", fix));
+    list.appendChild(p);
+  }
+
+  var empty = !rounds.length && !S.qaBusy
+           && !(S.qaErr && S.qaErr.part === cur.part.name);
+  if (empty){
+    list.appendChild(el("div", "qempty",
+      "还没问过这一篇。可以点下面这几个，也可以自己写一句——回答里的每条事实"
+      + "都会标出原文时间。"));
+  }
+  renderSuggestions(empty);
+
+  if (item && item.model) $("#qastat").textContent = item.model;
+  // 新问题在下面：滚到底，别让人以为没反应
+  list.scrollTop = list.scrollHeight;
+}
+
+/* 配好没有 → 提问按钮的样子。和总结按钮同一套做法：文案变「先配模型」、虚线框，
+   点它不是报错，是去填设置。理由也一样——灰着点不动的按钮只会让人猜「为什么」。 */
+function updateAskButton(){
+  var btn = $("#qabtn");
+  if (!btn) return;
+  var rd = modelReady(cfgNow());
+  btn.className = "btn sm" + (rd.ok ? " primary" : " off");
+  btn.textContent = rd.ok ? "提问" : "先配模型";
+  btn.disabled = !!S.qaBusy;
+  btn.title = rd.ok
+    ? "就这一篇提问。会调用设置里配的模型服务，按它那边花钱"
+    : (rd.why + "。点这里去填。");
+  var miss = $("#qamiss");
+  if (miss){
+    miss.hidden = rd.ok;
+    miss.textContent = rd.ok ? "" : ("缺" + rd.missing.join("、"));
+    miss.title = rd.why;
+  }
+}
+
+/* 顶栏那个入口：没有正文时点不动，有正文才有得问。 */
+function updateAskEntry(){
+  var btn = $("#askbtn");
+  if (!btn) return;
+  btn.disabled = !(S.transcript && S.transcript.parts
+                   && S.transcript.parts.length);
+}
+
+function openQa(open){
+  var box = $("#qa");
+  if (!box) return;
+  box.hidden = !open;
+  if (!open) return;
+  S.qaErr = null;
+  renderQa();
+  updateAskButton();
+  // 顶栏是 sticky 的：在正文中间点「问答」，不滚一下等于什么都没发生
+  if (box.scrollIntoView) box.scrollIntoView({ block: "start", behavior: "smooth" });
+}
+
+async function askQuestion(text){
+  var q = String(text == null ? "" : text).replace(/^\s+|\s+$/g, "");
+  if (!q || S.qaBusy) return;
+
+  var cur = currentPart();
+  if (!cur.part || !S.id) return;
+
+  var cfg = cfgNow();
+  var rd = modelReady(cfg);
+  if (!rd.ok){
+    // 缺配置就别发请求：发出去只会换回一句「key 无效」，白等一轮
+    openModelBox(true);
+    $("#modelnote").textContent = rd.why + "，填完再提问。";
+    return;
+  }
+
+  var name = cur.part.name;
+  var gen = S.gen;                 // 换任务了的话，这一轮的答案不属于新页面
+  var prev = qaItemFor(name);
+  // 只接得上同一份字幕的历史；sig 对不上就当新对话（和渲染那边同一条规则）
+  var rounds = (prev && prev.sig === summarySig(cur.part)) ? prev.msgs.slice() : [];
+
+  S.qaBusy = true; S.qaErr = null;
+  renderQa();
+
+  // 正文仍然出自第 1 层：buildAskSource 把纯文本按行对齐回全文，在行首补 [mm:ss]。
+  // 模型只有自己看见时间，才可能抄对。
+  var src = buildAskSource(cur.full, cur.i);
+  var res = null, thrown = null;
+  try {
+    res = await call("POST", "/api/tasks/" + encodeURIComponent(S.id) + "/ask",
+                     { model: cfg, text: src.text, hasTime: src.hasTime,
+                       question: q, history: rounds.slice(-QA_ROUNDS),
+                       part: name });
+  } catch(e){ thrown = e }
+
+  if (S.gen !== gen) return;       // 换任务了：这份回答不属于现在这一篇，连状态都别动
+  S.qaBusy = false;
+
+  if (thrown){
+    S.qaErr = { part: name, kind: "net",
+      message: "请求发不出去：这一页和本机服务断开了（" + (thrown.message || thrown) + "）。",
+      fix: "确认 asr-polish serve 还在跑，然后刷新页面重试。" };
+    renderQa();
+    return;
+  }
+  if (!res.ok){
+    // 提供方给的原因原样带出来：key 错、限流、地址不通，处理方式各不相同
+    S.qaErr = { part: name, kind: res.data.kind || "model",
+                message: res.data.error || ("HTTP " + res.code) };
+    renderQa();
+    return;
+  }
+
+  var answer = res.data.answer || "";
+  var item = { sig: summarySig(cur.part),
+               at: mdStamp(new Date()),
+               model: res.data.model || cfg.model,
+               msgs: rounds.concat([{ q: q, a: answer, at: mdStamp(new Date()) }]) };
+  saveQaItem(name, item);
+  renderQa();
+}
+
+function clearQa(){
+  var cur = currentPart();
+  if (!cur.part) return;
+  if (S.qaMem) delete S.qaMem[cur.part.name];
+  if (!S.id) return;
+  lsWrite(qaKey(S.id),
+          JSON.stringify(withoutQa(parseQaStore(lsRead(qaKey(S.id))),
+                                   cur.part.name)));
+  S.qaErr = null;
+  renderQa();
+}
+
+$("#askbtn").addEventListener("click", function(){
+  var box = $("#qa");
+  if (!box) return;
+  if (box.hidden && !(S.transcript && S.transcript.parts
+                      && S.transcript.parts.length)) return;
+  openQa(!!box.hidden);
+});
+
+$("#qaclose").addEventListener("click", function(){ openQa(false) });
+$("#qaclear").addEventListener("click", clearQa);
+
+$("#qaf").addEventListener("submit", function(ev){
+  ev.preventDefault();
+  // 正在问的时候按回车仍会提交（提交按钮 disabled 拦不住这条路径），
+  // 而输入框在下面会被清空——等于把用户刚打的那句话吃掉。先挡一下。
+  if (S.qaBusy) return;
+  // 先判配置，再判问题。顺序反过来的话，没配模型时点「先配模型」而输入框是空的，
+  // 会走到「问题还没写」那一支——按钮明明写着去配模型，点了却没反应。
+  var rd = modelReady(cfgNow());
+  if (!rd.ok){
+    openModelBox(true);
+    $("#modelnote").textContent = rd.why + "，填完再提问。";
+    return;
+  }
+  var q = $("#qain").value.replace(/^\s+|\s+$/g, "");
+  if (!q){ $("#qain").focus(); return }
+  $("#qain").value = "";
+  askQuestion(q);
+});
 
 
 /* ── 断点续读 ────────────────────────────────────── */
@@ -2521,7 +3046,15 @@ window.__reader = {
   summarySig: summarySig,
   parseSumStore: parseSumStore,
   sumOf: sumOf,
-  withSum: withSum
+  withSum: withSum,
+  qaKey: qaKey,
+  splitCites: splitCites,
+  answerLines: answerLines,
+  buildAskSource: buildAskSource,
+  parseQaStore: parseQaStore,
+  qaOf: qaOf,
+  withQa: withQa,
+  withoutQa: withoutQa
 };
 })();
 </script>
