@@ -657,8 +657,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_submit.add_argument("--server", default="http://127.0.0.1:8040",
                           help="服务地址（默认 http://127.0.0.1:8040）")
     p_submit.add_argument("-o", "--out", default="./subs", help="输出目录")
-    p_submit.add_argument("-f", "--format", default="txt",
-                          help="导出格式，逗号分隔（默认 txt）")
+    p_submit.add_argument("-f", "--format", default="srt,txt",
+                          help="导出格式，逗号分隔（默认 srt,txt：提交出去的任务"
+                               "是要在面板和阅读页打开的，没有 srt 就点不动句子）")
     p_submit.add_argument("--limit", type=int, default=0,
                           help="批量模式最多几个视频（0 = 不限）")
     p_submit.add_argument("--pages", default="all",

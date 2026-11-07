@@ -132,5 +132,34 @@ class TestNoOutputIsNotSuccess(unittest.TestCase):
         self.assertIn("一个数字都没解析出来", err)
 
 
+class TestSubmitAsksForTimeAxis(unittest.TestCase):
+    """submit 默认要带上 srt。
+
+    这条命令产出的是「服务端里的一个任务」，而那个任务是要在面板和阅读页打开
+    的。默认只给 txt，阅读页里点句子跳不动、问答也标不出锚点——界面看着像坏
+    了，原因却是提交时一个没填的字段。
+    """
+
+    def _submit(self, argv):
+        sent = {}
+
+        def fake_api(server, path, payload=None, timeout=20.0):
+            sent["payload"] = payload
+            return {"id": "T1", "status": "pending"}
+
+        with mock.patch.object(cli, "_api", fake_api), \
+                mock.patch("sys.stderr", io.StringIO()):
+            cli.main(["submit"] + argv)
+        return sent["payload"]
+
+    def test_default_includes_srt(self) -> None:
+        payload = self._submit(["BV1xx411c7mD"])
+        self.assertEqual(payload["formats"], ["srt", "txt"])
+
+    def test_explicit_format_is_respected(self) -> None:
+        payload = self._submit(["BV1xx411c7mD", "-f", "txt"])
+        self.assertEqual(payload["formats"], ["txt"])
+
+
 if __name__ == "__main__":
     unittest.main()
