@@ -576,6 +576,40 @@ class ListSearchTest(_TempNotes):
         self.assertNotIn("随手记", titles)
 
 
+class SortTest(unittest.TestCase):
+    """概念表的顺序。同一天存的一篇视频里，所有概念的日期都一样。"""
+
+    @staticmethod
+    def _c(name: str, first: str, secs: list) -> dict:
+        return {"name": name, "first": first,
+                "occ": [{"sec": s} for s in secs]}
+
+    def test_same_day_goes_by_first_mention(self) -> None:
+        """日期全相同的时候退回按名字排，等于没排：「苍穹、工程化、增删、
+        后端、Java Web」中文和拉丁字母混着来，和视频里讲的顺序毫无关系。
+        按第一次讲到的秒数排，翻概念表就是顺着那一篇读下去。"""
+        got = notes._sorted([], [self._c("苍穹外卖", "2026-11-07", [135]),
+                                 self._c("增删改查", "2026-11-07", [20]),
+                                 self._c("工程化思维", "2026-11-07", [40])])[1]
+        self.assertEqual([c["name"] for c in got],
+                         ["增删改查", "工程化思维", "苍穹外卖"])
+
+    def test_newer_day_still_comes_first(self) -> None:
+        """秒数只在同一天里比：昨天讲在第 900 秒的概念，不该压过今天第 10 秒的。"""
+        got = notes._sorted([], [self._c("旧的", "2026-11-06", [900]),
+                                 self._c("新的", "2026-11-07", [10])])[1]
+        self.assertEqual([c["name"] for c in got], ["新的", "旧的"])
+
+    def test_concepts_without_time_go_last_within_a_day(self) -> None:
+        """必剪那种篇里的概念没有秒数。同一天里排在有时刻的后面，
+        但不能因为它们没时间就整批跑到别的日子去。"""
+        got = notes._sorted([], [self._c("没时间", "2026-11-07", [None]),
+                                 self._c("有时间", "2026-11-07", [30])])[1]
+        self.assertEqual([c["name"] for c in got], ["有时间", "没时间"])
+        self.assertEqual(notes._first_sec(self._c("没时间", "2026-11-07", [None])),
+                         None)
+
+
 # --------------------------------------------------------------------------- #
 # 真的走一遍模型
 # --------------------------------------------------------------------------- #

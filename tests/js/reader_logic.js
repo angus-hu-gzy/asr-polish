@@ -501,6 +501,29 @@ function main() {
                 api.seekCueIndex([{ start: 0, end: 5 }], null),
                 api.seekCueIndex([{ start: 0, end: 5 }], NaN)],
 
+    // 容差只管「落在停顿里」那一支。总结的锚点拿不到包含它的段落时宁可不跳，
+    // 也不能跳到一段不相干的话上；包含关系成立时，离得多远都是它。
+    pickTolGapIn: api.seekCueIndex([{ start: 0, end: 5 }], 6.2, 1.5),
+    pickTolGapOut: api.seekCueIndex([{ start: 0, end: 5 }], 7, 1.5),
+    pickTolFarStart: api.seekCueIndex([{ start: 0, end: 5 }], 40, 1.5),
+    pickTolInside: api.seekCueIndex([{ start: 125, end: 137.7 },
+                                     { start: 137.92, end: 141 }], 135, 1.5),
+    pickTolNoLimit: api.seekCueIndex([{ start: 0, end: 5 }], 40),
+
+    // 句子：合并后的段落里，sec 属于哪一句、从第几个字起。
+    // 段落是「三句并成一段」，锚点给的是中间那一句的段首。
+    segOfParagraph: api.segAt([{ start: 125, end: 130.2, off: 0, len: 9 },
+                               { start: 130.2, end: 134.9, off: 9, len: 11 },
+                               { start: 134.82, end: 137.7, off: 20, len: 13 }], 134.82),
+    segOfFirst: api.segAt([{ start: 125, end: 130.2, off: 0, len: 9 },
+                           { start: 130.2, end: 134.9, off: 9, len: 11 }], 125),
+    segBetween: api.segAt([{ start: 0, end: 3, off: 0, len: 5 },
+                           { start: 8, end: 11, off: 5, len: 6 }], 5.5),
+    segSkipsNoTime: api.segAt([{ start: null, end: null, off: 0, len: 4 },
+                               { start: 3, end: 6, off: 4, len: 7 }], 4),
+    segEmpty: [api.segAt([], 1), api.segAt(null, 1),
+               api.segAt([{ start: 0, end: 5, off: 0, len: 3 }], null)],
+
     // 写一篇不动别的篇；也不改传进来的那个对象
     quizWrite: quizStoreWrite,
     quizWriteKeepsA: quizStoreWrite.parts["a.srt"] !== undefined,

@@ -376,7 +376,12 @@ def _api(server: str, path: str, payload: Optional[dict] = None,
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", "replace")
+        try:
+            body = e.read().decode("utf-8", "replace")
+        finally:
+            # 读完要关：HTTPError 本身就是一份打开着的响应，不关就等 GC 来报
+            # ResourceWarning，把真正的错误信息淹掉。
+            e.close()
         try:
             msg = json.loads(body).get("error") or body
         except ValueError:

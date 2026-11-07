@@ -218,6 +218,19 @@ class ProviderErrorTest(unittest.TestCase):
         e = summary.http_error(self._err(500, ""))
         self.assertIn("HTTP 500", e.message)
 
+    def test_the_failed_response_is_closed(self) -> None:
+        """翻译完就把响应关掉。
+
+        HTTPError 自己就是一份打开着的响应。以前只读不关，它挂在 GC 上等着被
+        回收，Python 3.13+ 每条失败都会打一条 ResourceWarning——那行噪音长得
+        像「我们自己漏了资源」，正好盖住真正的失败原因；顺带每失败一次漏一个
+        连接。这一层（总结/问答/测验/笔记四条路都走这里）失败是常事，限流尤其。
+        """
+        exc = self._err(429, '{"error":{"message":"slow down"}}')
+        fp = exc.fp
+        summary.http_error(exc)
+        self.assertTrue(fp.closed, "响应体读完了却还开着")
+
 
 class TransportTest(unittest.TestCase):
 

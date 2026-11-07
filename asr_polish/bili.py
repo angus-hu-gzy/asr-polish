@@ -706,17 +706,23 @@ def _http_json(url: str, cookie_path: Optional[str] = None,
             if resp.headers.get("Content-Encoding") == "gzip":
                 raw = gzip.decompress(raw)
     except urllib.error.HTTPError as e:
-        if e.code in (412, 429):
-            # 这两种状态码 B站会带 `Retry-After`——它自己说了「多久后可以再来」，
-            # 比我们按次数猜的 60/180/300 更准。带不出来的情况（代理改写、
-            # 网关吞掉）就交给上层按次数递增。
-            raise BiliRiskControl(
-                f"请求被 B站拦截（HTTP {e.code}）", code=e.code,
-                retry_after=parse_retry_after(e.headers)) from e
-        if e.code in (401, 403):
-            raise BiliLoginRequired(
-                f"请求被拒绝（HTTP {e.code}），Cookie 可能已失效", code=e.code) from e
-        raise BiliError(f"接口返回 HTTP {e.code}：{url.split('?')[0]}") from e
+        # HTTPError 本身就是一份打开着的响应。这一支只读头、不读体，也得关掉：
+        # 412/429 是会被反复重试的路径，每漏一个连接就多一个；而且不关会等 GC
+        # 来打一条 ResourceWarning，正好盖掉「被风控拦了」这个真正的原因。
+        try:
+            if e.code in (412, 429):
+                # 这两种状态码 B站会带 `Retry-After`——它自己说了「多久后可以再来」，
+                # 比我们按次数猜的 60/180/300 更准。带不出来的情况（代理改写、
+                # 网关吞掉）就交给上层按次数递增。
+                raise BiliRiskControl(
+                    f"请求被 B站拦截（HTTP {e.code}）", code=e.code,
+                    retry_after=parse_retry_after(e.headers)) from e
+            if e.code in (401, 403):
+                raise BiliLoginRequired(
+                    f"请求被拒绝（HTTP {e.code}），Cookie 可能已失效", code=e.code) from e
+            raise BiliError(f"接口返回 HTTP {e.code}：{url.split('?')[0]}") from e
+        finally:
+            e.close()
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         raise BiliError(
             f"请求失败（{type(e).__name__}）：{url.split('?')[0]}") from e

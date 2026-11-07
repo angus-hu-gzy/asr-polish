@@ -852,18 +852,42 @@ def upsert_concept(root: Path, c: dict, meta: dict, host: str) -> tuple[str, boo
 # INDEX
 # --------------------------------------------------------------------------- #
 
+def _first_sec(c: dict):
+    """这个概念第一次被讲到的秒数；碰不到时间戳（必剪那种篇）就给 None。
+
+    取 occ 里的第一条：追加是按时间先后，第一条就是最早那次。同一篇里两条
+    出处按「任务 + 分P」去重，所以这里拿到的一定是某一篇的段首。
+    """
+    for o in c.get("occ") or []:
+        if o.get("sec") is not None:
+            try:
+                return int(o["sec"])
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 def _sorted(videos: list[dict], concepts: list[dict]) -> tuple:
-    """按日期倒序。日期相同（同一天存的几篇）时按标题，保证每次打开顺序一致。
+    """视频按日期倒序；概念先按日期倒序，同一天的按**第一次讲到的先后**。
 
     `load_videos` / `load_concepts` 按文件名排是为了「读过一次就固定」，但那是
     文件系统顺序（`带时间` 排在 `必剪` 前面，取决于码位），不是人想要的顺序。
     这一页是给人翻的，新的在上。
+
+    概念单按日期排等于没排：同一天存的一篇视频里，六个概念日期全一样，于是
+    退回按名字的码位序——「苍穹、工程化、增删、后端、Java Web、Agent」，中文
+    和拉丁字母混着来，和它们在视频里出现的顺序毫无关系。按秒数排，翻概念表就
+    是顺着那一篇讲的顺序读下去。
     """
     videos = sorted(videos, key=lambda x: (x.get("date") or "", x.get("title") or ""),
                     reverse=True)
+    # 两趟稳定排序：先按「出现的先后」定同一批里的次序，再按日期分档。
+    # 反过来做（先日期后秒数）会把日期这一层也排乱。
     concepts = sorted(concepts,
-                      key=lambda x: (x.get("first") or "", x.get("name") or ""),
-                      reverse=True)
+                      key=lambda x: (_first_sec(x) is None,
+                                     _first_sec(x) or 0,
+                                     x.get("name") or ""))
+    concepts = sorted(concepts, key=lambda x: x.get("first") or "", reverse=True)
     return videos, concepts
 
 

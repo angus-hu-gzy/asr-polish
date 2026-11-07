@@ -292,6 +292,11 @@ main{max-width:1240px;margin:0 auto;padding:22px 20px 120px}
   text-align:justify;word-break:break-word;
 }
 .cue.flash{background:var(--flash);box-shadow:0 0 0 8px var(--flash)}
+/* 单独提亮「就是这一句」。段落是 groupCues 并起来的（一句到十几句），锚点只到
+   段，读者还得自己在一段里找那一句——最长的段有十四秒的说话量。
+   颜色直接用搜索命中的那一套变量：同一页里两种黄不该是新发明的一种黄。 */
+.cue .txt .segflash{background:var(--mark);color:var(--mark-ink);
+  border-radius:3px;box-shadow:0 0 0 3px var(--mark)}
 /* 可跳转的段落：整段可点。悬停才把时间戳染成主色，平时不打扰阅读。 */
 .cue.can{cursor:pointer}
 .cue.can:hover{background:var(--cue-hover);box-shadow:0 0 0 5px var(--cue-hover)}
@@ -1342,6 +1347,7 @@ function renderDoc(d, task){
       // 段落的结束时间要留着：笔记里的锚点是原始段首，而这里是合过段的，
       // 粒度不同，找落点必须靠「sec 落在哪一段的区间里」，不能只比起始秒。
       cue._end = p.end;
+      cue._segs = p.segs;
       cue._meta = pm;
       cue._jump = jump;
       cue.dataset.key = mkKey(part.name, p.start, p.text);
@@ -1440,10 +1446,17 @@ function groupCues(segs){
          || (cur.text.length >= MINLEN && startsSentence(text));
     }
     if (brk){
-      cur = { start: s.start, end: s.end, text: text };
+      cur = { start: s.start, end: s.end, text: text,
+              /* 这一句在合并后的段落里从第几个字起、有多长。留着它，锚点才能
+                 精确到「这一句」而不是「这一段」——文字本身仍然是一个整体，
+                 高亮时才用 Range 临时圈出来。 */
+              segs: [{ start: s.start, end: s.end, off: 0, len: text.length }] };
       out.push(cur);
     } else {
+      // 两个英文/数字之间补一个空格，中文之间不补——和原来一致
       if (/[A-Za-z0-9]$/.test(cur.text) && /^[A-Za-z0-9]/.test(text)) cur.text += " ";
+      cur.segs.push({ start: s.start, end: s.end, off: cur.text.length,
+                      len: text.length });
       cur.text += text;
       cur.end = s.end;
     }
@@ -1494,10 +1507,85 @@ function cueByKey(key){
   return null;
 }
 
-function focusCue(cue){
+/* 一句落在合并后的段落里的第几个字。纯计算，返回下标；没有时间戳的句子 -1。
+
+   和段一级同一个坑，只是更细：字幕的相邻两句时间有重叠（第 3 句 134.82 起，
+   第 2 句到 134.9 才结束），只按「包含」认会挑到上一句去。所以顺序是
+   1. 段首正好等于 sec 的那一句——锚点就是用段首写的，这一支对上就是它；
+   2. 包含 sec 的几句里取起点更晚的（更内层、更具体）；
+   3. 都不包含就取起点最近的。 */
+function segAt(segs, sec){
+  if (!segs || !segs.length || sec == null || isNaN(sec)) return -1;
+  var best = -1, bestD = Infinity, hold = -1, holdStart = -Infinity;
+  for (var i = 0; i < segs.length; i++){
+    var g = segs[i];
+    if (!g || g.start == null) continue;
+    var d = Math.abs(g.start - sec);
+    if (d <= 0.05) return i;
+    if (g.end != null && sec > g.start && sec <= g.end && g.start > holdStart){
+      hold = i; holdStart = g.start;
+    }
+    if (d < bestD){ bestD = d; best = i }
+  }
+  return hold >= 0 ? hold : best;
+}
+
+/* 把这一句的 span 拆掉，文字还回文本节点。
+   上一次的 1.6 秒还没过就又点了一条出处时，段落里已经裹着一个 span：
+   不先拆，`p.firstChild` 就不是文本节点，高亮会停在上一句上不动。
+   拆完 normalize 成一块——下面的偏移量是按「一整块文字」算的。 */
+function clearSpot(p){
+  var old = p.querySelectorAll(".segflash");
+  for (var i = 0; i < old.length; i++){
+    var sp = old[i];
+    if (sp.parentNode) sp.parentNode.replaceChild(
+      document.createTextNode(sp.textContent), sp);
+  }
+  if (p.normalize) p.normalize();
+}
+
+/* 把「就是这一句」临时圈出来。段落是一个文本节点，用 Range 圈一段字符再包个
+   span；1.6 秒后拆掉，并把文本节点 normalize 回去——不合并的话下次按偏移量
+   圈会落到错误的字上（节点已碎成好几块）。
+   返回那个 span：滚动要滚到它，不然长段落里高亮可能在屏幕外。 */
+function spotSentence(cue, sec){
+  if (!cue || sec == null || isNaN(sec)) return null;
+  var i = segAt(cue._segs || [], sec);
+  if (i < 0) return null;
+  var g = cue._segs[i];
+  var p = cue.querySelector(".txt");
+  if (!p || !p.firstChild) return null;
+  clearSpot(p);
+  var node = p.firstChild;
+  if (!node || node.nodeType !== 3) return null;
+  var len = (node.nodeValue || "").length;
+  var a = Math.max(0, Math.min(g.off, len));
+  var b = Math.max(a, Math.min(g.off + g.len, len));
+  if (b <= a) return null;
+  var span = null;
+  try {
+    var rng = document.createRange();
+    rng.setStart(node, a);
+    rng.setEnd(node, b);
+    span = el("span", "segflash");
+    rng.surroundContents(span);
+  } catch(e){ return null }
+  setTimeout(function(){
+    if (!span.parentNode) return;
+    span.parentNode.replaceChild(document.createTextNode(span.textContent), span);
+    if (p.normalize) p.normalize();
+  }, 1600);
+  return span;
+}
+
+/* 跳到某一段。给了 sec 就再进一步：把那一句圈出来、滚到那一句上——锚点只到
+   段的时候，读者还得在一段十四秒的话里自己找，等于没落到位。 */
+function focusCue(cue, sec){
   if (!cue) return false;
   revealPartOf(cue);            // 在别的分 P 里的话，先切过去
-  if (cue.scrollIntoView) cue.scrollIntoView({ block: "center", behavior: "smooth" });
+  var spot = sec == null ? null : spotSentence(cue, sec);
+  var target = spot || cue;
+  if (target.scrollIntoView) target.scrollIntoView({ block: "center", behavior: "smooth" });
   cue.classList.add("flash");
   setTimeout(function(){ cue.classList.remove("flash"); }, 1400);
   return true;
@@ -1777,7 +1865,12 @@ function buildFullText(d, task){
       source: part.source || "",
       hasTime: hasTime,
       label: src.length > 1 ? (sameBv ? "P" + pm.page : "第 " + (i + 1) + " 篇") : "",
-      segments: rows
+      // 只留上面注释里承诺的三个字段。groupCues 还带着 `segs`（句子的字符偏移，
+      // 给「圈出这一句」用），那是渲染侧的事——混进这份结构就会跟着导出文件、
+      // 跟着发给模型的正文一起走。
+      segments: rows.map(function(r){
+        return { start: r.start, end: r.end, text: r.text };
+      })
     });
     full.paragraphs += rows.length;
     for (var m = 0; m < rows.length; m++) full.chars += rows[m].text.length;
@@ -2110,21 +2203,27 @@ function saveSummaryItem(name, item){
 
 /* 按「这一段的时间」找 DOM，不用段序号。
    buildFullText 会多拆一次占位块、renderDoc 不会，两条路的段序号在某些数据
-   上可能差一位；用时间找就不会指错地方。 */
+   上可能差一位；用时间找就不会指错地方。
+
+   这里原来只比「谁的起点离 t 最近」，是个真 bug：页面上的段落是合过的（106 段
+   原始字幕合并成 25 段），锚点里的 t 却是原始段首。实测这一篇里 106 个段首有
+   70 个离得最近的那个「段起点」差了 1.5 秒以上，于是点总结里的锚点会被告知
+   「现在的正文里找不到这一段了」，按钮当场变灰；另有 4 个直接落到相邻的一段上。
+   换成和跳笔记同一套判断：区间包含优先，容差只用来兜「落在停顿里」这一种。 */
 function cueByStart(t, tol){
   if (t == null) return null;
   var secs = partSections();
   var sec = secs[currentPartIndex()];
   if (!sec) return null;
   var cues = sec.querySelectorAll(".cue");
-  var best = null, bestD = Infinity;
+  var spots = [], list = [];
   for (var i = 0; i < cues.length; i++){
-    var st = cues[i]._start;
-    if (st == null) continue;
-    var d = Math.abs(st - t);
-    if (d < bestD){ bestD = d; best = cues[i] }
+    if (cues[i]._start == null) continue;
+    spots.push({ start: cues[i]._start, end: cues[i]._end });
+    list.push(cues[i]);
   }
-  return bestD <= (tol == null ? 1.5 : tol) ? best : null;
+  var idx = seekCueIndex(spots, t, tol == null ? 1.5 : tol);
+  return idx < 0 ? null : list[idx];
 }
 
 /* 出错之后该做什么。again 是「再来一次」那个按钮在这一块里的叫法：总结叫
@@ -2154,8 +2253,10 @@ function errFix(kind, again){
    01:03，会直接跳视频，而不是先回到那一段。 */
 function anchorEl(r, part, scope){
   var ok = r.idx >= 0;
-  var label = ok ? fmt(part.segments[r.idx].start)
-                 : (r.t == null ? "无出处" : fmt(r.t));
+  // 核过的段落用真实段首，没核过的才用模型给的时间：找段落、圈句子、跳视频都
+  // 认这一个数——三处用一个值，才不会出现「段落找到了、视频跳到别的秒」。
+  var at = ok ? part.segments[r.idx].start : r.t;
+  var label = ok ? fmt(at) : (r.t == null ? "无出处" : fmt(r.t));
   var b = el("button", "anchor" + (ok ? "" : " none"), label);
   b.type = "button";
   var key = (scope || "sum") + ":" + label + "@" + r.idx;
@@ -2167,7 +2268,7 @@ function anchorEl(r, part, scope){
   }
   b.title = "回到这一段（" + label + "），再点一次跳到视频这里";
   b.addEventListener("click", function(){
-    var cue = cueByStart(r.t);
+    var cue = cueByStart(at);
     if (!cue){
       // 页面里已经找不到这一段（多半是任务重跑、正文变了）：别假装能跳
       b.className = "anchor none";
@@ -2176,11 +2277,12 @@ function anchorEl(r, part, scope){
     }
     // 已经落在这儿了，再点一次才是「去视频里看」——一次点击不该同时干两件事
     if (S.sumAnchor === key){
-      if (cue._jump) showPlayer(cue._meta, cue._start);
+      // 跳到这一句的秒数，不是段首：段首可能是十四秒之前，点进去要先倒回去找
+      if (cue._jump) showPlayer(cue._meta, at);
       return;
     }
     S.sumAnchor = key;
-    focusCue(cue);
+    focusCue(cue, at);
   });
   return b;
 }
@@ -3639,10 +3741,16 @@ $("#ntbtn").addEventListener("click", function(){ saveNotes() });
       段从 137.92 秒起，差 2.92 秒反而更"近"，于是点在「苍穹外卖」上的锚点跳到了
       下一段去。
    2. 没有包含的，取起点最近的——sec 落在两段之间的空隙（停顿）里时只能这样。
-   多个区间重叠时取起点更晚的那个：更内层，也更具体。 */
-function seekCueIndex(spots, sec){
+   多个区间重叠时取起点更晚的那个：更内层，也更具体。
+
+   `tol` 给了的话，退回到「比起点」的那一支还要离那一段够近——锚点找不到包含它
+   的段落时，宁可不跳，也不能跳到一段不相干的话上。够不够近量的是「sec 到那一段
+   的区间」的距离，不是到它起点的距离：一段话有十四秒长，落在它后面 1 秒的停顿里
+   仍然算「这一段的尾巴」。`tol` 不给就是不设限（笔记里的锚点一定是原始段首，落不
+   进任何一段只可能是段落之间的停顿）。 */
+function seekCueIndex(spots, sec, tol){
   if (!spots || !spots.length || sec == null || isNaN(sec)) return -1;
-  var hit = -1, hitStart = -Infinity, near = -1, nearD = Infinity;
+  var hit = -1, hitStart = -Infinity, near = -1, nearD = Infinity, nearGap = Infinity;
   for (var i = 0; i < spots.length; i++){
     var s = spots[i];
     if (!s || s.start == null) continue;
@@ -3651,9 +3759,15 @@ function seekCueIndex(spots, sec){
       continue;
     }
     var d = Math.abs(s.start - sec);
-    if (d < nearD){ nearD = d; near = i }
+    if (d < nearD){
+      nearD = d; near = i;
+      nearGap = (s.end != null && sec > s.end) ? (sec - s.end)
+              : (sec < s.start ? (s.start - sec) : 0);
+    }
   }
-  return hit >= 0 ? hit : near;
+  if (hit >= 0) return hit;
+  if (tol != null && nearGap > tol) return -1;
+  return near;
 }
 
 /* 从笔记页点一条出处进来时，落在这一段上（`?t=秒&part=第几篇`）。
@@ -3680,7 +3794,7 @@ function revealAt(sec, partIdx){
   var idx = seekCueIndex(spots, sec);
   if (idx < 0) return false;
   selectPart(where[idx].part, false);
-  focusCue(where[idx].cue);
+  focusCue(where[idx].cue, sec);
   return true;
 }
 
@@ -4135,7 +4249,6 @@ window.__reader = {
   parsePos: parsePos,
   posOf: posOf,
   withPos: withPos,
-  pickCueIndex: pickCueIndex,
   themeKey: themeKey,
   themeFrom: themeFrom,
   nextTheme: nextTheme,
@@ -4176,6 +4289,7 @@ window.__reader = {
   // seekCueIndex 挑 sec 该落在哪一段（从笔记跳回来用）。
   pickCueIndex: pickCueIndex,
   seekCueIndex: seekCueIndex,
+  segAt: segAt,
   revealAt: revealAt
 };
 })();

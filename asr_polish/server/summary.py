@@ -388,6 +388,15 @@ def http_error(exc: urllib.error.HTTPError) -> SummaryError:
         raw = exc.read().decode("utf-8", "replace")
     except Exception:                      # 响应体读不出来也不该让整件事崩
         raw = ""
+    finally:
+        # HTTPError 本身就是一份打开着的响应。读完不关，它会挂在 GC 上等着被
+        # 回收，Python 3.13+ 会为此打一条 ResourceWarning。真出错的时候，最不
+        # 需要的就是一条看着像「我们自己漏了资源」的噪音——它会把真正的失败
+        # 埋掉，而且每失败一次漏一个连接。
+        try:
+            exc.close()
+        except Exception:
+            pass
     detail = _provider_message(raw)
     if code in (401, 403):
         return SummaryError(

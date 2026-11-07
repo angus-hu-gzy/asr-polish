@@ -1469,6 +1469,31 @@ class ReaderJumpTargetTest(unittest.TestCase):
     def test_no_candidate_is_minus_one(self) -> None:
         self.assertEqual(self.d["pickEmpty"], [-1, -1, -1, -1])
 
+    def test_tolerance_only_guards_the_gap_fallback(self) -> None:
+        """总结的锚点：落在停顿里且离得远，宁可不跳；区间包含时离多远都算。
+
+        这一条是「按钮变灰」那个 bug 的护栏。原来锚点只用「起点最近 + 1.5 秒」，
+        而页面上的段落是合过的（106 段合成 25 段），锚点的时间又来自原始段首：
+        实测 106 个里有 70 个超过 1.5 秒，点下去只会得到「现在的正文里找不到
+        这一段了」。
+        """
+        self.assertEqual(self.d["pickTolGapIn"], 0)      # 差 1.2 秒，算落在这一段后面
+        self.assertEqual(self.d["pickTolGapOut"], -1)    # 差 2.0 秒，宁可说找不到
+        self.assertEqual(self.d["pickTolFarStart"], -1)  # 差 40 秒，肯定不是它
+        self.assertEqual(self.d["pickTolInside"], 0)     # 包含关系不受容差影响
+        self.assertEqual(self.d["pickTolNoLimit"], 0)    # 不给容差就是不设限（笔记那条路）
+
+    def test_sentence_inside_a_paragraph(self) -> None:
+        """段落是几句并起来的，锚点要能指出是第几句——否则读者还得自己找。
+
+        只比「起点谁近」在这个粒度上更容易错：相邻两句的起点可能只差一秒。
+        """
+        self.assertEqual(self.d["segOfParagraph"], 2)     # 134.82 是第三句
+        self.assertEqual(self.d["segOfFirst"], 0)
+        self.assertEqual(self.d["segBetween"], 1)         # 落在两句之间的停顿
+        self.assertEqual(self.d["segSkipsNoTime"], 1)     # 没时间的那句不参与
+        self.assertEqual(self.d["segEmpty"], [-1, -1, -1])
+
 
 if __name__ == "__main__":
     unittest.main()
