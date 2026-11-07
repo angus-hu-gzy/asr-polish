@@ -391,7 +391,8 @@ def _cmd_serve(args: argparse.Namespace) -> None:
     from .server import serve
     bili.configure(min_interval=args.min_interval)
     serve(host=args.host, port=args.port, db=args.db,
-          workers=args.workers, stale_after=args.stale_after)
+          workers=args.workers, stale_after=args.stale_after,
+          notes_dir=args.notes_dir)
 
 
 def _cmd_submit(args: argparse.Namespace) -> None:
@@ -648,6 +649,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("--min-interval", type=float, default=1.0,
                          help="同一域名两次请求的最小间隔秒数（默认 1.0，含 ±30%% 抖动）。"
                               "风控频繁时调到 2~3")
+    p_serve.add_argument("--notes-dir", default="notes",
+                         help="笔记库目录（默认 ./notes，Obsidian 直接打开这个文件夹）")
     p_serve.set_defaults(func=_cmd_serve)
 
     p_submit = sub.add_parser(

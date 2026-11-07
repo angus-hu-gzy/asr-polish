@@ -113,6 +113,15 @@ function main() {
       bvid: "BV1demoASR", partName: "BV1demoASR-没有时间戳的一期.srt" },
   ];
 
+  // 笔记库那份清单（/api/notes 的 videos）——只留判断用得上的几样
+  const noteList = [
+    { file: "带时间的一篇 · P1.md", part_name: "BV1TEST00001-P1-带时间的一篇.srt",
+      title: "带时间的一篇", label: "P1", at: "2026-11-07 13:00", stale: false },
+    { file: "必剪转写的一篇 · P2.md", part_name: "BV1TEST00001-P2-必剪.srt",
+      title: "必剪转写的一篇", label: "P2", at: "2026-11-06 09:00", stale: true,
+      stale_why: "字幕变过了" },
+  ];
+
   const store1 = api.parsePos('{"v":1,"parts":{"a":3}}');
 
   // ── 全文底座 ────────────────────────────────────
@@ -472,6 +481,12 @@ function main() {
       v: 1, parts: { "a.srt": { sig: "s", questions: [
         { stem: "问", options: ["甲", "乙", "丙", "丁"], answer: 0 }], picks: [] } },
     })), "a.srt"),
+    // 笔记库：这一篇在库里存过没有，靠分 P 文件名认（标题会改，文件名不会）
+    noteHit: api.noteFor(noteList, "BV1TEST00001-P1-带时间的一篇.srt"),
+    noteMiss: api.noteFor(noteList, "BV1TEST00001-P3-没存过的一篇.srt"),
+    noteEmpty: [api.noteFor([], "a"), api.noteFor(null, "a"),
+                api.noteFor(noteList, ""), api.noteFor(noteList, undefined)],
+
     // 写一篇不动别的篇；也不改传进来的那个对象
     quizWrite: quizStoreWrite,
     quizWriteKeepsA: quizStoreWrite.parts["a.srt"] !== undefined,

@@ -28,7 +28,7 @@ __all__ = [
 
 def serve(host: str = "127.0.0.1", port: int = 8040, db: str = "tasks.db",
           workers: int = 2, stale_after: float = 600.0,
-          quiet: bool = False) -> None:
+          notes_dir: str = "notes", quiet: bool = False) -> None:
     """启动 HTTP 服务 + worker 池，阻塞直到 Ctrl-C。"""
     def note(msg: str) -> None:
         if not quiet:
@@ -37,7 +37,7 @@ def serve(host: str = "127.0.0.1", port: int = 8040, db: str = "tasks.db",
     store = Store(db)
     pool = WorkerPool(store, workers=workers, stale_after=stale_after,
                       on_event=note)
-    app = App(store, pool)
+    app = App(store, pool, notes_dir=notes_dir)
     srv = make_server(host, port, app)
 
     stats = store.stats()
@@ -45,6 +45,7 @@ def serve(host: str = "127.0.0.1", port: int = 8040, db: str = "tasks.db",
          % (db, stats["total"], stats[PENDING], stats[RUNNING]))
     pool.start()
     note("监听 http://%s:%d  面板直接打开这个地址" % (host, port))
+    note("笔记库 %s（阅读页「笔记 → 存入笔记库」会写到这里）" % notes_dir)
     try:
         srv.serve_forever(poll_interval=0.3)
     except KeyboardInterrupt:

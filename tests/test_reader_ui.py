@@ -1339,5 +1339,86 @@ class ReaderLogicTest(unittest.TestCase):
         self.assertEqual(self.d["quizWriteLeavesOrig"], "a.srt")
 
 
+class NotesMarkupTest(unittest.TestCase):
+    """笔记面板该有的东西在不在（不依赖 node）。
+
+    这一层唯一一个会把东西写出浏览器的功能，所以界面上必须**在点之前**说清两件事：
+    落在哪个目录、这一下要花钱。写进 title 属性不算——那要停鼠标才看得到。
+    """
+
+    def setUp(self) -> None:
+        self.html = html()
+
+    def test_entry_sits_with_the_other_layers(self) -> None:
+        self.assertIn('id="notesbtn"', self.html)
+        # 顶栏那一排：模型 / 总结 / 问答 / 测验 / 笔记
+        order = [self.html.index('id="%s"' % x)
+                 for x in ("sumbtn", "askbtn", "quizbtn", "notesbtn")]
+        self.assertEqual(order, sorted(order))
+
+    def test_panel_is_closed_by_default(self) -> None:
+        m = re.search(r'<div class="notes" id="notes"[^>]*>', self.html)
+        self.assertIsNotNone(m)
+        self.assertIn("hidden", m.group(0))
+
+    def test_says_where_the_files_land(self) -> None:
+        self.assertIn("<code>notes/</code>", self.html)
+        self.assertIn("<code>notes/concepts/</code>", self.html)
+        self.assertIn("Obsidian", self.html)
+
+    def test_cost_is_on_the_page_not_in_a_tooltip(self) -> None:
+        m = re.search(r'<p class="ntcost">(.*?)</p>', self.html, re.S)
+        self.assertIsNotNone(m)
+        self.assertIn("计费", m.group(1))
+
+    def test_links_to_the_notes_page(self) -> None:
+        self.assertIn('href="/notes"', self.html)
+
+    def test_no_new_external_host(self) -> None:
+        """笔记库是本地目录，不该带来任何新的外部请求。"""
+        hosts = set(re.findall(r"https?://([^/\s\"'<>)]+)", self.html))
+        self.assertEqual(hosts, {"player.bilibili.com", "www.bilibili.com"})
+
+
+class ReaderNotesEntryTest(unittest.TestCase):
+    """阅读页里「这一篇存过没有」这一步。
+
+    认人用的是**分 P 文件名**，不是标题：标题会改（B站上改标题是常事），文件名
+    是任务产物的一部分。认错了的后果不是显示错一行字——是面板上的「已写入」
+    和库里的实际情况对不上，用户会以为存过，于是不再存一次。
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False,
+                                         encoding="utf-8") as fh:
+            fh.write(_page_script())
+            cls.script = fh.name
+        out = subprocess.run([_NODE, str(_HARNESS), cls.script],
+                             capture_output=True, encoding="utf-8",
+                             errors="replace", timeout=60)
+        if out.returncode != 0 or not out.stdout:
+            raise AssertionError("node 跑页面脚本失败（退出码 %s）：%s\n%s"
+                                 % (out.returncode, (out.stdout or "")[-500:],
+                                    (out.stderr or "")[-2000:]))
+        cls.d = json.loads(out.stdout)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        Path(cls.script).unlink(missing_ok=True)
+
+    def test_finds_the_note_by_part_file(self) -> None:
+        hit = self.d["noteHit"]
+        self.assertEqual(hit["file"], "带时间的一篇 · P1.md")
+        self.assertEqual(hit["at"], "2026-11-07 13:00")
+
+    def test_misses_cleanly(self) -> None:
+        self.assertIsNone(self.d["noteMiss"])
+
+    def test_bad_input_is_not_a_crash(self) -> None:
+        """清单还没取回来（空）、接口挂了（null）、分 P 名为空——都该是「没有」。"""
+        self.assertEqual(self.d["noteEmpty"], [None, None, None, None])
+
+
 if __name__ == "__main__":
     unittest.main()

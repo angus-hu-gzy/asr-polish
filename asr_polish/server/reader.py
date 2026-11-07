@@ -580,6 +580,48 @@ mark.cur{background:var(--mark-cur);color:var(--mark-cur-ink);
 .quiz .qzskip{font-size:12.5px;line-height:1.8;color:var(--muted);margin:0 0 12px;
   padding:8px 11px;background:var(--field);border-radius:9px}
 
+/* 笔记：和总结、问答、测验同一块地方、同一种排法——正文上方、流内展开。
+   它比另外三块都「短」：一次生成就写完了，没有逐题交互。 */
+.notes{
+  max-width:46em;margin:0 auto 22px;background:var(--panel);
+  border:1px solid var(--line);border-radius:11px;padding:13px 15px 15px;
+  box-shadow:var(--shadow);
+}
+.notes[hidden]{display:none}
+.notes .nh{display:flex;align-items:center;gap:9px;margin-bottom:10px;flex-wrap:wrap}
+.notes h3{margin:0;font-size:13.5px;font-weight:600}
+.notes .sp{flex:1}
+.notes .nstat{font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums}
+.notes .ntnote{
+  margin:0 0 12px;padding:8px 11px;border-radius:8px;font-size:12.5px;
+  line-height:1.75;background:var(--warn-bg);border:1px solid var(--warn-line);
+  color:var(--note-strong);
+}
+.notes .ntempty{font-size:13px;color:var(--muted);line-height:1.9}
+.notes .ntbusy{font-size:13px;color:var(--muted);padding:4px 0}
+.notes .nterr{font-size:13px;line-height:1.85;color:var(--bad);word-break:break-word;
+  margin:0 0 10px}
+.notes .nterr .fix{display:block;margin-top:7px;color:var(--muted);font-size:12.5px}
+/* 存过之后这一块说要紧的三件事：写了哪个文件、新建/复用了几个概念、坏了几条。 */
+.notes .ntcard{font-size:13.5px;line-height:1.9;color:var(--sub)}
+/* 「已经存过」和「这一次写完了」是两张卡，挨着放会连成一段读不断的话：
+   加一条虚线，让「上一次是什么样」和「这一次做了什么」分开。 */
+.notes .ntcard + .ntcard{margin-top:10px;padding-top:10px;
+  border-top:1px dashed var(--line-soft)}
+.notes .ntcard b{font-weight:600;color:var(--ink)}
+.notes .ntcard .path{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;
+  color:var(--ink);word-break:break-all}
+.notes .ntcard .row{display:block}
+.notes .ntcard .muted{color:var(--faint);font-size:12.5px}
+.notes .ntskip{margin:9px 0 0;padding:8px 11px;border-radius:8px;font-size:12.5px;
+  line-height:1.8;color:var(--muted);background:var(--field)}
+.notes .ntf{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  margin:13px 0 0;padding-top:11px;border-top:1px solid var(--line-soft)}
+.notes .ntmiss{font-size:12px;color:var(--warn);white-space:nowrap}
+.notes .ntcost{flex:1 1 100%;margin:2px 0 0;font-size:12px;line-height:1.75;
+  color:var(--faint)}
+.notes .ntcost code{font-size:11.5px}
+
 /* 失败明细 */
 .fails{margin:26px 0 0;border-top:1px solid var(--line);padding-top:18px}
 .fails h3{font-size:13.5px;font-weight:600;margin:0 0 10px;color:var(--bad)}
@@ -626,6 +668,8 @@ mark.cur{background:var(--mark-cur);color:var(--mark-cur-ink);
             title="就这一篇提问。回答里的每条事实都要带原文时间，点时间能回到原文">问答</button>
     <button class="btn sm quizbtn" id="quizbtn" type="button" disabled
             title="就这一篇出几道题，做完看自己会不会。每题都标出原文时间">测验</button>
+    <button class="btn sm notesbtn" id="notesbtn" type="button" disabled
+            title="把这一篇的要点和概念写进 notes/ 笔记库，Obsidian 直接能打开">笔记</button>
     <button class="btn sm themetog" id="themebtn" type="button">🌙 夜间</button>
   </div>
   <div id="run" hidden>
@@ -741,6 +785,28 @@ mark.cur{background:var(--mark-cur);color:var(--mark-cur-ink);
     </div>
   </div>
 
+  <div class="notes" id="notes" hidden>
+    <div class="nh">
+      <h3 id="nth">这一篇的笔记</h3>
+      <span class="sp"></span>
+      <span class="nstat" id="ntstat"></span>
+      <a class="btn sm" id="ntopen" href="/notes" target="_blank"
+         rel="noopener">打开笔记库 →</a>
+      <button class="pbtn" id="ntclose" type="button" title="收起笔记">✕</button>
+    </div>
+    <div class="ntnote" id="ntnote" hidden></div>
+    <div id="ntlist"></div>
+    <div class="ntf">
+      <button class="btn sm primary" id="ntbtn" type="button">存入笔记库</button>
+      <span class="ntmiss" id="ntmiss" hidden></span>
+      <p class="ntcost">
+        每点一次都真的调一次模型服务，按你填的那家计费。写完落在本机的
+        <code>notes/</code> 目录：一篇视频一个 md，概念进 <code>notes/concepts/</code>，
+        目录由服务端维护——Obsidian 打开这个文件夹就是一个库，不用导出。
+      </p>
+    </div>
+  </div>
+
   <div class="marksbox" id="marksbox" hidden>
     <div class="mh">
       <h3 id="mkh">重点</h3>
@@ -812,7 +878,11 @@ var S = { id:null, timer:null, tick:null, startedAt:0, marks:[], cur:-1,
              quizSkips 记的是模型这次丢掉的那几道题的原因（按分 P），只活到下一页。
              quizMem / quizWarned 和前两层同一个用途。 */
           quizBusy:false, quizErr:null, quizMem:null, quizWarned:false,
-          quizOnly:null, quizSkips:null };
+          quizOnly:null, quizSkips:null,
+          /* 笔记这一层。ntStored 是服务端那份清单里属于这个任务的几条
+             （用来回答「这一篇以前存过没有」），ntLast 是这一次刚写完的结果。
+             两者分开：存过不等于这次成功，这次成功也不等于清单已经刷新。 */
+          ntBusy:false, ntErr:null, ntStored:null, ntLast:null };
 
 /* ── 小工具 ──────────────────────────────────────── */
 function el(tag, cls, text){
@@ -904,12 +974,15 @@ function switchTo(id, note){
   $("#summary").hidden = true;         // 总结是按任务存的，别把上一条的摆在眼前
   $("#qa").hidden = true;              // 对话同理：上一条任务的问答不能留在新页面上
   $("#quiz").hidden = true;            // 测验也是按任务存的，别把上一条的题摆在眼前
+  $("#notes").hidden = true;           // 笔记属于上一个任务，连提示一起收起
   S.sumMem = {}; S.sumErr = null; S.sumAnchor = "";
   S.qaMem = {}; S.qaErr = null; S.qaBusy = false;
   S.quizMem = {}; S.quizErr = null; S.quizBusy = false; S.quizOnly = null;
   S.quizSkips = null;
+  S.ntBusy = false; S.ntErr = null; S.ntStored = null; S.ntLast = null;
   updateAskEntry();
   updateQuizEntry();
+  updateNotesEntry();
   if (note) notice("ok", note, "");
   poll();
 }
@@ -1144,6 +1217,8 @@ function selectPart(i, scroll){
   if (!$("#qa").hidden) renderQa();
   // 测验同理：题目和作答都按篇存，切到哪篇看哪篇。
   if (!$("#quiz").hidden) renderQuiz();
+  // 笔记也按篇：切篇之后「这一篇存过没有」是另一条记录。
+  if (!$("#notes").hidden) renderNotes();
 }
 
 /* 统计只算当前这一篇。多分 P 时若把各篇加起来，屏幕上摆着 8 段，
@@ -1217,6 +1292,7 @@ function renderDoc(d, task){
     updateSumButton();
     updateAskEntry();                  // 没有正文，问答入口也点不动
     updateQuizEntry();                 // 测验入口同理
+    updateNotesEntry();                // 笔记入口同理
     if (r.parts_truncated) {
       notice("warn", "分 P 被截断", "这条合集共 " + (r.parts_truncated + (r.parts_written||0)) +
              " 个分 P，按单条上限只取了一部分。要全取请用命令行带 max_parts=0 或走任务面板。");
@@ -1303,10 +1379,20 @@ function renderDoc(d, task){
   updateSumButton();                 // 有正文了，总结才可能点得动
   updateAskEntry();                  // 问答入口同理
   updateQuizEntry();                 // 测验入口也是
+  updateNotesEntry();                // 笔记入口也是
   renderFailures(r, task);
   restoreMarks();
+  // 从笔记页点一条出处进来时带着 t（和 part）：落在这一段上，比「回到上次
+  // 读到的位置」更该优先——人点的是「带我去这句」。三个入口的优先级：
+  // 指定的时间 > 搜索词 > 断点续读。
+  var atSec = params.get("t");
+  var atPart = params.get("part");
   // 带 ?q= 进来的是「我要搜这个词」，位置让位给搜索：搜索要跳到第一处命中，
   // 两套滚动抢起来只会落到一处谁也不想要的地方。
+  if (atSec != null && atSec !== "" && revealAt(parseInt(atSec, 10),
+      atPart != null && atPart !== "" ? parseInt(atPart, 10) : null)){
+    return;
+  }
   if ($("#find").value) runSearch($("#find").value);
   else restorePos();
 }
@@ -2296,8 +2382,9 @@ $("#modelsave").addEventListener("click", function(){
     ? "已保存，只在这个浏览器里。"
     : "存不进浏览器（隐私模式或禁用了站点数据）：这次能用，刷新就没了。";
   updateSumButton();
-  updateAskButton();                 // 填完配置，三个入口一起活过来
+  updateAskButton();                 // 填完配置，四个入口一起活过来
   updateQuizButtons();
+  updateNotesEntry();
   if (ok) setTimeout(function(){ openModelBox(false) }, 700);
 });
 
@@ -3311,6 +3398,262 @@ $("#qzreset").addEventListener("click", resetQuiz);
 /* 记的是「哪一篇 + 该篇第几段」，不是滚动像素：换个窗口大小像素全变，段落
    序号不变。仍然只存 localStorage，按任务 id 分块，块里再按分 P 名分开——
    这样在第二篇读一半关掉，也不会把第一篇的位置顶掉。 */
+/* ── 笔记库（学习工作台第 4 层）───────────────────── */
+/* 前四层里唯一一个「东西离开浏览器」的功能：笔记写进本机的 notes/ 目录。
+   所以这里的界面要回答两个前三层不用回答的问题——
+   1. **写到哪了**（点名文件，否则用户不知道去哪儿找）；
+   2. **这一篇以前存过没有**（存过再存会覆盖，覆盖前该让人知道）。
+
+   正文仍然出自 buildModelSource（和问答、测验逐字一致）；服务端拿这一篇的
+   真实段首核锚点、算指纹。锚点对不上的只留文字，不写时间——文件会被读很多次，
+   编进去一个时间比不写坏得多。 */
+
+function updateNotesEntry(){
+  var btn = $("#notesbtn");
+  if (!btn) return;
+  var has = !!(S.transcript && S.transcript.parts && S.transcript.parts.length);
+  var rd = modelReady(cfgNow());
+  /* 和总结、问答、测验同一套：没配好时文案变「先配模型」、虚线框，点它不是
+     报错而是去填设置。存笔记是这四层里唯一一件会往磁盘写东西的事，按钮更该
+     在点之前就说清「现在点下去会发生什么」。 */
+  btn.disabled = !has;
+  btn.className = "btn sm notesbtn" + (rd.ok ? "" : " off");
+  btn.textContent = rd.ok ? "笔记" : "先配模型";
+  btn.title = !has ? "这一篇没有正文，存不进笔记库。"
+    : rd.ok ? "看这一篇存过没有。存一次会调用设置里的模型服务，按它那边花钱"
+    : (rd.why + "。点这里去填。");
+}
+
+/* 这一篇在库里对应的那条记录（如果有）。按分 P 文件名认，不按标题——
+   标题会改，文件名是任务产物的一部分，稳定得多。 */
+function noteFor(list, partName){
+  if (!list || !partName) return null;
+  for (var i = 0; i < list.length; i++){
+    if (list[i] && list[i].part_name === partName) return list[i];
+  }
+  return null;
+}
+
+function storedNoteOf(partName){
+  return noteFor(S.ntStored || [], partName);
+}
+
+async function loadNotesIndex(){
+  if (!S.id) return;
+  var gen = S.gen;
+  var res = await call("GET", "/api/notes");
+  if (gen !== S.gen || !res.ok) return;
+  S.ntStored = (res.data.videos || []).filter(function(v){
+    return v.task_id === S.id;
+  });
+  if (!$("#notes").hidden) renderNotes();
+}
+
+function noteCard(node, label, value){
+  var row = el("span", "row");
+  row.appendChild(el("b", null, label));
+  row.appendChild(document.createTextNode(" "));
+  row.appendChild(el("span", "path", value));
+  node.appendChild(row);
+  return row;
+}
+
+function renderNotes(){
+  var box = $("#notes");
+  if (!box || box.hidden) return;
+  var list = $("#ntlist"), note = $("#ntnote");
+  clear(list);
+  note.hidden = true;
+  $("#ntstat").textContent = "";
+  var save = $("#ntbtn");
+  var rd = modelReady(cfgNow());
+  save.disabled = !!S.ntBusy;
+  save.className = "btn sm primary" + (rd.ok ? "" : " off");
+  save.textContent = !rd.ok ? "先配模型"
+    : (S.ntBusy ? "正在写…" : "存入笔记库");
+  save.title = rd.ok
+    ? "让模型读一遍这一篇、写成 Markdown 存进 notes/。这一下会花钱"
+    : (rd.why + "。点这里去填。");
+
+  var cur = currentPart();
+  if (!cur.part){
+    $("#nth").textContent = "笔记库";
+    list.appendChild(el("div", "ntempty", "这一篇没有正文，存不进笔记库。"));
+    return;
+  }
+  $("#nth").textContent = "这一篇的笔记"
+    + (cur.part.label ? " · " + cur.part.label : "");
+
+  if (!cur.part.hasTime){
+    // 和测验区顶上那句同一个理由：这是这一篇的前提，不是结果的脚注。
+    note.hidden = false;
+    note.textContent = "这一篇没有逐句时间戳（必剪 ASR 或纯文本导出），"
+      + "概念和要点都写，但不带时间锚点——编一个时间写进文件，比不写坏得多。";
+  }
+
+  var stored = storedNoteOf(cur.part.name);
+  if (stored){
+    var card = el("div", "ntcard");
+    noteCard(card, "已经存过：", stored.file);
+    var meta = [];
+    if (stored.at) meta.push(stored.at + " 生成");
+    if (stored.model) meta.push(stored.model);
+    if (meta.length) card.appendChild(el("span", "muted", meta.join(" · ")));
+    if (stored.stale){
+      card.appendChild(el("span", "row muted",
+        "来源已更新，建议重新生成：" + (stored.stale_why || "")));
+    }
+    card.appendChild(el("span", "row muted",
+      "再点一次「存入笔记库」会覆盖这一篇的笔记和它的概念出处。"));
+    list.appendChild(card);
+    $("#ntstat").textContent = stored.stale ? "来源已更新" : "";
+  }
+
+  if (S.ntBusy){
+    list.appendChild(el("div", "ntbusy",
+      "正在让模型读这一篇、抽概念…写文件只要一下，等的是模型。"));
+    return;
+  }
+  if (S.ntErr && S.ntErr.part === cur.part.name){
+    var p = el("div", "nterr", S.ntErr.message);
+    var fix = S.ntErr.fix || errFix(S.ntErr.kind, "存入笔记库");
+    if (fix) p.appendChild(el("span", "fix", fix));
+    list.appendChild(p);
+    return;
+  }
+
+  var last = S.ntLast;
+  if (last && last.partName === cur.part.name){
+    var done = el("div", "ntcard");
+    noteCard(done, "已写入：", "notes/" + last.file);
+    var bits = [];
+    if (last.points) bits.push(last.points + " 条要点");
+    if (last.concepts) bits.push(last.concepts + " 个概念");
+    if (bits.length) done.appendChild(el("span", "row", bits.join(" · ")));
+    if (last.added && last.added.length)
+      done.appendChild(el("span", "row", "新建概念：" + last.added.join("、")));
+    if (last.reused && last.reused.length)
+      done.appendChild(el("span", "row muted", "复用已有概念：" + last.reused.join("、")));
+    if (last.skipped && last.skipped.length){
+      var sk = el("div", "ntskip",
+        "有 " + last.skipped.length + " 条没写进去：" + last.skipped.join("；"));
+      done.appendChild(sk);
+    }
+    list.appendChild(done);
+    if (!last.added.length && !last.reused.length)
+      $("#ntstat").textContent = "写完 · 没有概念";
+    return;
+  }
+
+  if (!stored){
+    list.appendChild(el("div", "ntempty",
+      "还没有这一篇的笔记。点下面「存入笔记库」——这一篇有 "
+      + (cur.part.segments || []).length + " 段，写完会给出要点和概念，"
+      + "概念会并进 notes/concepts/ 里已有的同名文件。"));
+  }
+}
+
+async function saveNotes(){
+  var cur = currentPart();
+  if (!cur.part || !S.id) return;
+
+  var cfg = cfgNow();
+  var rd = modelReady(cfg);
+  if (!rd.ok){
+    openModelBox(true);
+    $("#modelnote").textContent = rd.why + "，填完再点「存入笔记库」。";
+    return;
+  }
+
+  S.ntBusy = true; S.ntErr = null;
+  updateNotesEntry(); renderNotes();
+
+  var src = buildModelSource(cur.full, cur.i);
+  var res = null, thrown = null;
+  try {
+    res = await call("POST", "/api/tasks/" + encodeURIComponent(S.id) + "/notes",
+                     { model: cfg, text: src.text, hasTime: src.hasTime,
+                       part: cur.part.name });
+  } catch(e){ thrown = e }
+
+  S.ntBusy = false;
+  updateNotesEntry();
+
+  if (thrown){
+    S.ntErr = { part: cur.part.name, kind: "net",
+      message: "请求发不出去：这一页和本机服务断开了（" + (thrown.message || thrown) + "）。",
+      fix: "确认 asr-polish serve 还在跑，然后刷新页面重试。" };
+    renderNotes();
+    return;
+  }
+  if (!res.ok){
+    // 提供方给的原因原样带出来：key 错、限流、地址不通，处理方式各不相同
+    if (res.data.kind === "auth" || res.data.kind === "no_key") openModelBox(true);
+    S.ntErr = { part: cur.part.name, kind: res.data.kind || "model",
+                message: res.data.error || ("HTTP " + res.code) };
+    renderNotes();
+    return;
+  }
+
+  S.ntLast = { partName: res.data.partName || cur.part.name,
+               file: res.data.file || "",
+               points: (res.data.points || []).length,
+               concepts: (res.data.concepts || []).length,
+               added: res.data.added || [], reused: res.data.reused || [],
+               skipped: res.data.skipped || [] };
+  renderNotes();
+  loadNotesIndex();          // 清单变了（新文件 / 新的出处），重新取一次
+}
+
+function openNotes(open){
+  var box = $("#notes");
+  if (!box) return;
+  box.hidden = !open;
+  if (!open) return;
+  S.ntErr = null;
+  renderNotes();
+  loadNotesIndex();          // 「以前存过没有」只有服务端知道
+}
+
+$("#notesbtn").addEventListener("click", function(){
+  var rd = modelReady(cfgNow());
+  if (!rd.ok){
+    openModelBox(true);
+    $("#modelnote").textContent = rd.why + "，填完再点「笔记」。";
+    return;
+  }
+  openNotes($("#notes").hidden);
+});
+$("#ntclose").addEventListener("click", function(){ openNotes(false) });
+$("#ntbtn").addEventListener("click", function(){ saveNotes() });
+
+/* 从笔记页点一条出处进来时，落在这一段上（`?t=秒&part=第几篇`）。
+   参数名和笔记页用的三个一致；两个都没给就照旧回到上次读到的位置。 */
+function revealAt(sec, partIdx){
+  if (sec == null || isNaN(sec)) return false;
+  var secs = partSections();
+  if (!secs.length) return false;
+
+  var order = [];
+  if (partIdx != null && !isNaN(partIdx) && secs[partIdx]) order = [partIdx];
+  else for (var i = 0; i < secs.length; i++) order.push(i);
+
+  var bestCue = null, bestD = Infinity, bestPart = -1;
+  order.forEach(function(k){
+    var cues = secs[k].querySelectorAll(".cue");
+    for (var j = 0; j < cues.length; j++){
+      var st = cues[j]._start;
+      if (st == null) continue;
+      var d = Math.abs(st - sec);
+      if (d < bestD){ bestD = d; bestCue = cues[j]; bestPart = k }
+    }
+  });
+  if (!bestCue) return false;
+  selectPart(bestPart, false);
+  focusCue(bestCue);
+  return true;
+}
+
 var POS_PREFIX = "asr-polish:pos:v1:";
 
 function posKey(taskId){ return POS_PREFIX + taskId; }
@@ -3796,7 +4139,10 @@ window.__reader = {
   quizExplain: quizExplain,
   parseQuizStore: parseQuizStore,
   quizOf: quizOf,
-  withQuiz: withQuiz
+  withQuiz: withQuiz,
+  storedNoteOf: storedNoteOf,
+  noteFor: noteFor,
+  revealAt: revealAt
 };
 })();
 </script>

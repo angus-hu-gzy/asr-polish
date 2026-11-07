@@ -16,6 +16,10 @@ subs/
 corpus_asr/
 manifest.json
 
+# 笔记库（`serve` 默认写到当前目录的 notes/）：这是用户自己的知识库，
+# 里面是别人视频的正文摘要，和 subs/ 一个性质。
+notes/
+
 # 本地服务状态（`serve` 默认在当前目录建库，还带 WAL/SHM 两个旁路文件）
 tasks.db
 tasks.db-wal

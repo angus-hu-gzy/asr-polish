@@ -17,9 +17,13 @@ GET    /api/tasks/{id}/transcript    只读：把已落盘的字幕读成分段�
 POST   /api/tasks/{id}/summary       单篇总结：转发给 OpenAI 兼容的模型服务
 POST   /api/tasks/{id}/ask           单篇问答：同样转发，回答要带原文时间
 POST   /api/tasks/{id}/quiz          单篇小测验：出几道选择题，每题带出处
+POST   /api/tasks/{id}/notes         把这一篇写进 notes/ 笔记库（要点 + 概念）
+GET    /api/notes                    笔记库清单（视频 / 概念 / 是否过期）
+GET    /api/notes/search?q=…         在笔记里做关键词匹配
 GET    /api/health           健康检查
 GET    /                     面板
 GET    /reader               阅读页
+GET    /notes                笔记库页面
 
 `/transcript` 只读磁盘上已经写好的导出文件，不触发抓取、不改任务状态。
 它的存在是因为 `result` 里只有文件路径没有正文——把正文塞进 SQLite 会让
@@ -29,12 +33,14 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
 from ..bili import cookie_status, current_min_interval, throttle_waited
-from . import qa, quiz, summary, transcript
+from . import notes, notes_page, qa, quiz, summary, transcript
 from .reader import html as reader_html
 from .store import DONE, FAILED, PENDING, RUNNING, Store
 from .worker import WorkerPool
@@ -43,11 +49,15 @@ _MAX_BODY = 1 << 20          # 1 MB，请求体上限
 
 
 class App:
-    def __init__(self, store: Store, pool: Optional[WorkerPool] = None) -> None:
+    def __init__(self, store: Store, pool: Optional[WorkerPool] = None,
+                 notes_dir: str = notes.DIR_NAME) -> None:
         self.store = store
         self.pool = pool
         self.events: list[str] = []
         self._lock = threading.Lock()
+        #: 笔记库落在服务的当前目录下（`FOR_AI.md` 的约定）。做成可注入是为了
+        #: 测试能指到一个临时目录——真跑起来没人会想换它。
+        self.notes_root = Path(notes_dir)
 
     def note(self, msg: str) -> None:
         from datetime import datetime
@@ -316,6 +326,31 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return data if isinstance(data, dict) else None
 
+    def _parts_reader(self):
+        """``task_id -> {分P 文件名: part}``，一次请求内缓存。
+
+        笔记页要判断「这份笔记的来源是不是变了」，得拿现在的字幕算一遍指纹。
+        一个库里几十篇笔记指向的可能只有几个任务，不缓存就会把同一个文件
+        读几十遍。
+        """
+        cache: dict = {}
+
+        def read(task_id: str) -> dict:
+            if task_id in cache:
+                return cache[task_id]
+            task = self.app.store.get(task_id)
+            parts: dict = {}
+            if task is not None:
+                try:
+                    body = transcript.build(task.id, task.result)
+                except (OSError, ValueError):
+                    body = {"parts": []}
+                parts = {p["name"]: p for p in body.get("parts") or []}
+            cache[task_id] = parts
+            return parts
+
+        return read
+
     # ── 路由 ────────────────────────────────────────────────
 
     def do_OPTIONS(self) -> None:                       # noqa: N802
@@ -334,6 +369,24 @@ class Handler(BaseHTTPRequestHandler):
         if parts == ["reader"]:
             self._send(200, reader_html().encode("utf-8"),
                        "text/html; charset=utf-8")
+            return
+
+        if parts == ["notes"]:
+            # 笔记页。和阅读页一样是服务端生成的一整块 HTML；页面自己再去
+            # /api/notes 拿数据，不在 HTML 里内联一遍——内联会让「刷新」和
+            # 「搜索」走两条不同的数据来源，搜出来的和看到的对不上。
+            self._send(200, notes_page.html().encode("utf-8"),
+                       "text/html; charset=utf-8")
+            return
+
+        if parts == ["api", "notes"]:
+            self._json(200, notes.list_all(self.app.notes_root,
+                                          self._parts_reader()))
+            return
+
+        if parts == ["api", "notes", "search"]:
+            q = (qs.get("q") or [""])[0]
+            self._json(200, notes.search(self.app.notes_root, q))
             return
 
         if parts == ["api", "health"]:
@@ -572,6 +625,102 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(e.status, {"error": e.message, "kind": e.kind})
                 return
             self._json(200, out)
+            return
+
+        if len(parts) == 4 and parts[:2] == ["api", "tasks"] \
+                and parts[3] == "notes":
+            # 把这一篇写进笔记库。和前三层同一套调用链，多的只有两件事：
+            # **写文件**，以及把库里已有的概念名（只名字）带进提示词——
+            # 模型每次给同一个概念起个新名，库就永远聚不起来。
+            #
+            # 正文仍由前端拼好发过来（同一个 buildModelSource），服务端只读
+            # transcript 拿这一篇的真实段首：锚点要拿它核，指纹也要拿它算。
+            data = self._body()
+            if data is None:
+                self._err(400, "请求体不是合法 JSON（或超过 1MB）")
+                return
+            task = self.app.store.get(parts[2])
+            if task is None:
+                self._err(404, "没有这个任务：%s" % parts[2])
+                return
+
+            all_parts = self._parts_reader()(task.id)
+            if not all_parts:
+                self._json(409, {
+                    "kind": "empty",
+                    "error": "这个任务读不出正文（产物被移动、删除，或者还没跑完），"
+                             "写不了笔记。"})
+                return
+            names = list(all_parts)
+            want = data.get("part") or ""
+            if want:
+                if want not in all_parts:
+                    self._json(404, {
+                        "kind": "empty",
+                        "error": "这个任务里没有这一篇：%s（现在有 %d 篇）"
+                                 % (want, len(names))})
+                    return
+                idx = names.index(want)
+            elif len(names) == 1:
+                idx = 0
+            else:
+                self._json(400, {
+                    "kind": "empty",
+                    "error": "这个任务有 %d 篇，得说清存哪一篇（带上 part）。"
+                             % len(names)})
+                return
+
+            part = all_parts[names[idx]]
+            segs = part.get("segments") or []
+            has_time = any(s.get("start") is not None for s in segs)
+            known = [c["name"]
+                     for c in notes.load_concepts(self.app.notes_root)]
+
+            try:
+                out = notes.call(data.get("model") or {},
+                                 data.get("text") or "",
+                                 known=known, has_time=has_time)
+            except summary.SummaryError as e:
+                self._json(e.status, {"error": e.message, "kind": e.kind})
+                return
+
+            # 同一个合集的多个分 P 才写 P2；多视频任务写「第 2 篇」。
+            bvids = {notes.part_meta(task, p, 0, 1)["bvid"]
+                     for p in all_parts.values()}
+            pm = notes.part_meta(task, part, idx, len(names),
+                                 same_bv=len(bvids - {""}) <= 1)
+            now = time.time()
+            meta = dict(pm, task_id=task.id, date=notes.fmt_date(now),
+                        at=notes.fmt_time(now), has_time=has_time,
+                        sig=notes.part_sig(part), model=out["model"],
+                        segments=segs)
+            try:
+                saved = notes.save_video_note(self.app.notes_root, meta,
+                                              out["notes"]["points"],
+                                              out["notes"]["concepts"],
+                                              self.headers.get("Host") or "")
+            except OSError as e:
+                self._json(500, {
+                    "kind": "empty",
+                    "error": "笔记写不进磁盘：%s。看一眼 %s 是不是只读，"
+                             "或者被别的程序占着。"
+                             % (str(e)[:160], self.app.notes_root)})
+                return
+
+            self._json(200, {
+                "file": saved["file"],
+                "dir": str(self.app.notes_root),
+                "added": saved["added"],
+                "reused": saved["reused"],
+                "skipped": out["notes"].get("skipped") or [],
+                "hasTime": has_time,
+                "part": idx,
+                "partName": names[idx],
+                "model": out["model"],
+                "points": out["notes"]["points"],
+                "concepts": [{"term": c["term"], "def": c["def"]}
+                             for c in out["notes"]["concepts"]],
+            })
             return
 
         self._err(404, "未知路径：%s" % u.path)
