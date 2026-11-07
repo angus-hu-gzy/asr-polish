@@ -231,6 +231,30 @@ class ProviderErrorTest(unittest.TestCase):
         summary.http_error(exc)
         self.assertTrue(fp.closed, "响应体读完了却还开着")
 
+    def test_closing_a_broken_response_is_not_an_error(self) -> None:
+        """关不掉就算了——不能因为「顺手关一下」把真正的异常换掉。
+
+        3.9 的 `addbase.__getattr__` 是往 `self.fp` 上转发的：fp 不是真文件对象
+        时（测试里塞的替身、或者已经关过一次的对象）抛的是 `KeyError`，不是
+        `AttributeError`，所以连 `except Exception` 的位置都很讲究。CI 的 3.9
+        那一路就是被这个弄红的。
+        """
+        class Ok:
+            closed = False
+
+            def close(self) -> None:
+                self.closed = True
+
+        class Broken:
+            def close(self) -> None:
+                raise KeyError("file")
+
+        ok = Ok()
+        summary.close_quietly(ok)
+        self.assertTrue(ok.closed)
+        summary.close_quietly(Broken())          # 不抛就算过
+        summary.close_quietly(None)              # None 也不该炸
+
 
 class TransportTest(unittest.TestCase):
 

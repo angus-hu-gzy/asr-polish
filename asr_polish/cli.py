@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import __version__
+from ._http import close_quietly
 from .correction import correct_text
 from .crosscheck import cross_check, confidence_report
 from .quality import assess
@@ -381,7 +382,7 @@ def _api(server: str, path: str, payload: Optional[dict] = None,
         finally:
             # 读完要关：HTTPError 本身就是一份打开着的响应，不关就等 GC 来报
             # ResourceWarning，把真正的错误信息淹掉。
-            e.close()
+            close_quietly(e)
         try:
             msg = json.loads(body).get("error") or body
         except ValueError:

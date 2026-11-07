@@ -33,6 +33,8 @@ import socket
 import urllib.error
 import urllib.request
 
+from .._http import close_quietly
+
 #: 模型偶尔会慢。总结一篇两万字的中文，实测 30～60 秒；给到两分钟。
 DEFAULT_TIMEOUT = 120.0
 
@@ -393,10 +395,7 @@ def http_error(exc: urllib.error.HTTPError) -> SummaryError:
         # 回收，Python 3.13+ 会为此打一条 ResourceWarning。真出错的时候，最不
         # 需要的就是一条看着像「我们自己漏了资源」的噪音——它会把真正的失败
         # 埋掉，而且每失败一次漏一个连接。
-        try:
-            exc.close()
-        except Exception:
-            pass
+        close_quietly(exc)
     detail = _provider_message(raw)
     if code in (401, 403):
         return SummaryError(

@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Optional
 
 from ._atomic import replace_with_retry
+from ._http import close_quietly
 from .throttle import Throttle
 
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -722,7 +723,7 @@ def _http_json(url: str, cookie_path: Optional[str] = None,
                     f"请求被拒绝（HTTP {e.code}），Cookie 可能已失效", code=e.code) from e
             raise BiliError(f"接口返回 HTTP {e.code}：{url.split('?')[0]}") from e
         finally:
-            e.close()
+            close_quietly(e)
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         raise BiliError(
             f"请求失败（{type(e).__name__}）：{url.split('?')[0]}") from e
