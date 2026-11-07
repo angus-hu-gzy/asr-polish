@@ -20,7 +20,7 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from asr_polish.server import qa
+from asr_polish.server import qa, summary
 
 _KEY = "sk-secret-must-not-leak"
 
@@ -202,7 +202,7 @@ class CallTest(unittest.TestCase):
 
     def test_too_long_body_is_explained(self) -> None:
         with self.assertRaises(qa.SummaryError) as cm:
-            qa.call(self.cfg, "字" * (qa.MAX_TEXT + 1), "问")
+            qa.call(self.cfg, "字" * (summary.MAX_TEXT + 1), "问")
         self.assertEqual(cm.exception.status, 413)
         self.assertIn("超过单次", cm.exception.message)
         self.assertEqual(self.rec.path, "")

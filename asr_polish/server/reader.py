@@ -143,7 +143,10 @@ header{
 .brand{font-size:14px;font-weight:650;letter-spacing:.01em;white-space:nowrap}
 .brand span{color:var(--faint);font-weight:400;margin-left:6px}
 .brand a{color:var(--faint);font-weight:400;font-size:12px;margin-left:10px}
-form{display:flex;gap:8px;flex:1;min-width:260px}
+/* 260 是给「粘贴 BV 号」留的舒服宽度，但顶栏现在多了「测验」这个入口，260 会让
+   整行在 900px 就换行（原本能撑到 880 以下）。让输入框肯再窄 60px，换行阈值就回到
+   原来的位置：1440 下宽度照旧由 flex 分配，一点没变。 */
+form{display:flex;gap:8px;flex:1;min-width:200px}
 input[type=text]{
   flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);
   border-radius:9px;padding:8px 12px;outline:none;font-size:14px;
@@ -172,6 +175,8 @@ input[type=text]::placeholder{color:var(--placeholder)}
 /* 「问答」只有两个字，也钉一下宽度：它在「总结」右边，那边一改字数这边就挪，
    两个按钮的相对位置每次都得重新找。 */
 .askbtn{min-width:60px;text-align:center}
+/* 「测验」同理，钉住宽度，别让右边的夜间开关跟着一起挪。 */
+.quizbtn{min-width:60px;text-align:center}
 
 /* ── 进度 ─────────────────────────────────────────── */
 #run{max-width:940px;margin:0 auto;padding:0 20px 12px}
@@ -431,19 +436,19 @@ mark.cur{background:var(--mark-cur);color:var(--mark-cur-ink);
 /* 锚点：一个小时间按钮。能点的悬停变主色；无出处的就是个灰字，不给手型、
    也不给悬停反馈——看起来能点却点不动，比看起来不能点更让人恼火。
    总结和问答共用这一套：同一个「时间是不是真的」的判断，长成一样最省事。 */
-.summary .anchor,.qa .anchor{
+.summary .anchor,.qa .anchor,.quiz .anchor{
   display:inline-block;margin-left:8px;padding:0 5px;border-radius:5px;
   border:1px solid var(--line);background:var(--panel);vertical-align:1px;
   font:11.5px/1.7 ui-monospace,Consolas,monospace;color:var(--faint);
   font-variant-numeric:tabular-nums;cursor:pointer;
 }
-.summary .anchor:hover,.qa .anchor:hover{border-color:var(--accent-line);
+.summary .anchor:hover,.qa .anchor:hover,.quiz .anchor:hover{border-color:var(--accent-line);
   color:var(--accent);background:var(--accent-glow)}
-.summary .anchor.none,.qa .anchor.none{border-color:transparent;background:none;
+.summary .anchor.none,.qa .anchor.none,.quiz .anchor.none{border-color:transparent;background:none;
   cursor:default;color:var(--faint)}
-.summary .anchor.none:hover,.qa .anchor.none:hover{color:var(--faint);
+.summary .anchor.none:hover,.qa .anchor.none:hover,.quiz .anchor.none:hover{color:var(--faint);
   background:none;border-color:transparent}
-.summary .note,.qa .note{
+.summary .note,.qa .note,.quiz .note{
   margin:0 0 12px;padding:8px 11px;border-radius:8px;font-size:12.5px;
   line-height:1.75;background:var(--warn-bg);border:1px solid var(--warn-line);
   color:var(--note-strong);
@@ -502,6 +507,79 @@ mark.cur{background:var(--mark-cur);color:var(--mark-cur-ink);
 .qa .qerr{font-size:13px;line-height:1.85;color:var(--bad);word-break:break-word}
 .qa .qerr .fix{display:block;margin-top:7px;color:var(--muted);font-size:12.5px}
 
+/* 测验：和前两块同一块地方、同一种排法——正文上方、流内展开，不盖正文。
+   它比总结高得多：五道题各带四个选项，答完还要展开解析。所以**不给列表限高**，
+   让人一屏读完；限高之后「把这套题做完」就变成了在小框里翻页。 */
+.quiz{
+  max-width:46em;margin:0 auto 22px;background:var(--panel);
+  border:1px solid var(--line);border-radius:11px;padding:13px 15px 15px;
+  box-shadow:var(--shadow);
+}
+.quiz[hidden]{display:none}
+.quiz .qzh{display:flex;align-items:center;gap:9px;margin-bottom:10px;flex-wrap:wrap}
+.quiz h3{margin:0;font-size:13.5px;font-weight:600}
+.quiz .sp{flex:1}
+.quiz .qzstat{font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums}
+/* 没有逐句时间那一篇的说明放在顶上、常驻：它是这一篇的前提，不是每道题的脚注。
+   放在结论下面的话，做完五道题才发现「定位不了」，等于白做。 */
+.quiz .qznote{
+  margin:0 0 12px;padding:8px 11px;border-radius:8px;font-size:12.5px;
+  line-height:1.75;background:var(--warn-bg);border:1px solid var(--warn-line);
+  color:var(--note-strong);
+}
+.quiz .qz{margin:0 0 15px;padding:0 0 14px;border-bottom:1px solid var(--line-soft)}
+.quiz .qz:last-child{border-bottom:none;padding-bottom:0;margin-bottom:0}
+.quiz .stem{display:flex;gap:8px;margin:0 0 9px;font-size:14px;
+  line-height:1.75;color:var(--ink)}
+.quiz .stem .n{flex:0 0 auto;font-size:12px;color:var(--faint);padding-top:3px;
+  font-variant-numeric:tabular-nums}
+/* 选项一路竖排：四句话横排会折成两三行，读起来要先找起点。 */
+.quiz .opts{display:flex;flex-direction:column;gap:7px}
+.quiz .opt{display:flex;gap:9px;align-items:flex-start;width:100%;text-align:left;
+  border:1px solid var(--line);background:var(--field);border-radius:9px;
+  padding:8px 11px;font-size:13.5px;line-height:1.7;color:var(--sub);cursor:pointer}
+.quiz .opt:hover:not(:disabled){border-color:var(--accent-line);background:var(--accent-glow)}
+.quiz .opt .k{flex:0 0 auto;font:12px/1.75 ui-monospace,Consolas,monospace;
+  color:var(--faint);min-width:11px}
+.quiz .opt .v{flex:1;min-width:0}
+/* 判过之后不再改判：颜色之外再给一个字符，色盲也分得出哪条是正确答案。
+   只靠红绿的话，这一层对色盲用户等于没有反馈。 */
+.quiz .opt .tick{flex:0 0 auto;font-size:12.5px;line-height:1.75}
+.quiz .opt:disabled{cursor:default;opacity:1}
+.quiz .opt.right{border-color:var(--ok-line);background:var(--ok-bg);color:var(--ok-ink)}
+.quiz .opt.right .k,.quiz .opt.right .tick{color:var(--ok)}
+.quiz .opt.wrong{border-color:var(--bad-line);background:var(--bad-bg);color:var(--bad)}
+.quiz .opt.wrong .k,.quiz .opt.wrong .tick{color:var(--bad)}
+.quiz .fb{margin:9px 0 0;padding:9px 11px;background:var(--field);border-radius:9px}
+.quiz .verdict{margin:0 0 5px;font-size:12.5px;font-weight:600}
+.quiz .verdict.good{color:var(--ok)}
+.quiz .verdict.bad{color:var(--bad)}
+.quiz .why{margin:0;font-size:13px;line-height:1.8;color:var(--sub)}
+.quiz .why b{margin-right:6px;font-weight:600;color:var(--note-strong)}
+.quiz .ref{margin:6px 0 0;font-size:12.5px;color:var(--muted)}
+.quiz .qzf{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  margin:13px 0 0;padding-top:11px;border-top:1px solid var(--line-soft)}
+/* 缺什么写在按钮右边，和问答那一行同一个理由：有位置就别让人停鼠标看 title。 */
+.quiz .qzmiss{font-size:12px;color:var(--warn);white-space:nowrap}
+/* 价格标签常驻：用户是隔几天来做一套的，提示过就消失的写法等于没说过。 */
+.quiz .qzcost{flex:1 1 100%;margin:2px 0 0;font-size:12px;line-height:1.75;
+  color:var(--faint)}
+.quiz .qzempty{font-size:13px;color:var(--muted);line-height:1.9}
+.quiz .qzbusy{font-size:13px;color:var(--muted);padding:4px 0}
+.quiz .qzerr{font-size:13px;line-height:1.85;color:var(--bad);word-break:break-word;
+  margin:0 0 12px}
+.quiz .qzerr .fix{display:block;margin-top:7px;color:var(--muted);font-size:12.5px}
+/* 划掉的错题：「只重做错题」里答对的那几道。留着不删是因为解析刚展开——正要看的
+   时候把它抽走，等于让人重新做一遍才看得到「为什么」。褪色的只有题干和选项：
+   整块一起褪会把刚展开的那段解析也压暗，正是要读的地方看不清。 */
+.quiz .qz.done .stem,.quiz .qz.done .opts{opacity:.55}
+.quiz .qz.done .stem>span:last-child{text-decoration:line-through}
+.quiz .qzdone{margin:7px 0 0;font-size:12px;color:var(--ok)}
+/* 模型这次的题有几道不能用：能用的照常做，坏的那几道在这里说明白，别让人
+   数着 5 道却只看到 3 道。 */
+.quiz .qzskip{font-size:12.5px;line-height:1.8;color:var(--muted);margin:0 0 12px;
+  padding:8px 11px;background:var(--field);border-radius:9px}
+
 /* 失败明细 */
 .fails{margin:26px 0 0;border-top:1px solid var(--line);padding-top:18px}
 .fails h3{font-size:13.5px;font-weight:600;margin:0 0 10px;color:var(--bad)}
@@ -546,6 +624,8 @@ mark.cur{background:var(--mark-cur);color:var(--mark-cur-ink);
             title="先在设置里填服务地址、模型名、API key">先配模型</button>
     <button class="btn sm askbtn" id="askbtn" type="button" disabled
             title="就这一篇提问。回答里的每条事实都要带原文时间，点时间能回到原文">问答</button>
+    <button class="btn sm quizbtn" id="quizbtn" type="button" disabled
+            title="就这一篇出几道题，做完看自己会不会。每题都标出原文时间">测验</button>
     <button class="btn sm themetog" id="themebtn" type="button">🌙 夜间</button>
   </div>
   <div id="run" hidden>
@@ -638,6 +718,29 @@ mark.cur{background:var(--mark-cur);color:var(--mark-cur-ink);
     </p>
   </div>
 
+  <div class="quiz" id="quiz" hidden>
+    <div class="qzh">
+      <h3 id="qzhead">这一篇的小测验</h3>
+      <span class="sp"></span>
+      <span class="qzstat" id="qzstat"></span>
+      <button class="btn sm" id="qzretry" type="button" disabled
+              title="还没有答错的题">只重做错题</button>
+      <button class="btn sm" id="qzreset" type="button" disabled
+              title="清空这一篇的作答，整套重做一遍（不再调模型，不花钱）">重做全部</button>
+      <button class="pbtn" id="qzclose" type="button" title="收起测验">✕</button>
+    </div>
+    <div class="qznote" id="qznote" hidden></div>
+    <div id="qzlist"></div>
+    <div class="qzf">
+      <button class="btn sm primary" id="qzbtn" type="button">生成 5 道题</button>
+      <span class="qzmiss" id="qzmiss" hidden></span>
+      <p class="qzcost">
+        每点一次「生成」都真的调一次模型服务，按你填的那家计费；「重做」不再调模型，
+        不花钱。题目和作答只存在这个浏览器里，刷新还在。
+      </p>
+    </div>
+  </div>
+
   <div class="marksbox" id="marksbox" hidden>
     <div class="mh">
       <h3 id="mkh">重点</h3>
@@ -702,7 +805,14 @@ var S = { id:null, timer:null, tick:null, startedAt:0, marks:[], cur:-1,
           sumBusy:false, sumErr:null, sumMem:null, sumAnchor:"", sumWarned:false,
           /* 问答这一层。qaMem 和 sumMem 同一个用途：localStorage 写不进去时，
              这一页里问过的必须还看得见。 */
-          qaBusy:false, qaErr:null, qaMem:null, qaWarned:false };
+          qaBusy:false, qaErr:null, qaMem:null, qaWarned:false,
+          /* 测验这一层。quizOnly 装的是「只重做错题」时筛出来的题号，null 表示
+             整套。存筛出来的那份而不是每次重算，是为了「答对之后划掉」这件事：
+             现算的话它会当场从列表里消失，连刚展开的解析一起没了。
+             quizSkips 记的是模型这次丢掉的那几道题的原因（按分 P），只活到下一页。
+             quizMem / quizWarned 和前两层同一个用途。 */
+          quizBusy:false, quizErr:null, quizMem:null, quizWarned:false,
+          quizOnly:null, quizSkips:null };
 
 /* ── 小工具 ──────────────────────────────────────── */
 function el(tag, cls, text){
@@ -793,9 +903,13 @@ function switchTo(id, note){
   $("#marksbox").hidden = true;        // 换任务了，重点列表先收起来
   $("#summary").hidden = true;         // 总结是按任务存的，别把上一条的摆在眼前
   $("#qa").hidden = true;              // 对话同理：上一条任务的问答不能留在新页面上
+  $("#quiz").hidden = true;            // 测验也是按任务存的，别把上一条的题摆在眼前
   S.sumMem = {}; S.sumErr = null; S.sumAnchor = "";
   S.qaMem = {}; S.qaErr = null; S.qaBusy = false;
+  S.quizMem = {}; S.quizErr = null; S.quizBusy = false; S.quizOnly = null;
+  S.quizSkips = null;
   updateAskEntry();
+  updateQuizEntry();
   if (note) notice("ok", note, "");
   poll();
 }
@@ -1028,6 +1142,8 @@ function selectPart(i, scroll){
   // 对话也一样：每篇一份，切篇就换一份。旧请求回来时会存回它自己那一篇，
   // 所以这里只管画当前这一篇。
   if (!$("#qa").hidden) renderQa();
+  // 测验同理：题目和作答都按篇存，切到哪篇看哪篇。
+  if (!$("#quiz").hidden) renderQuiz();
 }
 
 /* 统计只算当前这一篇。多分 P 时若把各篇加起来，屏幕上摆着 8 段，
@@ -1100,6 +1216,7 @@ function renderDoc(d, task){
     $("#exportFull").disabled = true;   // 没有正文就不给导出，别让人下个空文件
     updateSumButton();
     updateAskEntry();                  // 没有正文，问答入口也点不动
+    updateQuizEntry();                 // 测验入口同理
     if (r.parts_truncated) {
       notice("warn", "分 P 被截断", "这条合集共 " + (r.parts_truncated + (r.parts_written||0)) +
              " 个分 P，按单条上限只取了一部分。要全取请用命令行带 max_parts=0 或走任务面板。");
@@ -1185,6 +1302,7 @@ function renderDoc(d, task){
   $("#exportFull").disabled = false;
   updateSumButton();                 // 有正文了，总结才可能点得动
   updateAskEntry();                  // 问答入口同理
+  updateQuizEntry();                 // 测验入口也是
   renderFailures(r, task);
   restoreMarks();
   // 带 ?q= 进来的是「我要搜这个词」，位置让位给搜索：搜索要跳到第一处命中，
@@ -1715,6 +1833,14 @@ function modelReady(cfg){
   };
 }
 
+/* 「缺什么」那句话。中文后面紧跟拉丁字母要空一格（「缺 API key」），列表里的顿号
+   后面不空——「缺服务地址、模型名、API key」里多那个空格会让整句看着像排版坏了。 */
+function lackText(missing){
+  var list = (missing || []).join("、");
+  if (!list) return "";
+  return "缺" + (/^[A-Za-z]/.test(list) ? " " : "") + list;
+}
+
 /* 发给模型的正文。
    
    为什么要带时间戳：要点要能点回原文，模型就必须在自己看得见的时间戳里挑。
@@ -1912,13 +2038,16 @@ function cueByStart(t, tol){
   return bestD <= (tol == null ? 1.5 : tol) ? best : null;
 }
 
-function errFix(kind){
+/* 出错之后该做什么。again 是「再来一次」那个按钮在这一块里的叫法：总结叫
+   「重新生成」、测验叫「重新生成一套」，指错按钮比不指还糟。 */
+function errFix(kind, again){
+  var btn = again || "重新生成";
   if (kind === "no_key" || kind === "auth")
-    return "点顶栏「⚙ 模型」改 key，回来再点「重新生成」。";
+    return "点顶栏「⚙ 模型」改 key，回来再点「" + btn + "」。";
   if (kind === "bad_base" || kind === "connect")
     return "点顶栏「⚙ 模型」检查服务地址；确认这台机器能访问它。";
   if (kind === "timeout")
-    return "稍等一下再点「重新生成」；换一个更快的模型也有用。";
+    return "稍等一下再点「" + btn + "」；换一个更快的模型也有用。";
   if (kind === "rate")
     return "等几分钟再点，顺便看看账号额度。";
   if (kind === "parse")
@@ -2167,14 +2296,15 @@ $("#modelsave").addEventListener("click", function(){
     ? "已保存，只在这个浏览器里。"
     : "存不进浏览器（隐私模式或禁用了站点数据）：这次能用，刷新就没了。";
   updateSumButton();
-  updateAskButton();                 // 填完配置，两个入口一起活过来
+  updateAskButton();                 // 填完配置，三个入口一起活过来
+  updateQuizButtons();
   if (ok) setTimeout(function(){ openModelBox(false) }, 700);
 });
 
 $("#modelclear").addEventListener("click", function(){
   lsDel(modelKey());
   $("#mbase").value = ""; $("#mname").value = ""; $("#mkey").value = "";
-  $("#modelnote").textContent = "已清除。总结和提问都会回到「先配模型」。";
+  $("#modelnote").textContent = "已清除。总结、提问、出题都会回到「先配模型」。";
   updateSumButton();
   updateAskButton();
 });
@@ -2349,15 +2479,18 @@ function saveQaItem(name, item){
   return ok;
 }
 
-/* 发给问答的正文：本体和总结一模一样（同一个 buildSummarySource：按行对齐、行首补
-   [分:秒]），只摘掉它给总结加的那句「所有要点的 t 请写成 null」。
+/* 发给模型（问答、测验）的正文：本体和总结一模一样（同一个 buildSummarySource：
+   按行对齐、行首补 [分:秒]），只摘掉它给总结加的那句「所有要点的 t 请写成 null」。
 
-   为什么摘：问答这边没有「要点」这个概念，那句话混在正文里会被当成原文的一部分。
-   「这一篇没有逐句时间」这件事由服务端的提示词说——说的是同一件事，但用的是问答
-   的说法。不复制 buildSummarySource 的第二份：对齐规则只有一处，改也只改一处。 */
+   为什么摘：这两层都没有「要点」这个概念，那句话混在正文里会被当成原文的一部分。
+   「这一篇没有逐句时间」这件事由服务端的提示词说——说的是同一件事，但用的是
+   各自的说法。不复制 buildSummarySource 的第二份：对齐规则只有一处，改也只改一处。
+
+   第 2 层（问答）和第 3 层（测验）共用这一份：同一段正文、同一套对齐，两层看到
+   的原文必须逐字一致，否则同一篇里「问答说的」和「测验考的」会悄悄错开。 */
 var SUM_NO_TIME_HEAD = /^（这一篇没有逐句时间戳[^）]*）\n\n/;
 
-function buildAskSource(full, i){
+function buildModelSource(full, i){
   var src = buildSummarySource(full, i);
   if (!src.hasTime) src.text = src.text.replace(SUM_NO_TIME_HEAD, "");
   return src;
@@ -2494,7 +2627,7 @@ function updateAskButton(){
   var miss = $("#qamiss");
   if (miss){
     miss.hidden = rd.ok;
-    miss.textContent = rd.ok ? "" : ("缺" + rd.missing.join("、"));
+    miss.textContent = rd.ok ? "" : lackText(rd.missing);
     miss.title = rd.why;
   }
 }
@@ -2544,9 +2677,9 @@ async function askQuestion(text){
   S.qaBusy = true; S.qaErr = null;
   renderQa();
 
-  // 正文仍然出自第 1 层：buildAskSource 把纯文本按行对齐回全文，在行首补 [mm:ss]。
+  // 正文仍然出自第 1 层：buildModelSource 把纯文本按行对齐回全文，在行首补 [mm:ss]。
   // 模型只有自己看见时间，才可能抄对。
-  var src = buildAskSource(cur.full, cur.i);
+  var src = buildModelSource(cur.full, cur.i);
   var res = null, thrown = null;
   try {
     res = await call("POST", "/api/tasks/" + encodeURIComponent(S.id) + "/ask",
@@ -2623,6 +2756,555 @@ $("#qaf").addEventListener("submit", function(ev){
   $("#qain").value = "";
   askQuestion(q);
 });
+
+
+/* ── 单篇小测验（学习工作台第 3 层）─────────────────── */
+/* 前两层解决「读」：总结给要点，问答给答案。这一层解决「会不会」——出几道题，
+   答错能看解析、能回到那一段。
+
+   这层只有一条新规矩：**判分是模型说的，出处是我们核的**。正确答案对不对，这里
+   没有第二个模型当裁判，核不了；能核的仍然只有时间——解析里的 [mm:ss] 和这道题
+   自己的出处都拿去和真实段首比（1.5 秒容差），对不上的灰着、点不动。所以提示词
+   才要求解析必须带时间：答错了，唯一的「为什么」就是那句解析加上能点回去的那一段。
+
+   题目和作答都存浏览器，按「任务 + 分 P 名」分组，和划重点、读位、总结、对话
+   一个路数：没有账号，也就没有第二份。 */
+
+var QUIZ_PREFIX = "asr-polish:quiz:v1:";
+/* 一次出几道。和服务端 quiz.DEFAULT_COUNT 对齐：真正的默认值在那边，这里只是
+   界面上写出来的数字和请求里带的那个 5。 */
+var QUIZ_COUNT = 5;
+var QUIZ_LETTERS = ["A", "B", "C", "D"];
+
+function quizKey(taskId){ return QUIZ_PREFIX + taskId }
+
+/* 题目清洗：本地存的这份可能被人手改过，也可能来自一个更早的版本。坏数据逐条
+   丢，不能让一道坏题把整套测验变成空白。判据和服务端 quiz.normalize 同一套：
+   题干非空、恰好四个选项、答案下标 0-3。 */
+function quizQuestionsOf(list){
+  var out = [];
+  if (Object.prototype.toString.call(list) !== "[object Array]") return out;
+  for (var i = 0; i < list.length; i++){
+    var q = list[i];
+    if (!q || typeof q !== "object") continue;
+    var stem = typeof q.stem === "string" ? q.stem.replace(/^\s+|\s+$/g, "") : "";
+    if (!stem) continue;
+    var src = q.options;
+    if (Object.prototype.toString.call(src) !== "[object Array]") continue;
+    if (src.length !== 4) continue;
+    var opts = [], ok = true;
+    for (var k = 0; k < 4; k++){
+      var o = typeof src[k] === "string" ? src[k].replace(/^\s+|\s+$/g, "") : "";
+      if (!o){ ok = false; break }
+      opts.push(o);
+    }
+    if (!ok) continue;
+    var ans = q.answer;
+    if (typeof ans !== "number" || ans % 1 !== 0 || ans < 0 || ans > 3) continue;
+    out.push({ stem: stem, options: opts, answer: ans,
+               why: typeof q.why === "string" ? q.why : "",
+               t: (typeof q.t === "number" && !isNaN(q.t)) ? q.t : null });
+  }
+  return out;
+}
+
+/* 作答记录：和题目等长，每格是题号对应的选项下标或 null。
+   长度对不上（题目被截过、存的是旧版本）就补齐/截断——缺的当没答。 */
+function quizPicksOf(list, n){
+  var out = [];
+  for (var i = 0; i < n; i++){
+    var v = (Object.prototype.toString.call(list) === "[object Array]") ? list[i] : null;
+    out.push((typeof v === "number" && v % 1 === 0 && v >= 0 && v <= 3) ? v : null);
+  }
+  return out;
+}
+
+/* 进度。答完一道就重算一次，所以它是纯函数——状态只有题目和作答两份。 */
+function quizScore(questions, picks){
+  var total = (questions || []).length, done = 0, right = 0;
+  for (var i = 0; i < total; i++){
+    var p = picks ? picks[i] : null;
+    if (p == null) continue;
+    done++;
+    if (p === questions[i].answer) right++;
+  }
+  return { done: done, right: right, total: total };
+}
+
+/* 答错的题号。「只重做错题」用它筛；也是界面上唯一需要「哪几道错了」的地方。 */
+function quizWrong(questions, picks){
+  var out = [];
+  for (var i = 0; i < (questions || []).length; i++){
+    var p = picks ? picks[i] : null;
+    if (p != null && p !== questions[i].answer) out.push(i);
+  }
+  return out;
+}
+
+/* 一道题的解析 → 片段（文字 / 时间引用）+ 这道题自己的出处。
+   纯函数，DOM 由 quizFeedback 拼。方括号怎么认、怎么核对，直接复用第 2 层的
+   answerLines（它内部又是 matchStamp）——不另写一份「什么才算引用」。
+
+   needRef：解析里一条有效引用都没有时，界面上要补一个出处锚点。不然答错了也没
+   法回去看原文，而「能回去」正是这一层存在的理由。
+
+   补的前提是「这一道题自己的 t 真能落到某一段上」。落不到就别补：一行「出处 无出处」
+   既没告诉读者任何事，还看着像坏了——真正的原因是模型没给出能核对的时间，而这件事
+   已经由解析里那个灰锚点说过了。 */
+function quizExplain(q, segs, hasTime, tol){
+  var runs = [], cites = 0, any = false;
+  answerLines((q && q.why) || "", segs, hasTime, tol).forEach(function(ln){
+    if (ln.blank) return;
+    if (any) runs.push({ text: " " });     // 换行在这一层只当空格，解析是一句话
+    any = true;
+    (ln.runs || []).forEach(function(r){
+      if (r.cite && r.idx >= 0) cites++;
+      runs.push(r);
+    });
+  });
+  var t = parseStamp(q && q.t);
+  var idx = (hasTime && t != null) ? matchStamp(segs, t, tol) : -1;
+  return { runs: runs, t: t, idx: idx, cites: cites,
+           needRef: !!hasTime && cites === 0 && idx >= 0 };
+}
+
+/* 存法：{v:1, parts:{"<分 P 名>": {sig, at, model, questions:[…], picks:[…]}}}
+   解析态度和 parseSumStore / parseQaStore 一样：坏 JSON、缺 questions、字段类型
+   不对，都当没存过。 */
+function parseQuizStore(raw){
+  var empty = { v:1, parts:{} };
+  if (!raw) return empty;
+  try {
+    var d = JSON.parse(raw);
+    if (!d || typeof d !== "object") return empty;
+    var src = d.parts;
+    if (!src || typeof src !== "object"
+        || Object.prototype.toString.call(src) === "[object Array]") return empty;
+    var parts = {};
+    for (var k in src){
+      if (!Object.prototype.hasOwnProperty.call(src, k)) continue;
+      var it = src[k];
+      if (!it || typeof it !== "object") continue;
+      var qs = quizQuestionsOf(it.questions);
+      if (!qs.length) continue;
+      parts[k] = {
+        sig: typeof it.sig === "string" ? it.sig : "",
+        at:  typeof it.at  === "string" ? it.at  : "",
+        model: typeof it.model === "string" ? it.model : "",
+        questions: qs,
+        picks: quizPicksOf(it.picks, qs.length)
+      };
+    }
+    return { v:1, parts: parts };
+  } catch(e){ return empty }
+}
+
+function quizOf(store, name){
+  if (!store || !store.parts || !name) return null;
+  return store.parts[name] || null;
+}
+
+/* 读-改-写不碰传进来的对象：中间抛了，半截数据不该流回去（同 withPos / withSum / withQa）。 */
+function withQuiz(store, name, item){
+  var out = {};
+  var src = (store && store.parts) || {};
+  for (var k in src){
+    if (Object.prototype.hasOwnProperty.call(src, k)) out[k] = src[k];
+  }
+  out[name] = item;
+  return { v:1, parts: out };
+}
+
+/* ── 测验：读写与渲染 ─────────────────────────────── */
+
+function quizItemFor(name){
+  if (!name) return null;
+  if (S.quizMem && S.quizMem[name]) return S.quizMem[name];
+  return quizOf(parseQuizStore(lsRead(quizKey(S.id))), name);
+}
+
+function saveQuizItem(name, item){
+  if (!name) return false;
+  if (!S.quizMem) S.quizMem = {};
+  S.quizMem[name] = item;
+  if (!S.id) return false;
+  var ok = lsWrite(quizKey(S.id),
+                   JSON.stringify(withQuiz(parseQuizStore(lsRead(quizKey(S.id))),
+                                           name, item)));
+  if (!ok && !S.quizWarned){
+    S.quizWarned = true;
+    notice("warn", "测验存不进浏览器",
+      "这个浏览器不允许页面写 localStorage（隐私模式，或禁用了站点数据）。"
+      + "这一套题和作答在这一页里照常看，但刷新就没了。");
+  }
+  return ok;
+}
+
+/* 一个选项。判过之后不再绑定点击——改判等于自己骗自己，而这一层的意义就是
+   「知道自己到底会不会」。 */
+function quizOption(i, o, text, q, pick){
+  var b = el("button", "opt");
+  b.type = "button";
+  b.appendChild(el("span", "k", QUIZ_LETTERS[o] || String(o + 1)));
+  b.appendChild(el("span", "v", text));
+  if (pick == null){
+    b.addEventListener("click", function(){ pickAnswer(i, o) });
+    return b;
+  }
+  b.disabled = true;
+  if (o === q.answer){
+    b.className = "opt right";
+    b.appendChild(el("span", "tick", "✓"));
+  } else if (o === pick){
+    b.className = "opt wrong";
+    b.appendChild(el("span", "tick", "✗"));
+  }
+  return b;
+}
+
+/* 答完之后展开的那一块：判语 + 解析 + （必要时）出处。
+   解析里的时间引用和出处锚点都走 anchorEl，作用域写 "quiz"——和总结、问答各自
+   记自己的「第二次点击」，三块混在一起时点过同一个时间会直接跳视频。 */
+function quizFeedback(q, pick, part){
+  var fb = el("div", "fb");
+  var ok = pick === q.answer;
+  fb.appendChild(el("div", "verdict " + (ok ? "good" : "bad"),
+    ok ? "答对了。" : ("答错了，正确的是 " + (QUIZ_LETTERS[q.answer] || q.answer) + "。")));
+
+  var ex = quizExplain(q, part.segments || [], !!part.hasTime);
+  if (ex.runs.length){
+    var why = el("div", "why");
+    why.appendChild(el("b", null, "解析"));
+    ex.runs.forEach(function(r){
+      if (!r.cite){ why.appendChild(document.createTextNode(r.text)); return }
+      if (!part.hasTime){
+        // 这一篇本来没有逐句时间：方括号原样留着，不画灰字「无出处」。
+        // 满屏灰字的第一反应是「这功能不准」，而真原因写在测验区顶上那条说明里。
+        why.appendChild(document.createTextNode(r.raw));
+        return;
+      }
+      why.appendChild(anchorEl(r, part, "quiz"));
+    });
+    fb.appendChild(why);
+  } else {
+    // 模型没写解析。空着会让读者以为是界面没加载出来，写一句比留白强——
+    // 也不能拿题干顶上，那等于替模型编一句「为什么」。
+    var none = el("div", "why");
+    none.appendChild(el("b", null, "解析"));
+    none.appendChild(document.createTextNode("模型没给这道题的解析。"));
+    fb.appendChild(none);
+  }
+  if (ex.needRef){
+    var ref = el("div", "ref");
+    ref.appendChild(document.createTextNode("出处"));
+    ref.appendChild(anchorEl({ t: ex.t, idx: ex.idx }, part, "quiz"));
+    fb.appendChild(ref);
+  }
+  return fb;
+}
+
+function quizEl(i, q, pick, part, done){
+  var box = el("div", done ? "qz done" : "qz");
+  var stem = el("div", "stem");
+  stem.appendChild(el("span", "n", "第 " + (i + 1) + " 题"));
+  stem.appendChild(el("span", null, q.stem));
+  box.appendChild(stem);
+
+  var opts = el("div", "opts");
+  q.options.forEach(function(text, o){
+    opts.appendChild(quizOption(i, o, text, q, pick));
+  });
+  box.appendChild(opts);
+  if (pick != null) box.appendChild(quizFeedback(q, pick, part));
+  if (done) box.appendChild(el("div", "qzdone", "已答对，这道从错题里划掉了"));
+  return box;
+}
+
+function updateQuizButtons(){
+  var cur = currentPart();
+  var item = cur.part ? quizItemFor(cur.part.name) : null;
+  var qs = (item && item.questions) || [];
+  var picks = (item && item.picks) || [];
+  var wrong = quizWrong(qs, picks);
+  var answered = quizScore(qs, picks).done;
+
+  /* 「只重做错题」在筛选状态里变成「看全部」：一个按钮只有两种意思，比再加一个
+     「回到全部」少一个可点的东西。没有错题时置灰而不是隐藏——藏起来下面的题目
+     会往上跳一下。 */
+  var retry = $("#qzretry");
+  if (retry){
+    retry.textContent = S.quizOnly ? "看全部" : "只重做错题";
+    retry.disabled = !qs.length || (!S.quizOnly && !wrong.length);
+    retry.title = S.quizOnly ? "回到完整的一套题（答对的那些还留着）"
+      : (wrong.length ? "把答错的那 " + wrong.length + " 道单独列出来再做一遍"
+                      : "还没有答错的题");
+  }
+  var reset = $("#qzreset");
+  if (reset){
+    reset.disabled = !answered;
+    reset.title = "清空这一篇的作答，整套重做一遍（不再调模型，不花钱）";
+  }
+
+  /* 出题按钮跟配置走，和总结、问答同一套做法：没配好时文案变「先配模型」、
+     虚线框，点它不是报错而是去填设置——灰着点不动的按钮只会让人猜「为什么」。 */
+  var btn = $("#qzbtn");
+  if (!btn) return;
+  var rd = modelReady(cfgNow());
+  btn.className = "btn sm" + (rd.ok ? " primary" : " off");
+  btn.textContent = !rd.ok ? "先配模型"
+    : (qs.length ? "重新生成一套" : ("生成 " + QUIZ_COUNT + " 道题"));
+  btn.disabled = !!S.quizBusy;
+  btn.title = !rd.ok ? (rd.why + "。点这里去填。")
+    : (qs.length
+        ? "重新调一次模型、换一套新题；这一篇的旧题和旧记录一起作废（会再花一次钱）"
+        : "就这一篇出题。会调用设置里配的模型服务，按它那边花钱");
+  var miss = $("#qzmiss");
+  if (miss){
+    miss.hidden = rd.ok;
+    miss.textContent = rd.ok ? "" : lackText(rd.missing);
+    miss.title = rd.why;
+  }
+}
+
+function renderQuiz(){
+  var box = $("#quiz");
+  if (!box || box.hidden) return;
+  var list = $("#qzlist");
+  clear(list);
+  $("#qzstat").textContent = "";
+  updateQuizButtons();
+
+  var cur = currentPart();
+  if (!cur.part){
+    $("#qzhead").textContent = "这一篇的小测验";
+    list.appendChild(el("div", "qzempty", "这一篇没有正文，出不了题。"));
+    return;
+  }
+  $("#qzhead").textContent = "这一篇的小测验"
+    + (cur.part.label ? " · " + cur.part.label : "");
+
+  // 没有逐句时间这件事写在顶上、常驻：它是这一篇的前提，不是每道题的脚注
+  var note = $("#qznote");
+  clear(note);
+  note.hidden = !!cur.part.hasTime;
+  if (!cur.part.hasTime){
+    note.appendChild(document.createTextNode(
+      "这一篇没有逐句时间戳，解析无法定位到视频（必剪 ASR 和纯文本导出会这样）。"
+      + "题目照常做，只是解析里不带时间锚点。"));
+  }
+
+  if (S.quizBusy){
+    list.appendChild(el("div", "qzbusy",
+      "正在出题…模型要先把这一篇读完，可能要半分钟。"));
+    return;
+  }
+  // 出错只报错，不动已经有的那套题：一次失败的重新出题不该把旧题也带走
+  if (S.quizErr && S.quizErr.part === cur.part.name){
+    var p = el("div", "qzerr", S.quizErr.message);
+    var fix = S.quizErr.fix || errFix(S.quizErr.kind, "重新生成一套");
+    if (fix) p.appendChild(el("span", "fix", fix));
+    list.appendChild(p);
+  }
+
+  var item = quizItemFor(cur.part.name);
+  if (item && item.sig !== summarySig(cur.part)){
+    // 拿着旧题配新字幕：题干还在，答案可能已经不是那个了
+    list.appendChild(el("div", "note",
+      "字幕变过了（任务重跑过，或者这一篇被重新抓了一遍），这套题对不上现在的"
+      + "正文，所以不再显示。点「重新生成一套」重做一套。"));
+    $("#qzstat").textContent = "缓存已失效";
+    return;
+  }
+  if (!item || !item.questions.length){
+    // 没有逐句时间的篇不能许「每道题都会标出原文时间」——上面那条说明说的是
+    // 反的，这两句话放在一起会让人以为界面上有时间只是还没出来
+    list.appendChild(el("div", "qzempty",
+      "还没有这一篇的测验。点下面「生成 " + QUIZ_COUNT + " 道题」——这一篇有 "
+      + (cur.part.segments || []).length + " 段，"
+      + (cur.part.hasTime ? "每道题都会标出原文时间。"
+                          : "解析会引用原文，但不带时间锚点。")));
+    return;
+  }
+
+  var sc = quizScore(item.questions, item.picks);
+  $("#qzstat").textContent = "答对 " + sc.right + " 道 / 共 " + sc.total + " 道"
+    + (S.quizOnly ? " · 只看错题" : "");
+
+  // 模型这次有几道题缺胳膊少腿：说清楚，别让人数着 5 道只看到 3 道
+  var skips = S.quizSkips && S.quizSkips[cur.part.name];
+  if (skips && skips.length){
+    list.appendChild(el("div", "qzskip",
+      "模型这次有 " + skips.length + " 道题不能用，已经丢掉：" + skips.join("；") + "。"));
+  }
+
+  var idxs = S.quizOnly
+    || item.questions.map(function(_, i){ return i });
+  if (S.quizOnly && !idxs.length)
+    list.appendChild(el("div", "qzempty", "这一套全答对了，没有要重做的。"));
+
+  // 划掉：在「只看错题」里答对的那几道。仍然留着，因为解析刚展开——正要看
+  // 「为什么」的时候把它抽走，等于逼人重做一遍才看得到。下次再点「只重做错题」
+  // 会重新算一遍，那时它就不在列表里了。
+  idxs.forEach(function(i){
+    var q = item.questions[i], pick = item.picks[i];
+    var done = !!S.quizOnly && pick != null && pick === q.answer;
+    list.appendChild(quizEl(i, q, pick, cur.part, done));
+  });
+}
+
+async function generateQuiz(){
+  var cur = currentPart();
+  if (!cur.part || !S.id || S.quizBusy) return;
+
+  var cfg = cfgNow();
+  var rd = modelReady(cfg);
+  if (!rd.ok){
+    // 缺配置就别发请求：发出去只会换回一句「key 无效」，白等一轮
+    openModelBox(true);
+    $("#modelnote").textContent = rd.why + "，填完再点「生成」。";
+    return;
+  }
+
+  var name = cur.part.name;
+  var gen = S.gen;                 // 换任务了的话，这一批题不属于新页面
+  S.quizBusy = true; S.quizErr = null;
+  renderQuiz();
+
+  var src = buildModelSource(cur.full, cur.i);
+  var res = null, thrown = null;
+  try {
+    res = await call("POST", "/api/tasks/" + encodeURIComponent(S.id) + "/quiz",
+                     { model: cfg, text: src.text, hasTime: src.hasTime,
+                       count: QUIZ_COUNT, part: name });
+  } catch(e){ thrown = e }
+
+  if (S.gen !== gen) return;       // 换任务了：这份结果不属于现在这一篇
+  S.quizBusy = false;
+
+  if (thrown){
+    S.quizErr = { part: name, kind: "net",
+      message: "请求发不出去：这一页和本机服务断开了（" + (thrown.message || thrown) + "）。",
+      fix: "确认 asr-polish serve 还在跑，然后刷新页面重试。" };
+    renderQuiz();
+    return;
+  }
+  if (!res.ok){
+    // 提供方给的原因原样带出来：key 错、限流、地址不通，处理方式各不相同
+    var kind = res.data.kind || "model";
+    S.quizErr = { part: name, kind: kind,
+                  message: res.data.error || ("HTTP " + res.code) };
+    // key 错就别让人自己找顶栏了：直接把设置面板打开，把提供方的原话写在
+    // 面板里——要改的正是面板里那三格。限流、超时、地址不通不打开：
+    // 那些改设置没用，打开只会让人以为是自己填错了。
+    if (kind === "no_key" || kind === "auth"){
+      openModelBox(true);
+      $("#modelnote").textContent = S.quizErr.message;
+    }
+    renderQuiz();
+    return;
+  }
+
+  var qs = quizQuestionsOf((res.data.quiz || {}).questions);
+  if (!qs.length){
+    S.quizErr = { part: name, kind: "parse",
+      message: "模型这次没给出能用的题。再点一次「重新生成一套」，或者换一个更听话的模型。" };
+    renderQuiz();
+    return;
+  }
+  var skips = (res.data.quiz || {}).skipped;
+  if (skips && skips.length){
+    if (!S.quizSkips) S.quizSkips = {};
+    S.quizSkips[name] = skips;
+  }
+  var item = { sig: summarySig(cur.part),
+               at: mdStamp(new Date()),
+               model: res.data.model || cfg.model,
+               questions: qs,
+               picks: quizPicksOf(null, qs.length) };
+  S.quizOnly = null;
+  saveQuizItem(name, item);
+  renderQuiz();
+}
+
+/* 选一个答案。判过就定了：再点别的选项不改判——这一层要的是「我到底会不会」，
+   而不是「我怎么摆弄它才对」。 */
+function pickAnswer(i, o){
+  var cur = currentPart();
+  if (!cur.part) return;
+  var item = quizItemFor(cur.part.name);
+  if (!item || !item.questions[i]) return;
+  if (item.picks[i] != null) return;
+
+  var picks = item.picks.slice();
+  picks[i] = o;
+  saveQuizItem(cur.part.name, { sig: item.sig, at: item.at, model: item.model,
+                                questions: item.questions, picks: picks });
+  renderQuiz();
+}
+
+/* 「只重做错题」：把错的那几道清空作答、只列它们。
+   清空是因为「重做」要能再选一次；答对的保持原样——进度里的「答对 X」不该因为
+   重做几道错题而减少。 */
+function retryWrong(){
+  var cur = currentPart();
+  if (!cur.part) return;
+  if (S.quizOnly){ S.quizOnly = null; renderQuiz(); return }
+
+  var item = quizItemFor(cur.part.name);
+  if (!item) return;
+  var wrong = quizWrong(item.questions, item.picks);
+  if (!wrong.length) return;
+
+  var picks = item.picks.slice();
+  wrong.forEach(function(i){ picks[i] = null });
+  saveQuizItem(cur.part.name, { sig: item.sig, at: item.at, model: item.model,
+                                questions: item.questions, picks: picks });
+  S.quizOnly = wrong;
+  renderQuiz();
+}
+
+/* 「重做全部」：题不动，只把作答清空。不重新调模型——重做是复习，不该再花一次钱。 */
+function resetQuiz(){
+  var cur = currentPart();
+  if (!cur.part) return;
+  var item = quizItemFor(cur.part.name);
+  if (!item) return;
+  saveQuizItem(cur.part.name, { sig: item.sig, at: item.at, model: item.model,
+                                questions: item.questions,
+                                picks: quizPicksOf(null, item.questions.length) });
+  S.quizOnly = null;
+  renderQuiz();
+}
+
+function updateQuizEntry(){
+  var btn = $("#quizbtn");
+  if (!btn) return;
+  btn.disabled = !(S.transcript && S.transcript.parts
+                   && S.transcript.parts.length);
+}
+
+function openQuiz(open){
+  var box = $("#quiz");
+  if (!box) return;
+  box.hidden = !open;
+  if (!open) return;
+  S.quizErr = null;
+  renderQuiz();
+  // 顶栏是 sticky 的：在正文中间点「测验」，不滚一下等于什么都没发生
+  if (box.scrollIntoView) box.scrollIntoView({ block: "start", behavior: "smooth" });
+}
+
+$("#quizbtn").addEventListener("click", function(){
+  var box = $("#quiz");
+  if (!box) return;
+  if (box.hidden && !(S.transcript && S.transcript.parts
+                      && S.transcript.parts.length)) return;
+  openQuiz(!!box.hidden);
+});
+$("#qzclose").addEventListener("click", function(){ openQuiz(false) });
+$("#qzbtn").addEventListener("click", generateQuiz);
+$("#qzretry").addEventListener("click", retryWrong);
+$("#qzreset").addEventListener("click", resetQuiz);
 
 
 /* ── 断点续读 ────────────────────────────────────── */
@@ -3089,6 +3771,7 @@ window.__reader = {
   sumKey: sumKey,
   parseModel: parseModel,
   modelReady: modelReady,
+  lackText: lackText,
   buildSummarySource: buildSummarySource,
   parseStamp: parseStamp,
   matchStamp: matchStamp,
@@ -3100,11 +3783,20 @@ window.__reader = {
   qaKey: qaKey,
   splitCites: splitCites,
   answerLines: answerLines,
-  buildAskSource: buildAskSource,
+  buildModelSource: buildModelSource,
   parseQaStore: parseQaStore,
   qaOf: qaOf,
   withQa: withQa,
-  withoutQa: withoutQa
+  withoutQa: withoutQa,
+  quizKey: quizKey,
+  quizQuestionsOf: quizQuestionsOf,
+  quizPicksOf: quizPicksOf,
+  quizScore: quizScore,
+  quizWrong: quizWrong,
+  quizExplain: quizExplain,
+  parseQuizStore: parseQuizStore,
+  quizOf: quizOf,
+  withQuiz: withQuiz
 };
 })();
 </script>

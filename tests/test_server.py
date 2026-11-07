@@ -639,6 +639,34 @@ class TestHTTP(unittest.TestCase):
                                {"text": "正文", "question": "问"})
         self.assertEqual(code, 404)
 
+    def test_quiz_wires_kind_through(self) -> None:
+        """出题的失败原因也按种类带回，不是一句「出题失败」。
+
+        和 /ask 一样用空 key 触发 no_key：不联网，但真走完整条路由。
+        """
+        tid = self._one_task()
+        code, body = self._get("/api/tasks/%s/quiz" % tid, "POST",
+                               {"model": {"base": "http://127.0.0.1:1/v1",
+                                          "model": "m", "key": ""},
+                                "text": "正文", "count": 5})
+        self.assertEqual(code, 400)
+        self.assertEqual(body["kind"], "no_key")
+        self.assertIn("API key", body["error"])
+
+    def test_quiz_needs_a_body(self) -> None:
+        tid = self._one_task()
+        code, body = self._get("/api/tasks/%s/quiz" % tid, "POST",
+                               {"model": {"base": "http://127.0.0.1:1/v1",
+                                          "model": "m", "key": "sk-fake"},
+                                "text": "   "})
+        self.assertEqual(code, 400)
+        self.assertEqual(body["kind"], "empty")
+        self.assertIn("出不了题", body["error"])
+
+    def test_quiz_unknown_task_404(self) -> None:
+        code, body = self._get("/api/tasks/NOPE/quiz", "POST", {"text": "正文"})
+        self.assertEqual(code, 404)
+
     def test_health(self) -> None:
         code, body = self._get("/api/health")
         self.assertEqual(code, 200)

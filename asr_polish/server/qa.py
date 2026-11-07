@@ -28,7 +28,8 @@ segments，就会长出第二套「全文是怎么拼的」规则，两边慢慢
 """
 from __future__ import annotations
 
-from .summary import DEFAULT_TIMEOUT, MAX_TEXT, SummaryError, complete
+from .summary import (BODY_HEAD, BODY_TAIL, DEFAULT_TIMEOUT, SummaryError,
+                      complete, require_len)
 
 #: 最多带几轮历史。一轮 = 一问一答。六轮之后「刚才聊到哪」基本靠正文就能
 #: 重新接上，再往前带只是把账单拉长。
@@ -67,10 +68,6 @@ NO_TIME_RULE = """
 
 注意：这一篇的文字稿没有逐句时间戳，行首没有 [分:秒]。这种情况下不要写任何
 时间，也不要编造时间。"""
-
-#: 正文包在两个标记之间，模型才不容易把正文和问题混成一段。
-BODY_HEAD = "【正文开始】\n"
-BODY_TAIL = "\n【正文结束】"
 
 #: 把正文认下来的那一句。没有一个「收到」回合，模型有时会把正文当成问题的一部分。
 ACK = "好的，我只依据这段正文回答，并在每条事实后面标上原文里的 [分:秒]。"
@@ -135,16 +132,10 @@ def call(cfg: dict, text: str, question: str, history=None,
     if not q:
         raise SummaryError("empty", "问题还没写。就这一篇问点什么，再点提问。", 400)
 
-    body = (text or "").strip()
+    body = require_len(text)
     if not body:
         raise SummaryError(
             "empty", "这一篇没有正文，问不了。换一篇有字幕的再试。", 400)
-    if len(body) > MAX_TEXT:
-        raise SummaryError(
-            "empty",
-            "这一篇有 %d 字，超过单次 %.0f 万字的处理上限。"
-            "先分段读，或者换一个上下文更长的模型。"
-            % (len(body), MAX_TEXT / 10000.0), 413)
 
     msgs = build_messages(body, q, history, has_time)
     out = complete(cfg, msgs, timeout=timeout)

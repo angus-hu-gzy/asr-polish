@@ -41,6 +41,11 @@ DEFAULT_TIMEOUT = 120.0
 #: 「context length exceeded」好懂得多。
 MAX_TEXT = 200_000
 
+#: 正文包在这两个标记之间，模型才不容易把正文和「要它做的事」混成一段。
+#: 问答和测验共用：同一对边界，模型看到的形状一致，提示词里也好指代。
+BODY_HEAD = "【正文开始】\n"
+BODY_TAIL = "\n【正文结束】"
+
 #: 提示词。放在这里当常量，不从配置文件读、也不做成用户可编辑：这一层的输出
 #: 结构是被前端解析的，格式一变整块就崩，不该留一个「随便改」的口子。
 #:
@@ -308,6 +313,16 @@ def _content_of(raw: str) -> str:
 
 def parse_content(content: str) -> dict:
     """助手说的话 → 结构化摘要（模型输出这一层）。"""
+    return normalize(json_object(content))
+
+
+def json_object(content: str) -> dict:
+    """助手说的话 → 它吐出来的那个 JSON 对象，不管这个对象是什么意思。
+
+    拆围栏、从「好的，以下是…」后面挖出第一个配对完整的大括号、解析。
+    **只负责拿到对象**：怎么解释它（摘要有 tldr/points，测验有 questions）
+    是各层自己的事。总结和测验都只要这一步，所以放在这里共用。
+    """
     body = _strip_fence(content or "")
     obj = _first_json_object(body)
     if not obj:
@@ -318,7 +333,9 @@ def parse_content(content: str) -> dict:
     except ValueError:
         raise SummaryError(
             "parse", "模型返回的 JSON 解析不了：%s" % obj[:200], 502) from None
-    return normalize(data)
+    if not isinstance(data, dict):
+        raise SummaryError("parse", "模型返回的不是一个 JSON 对象。", 502)
+    return data
 
 
 def parse_reply(raw: str) -> dict:
@@ -440,6 +457,23 @@ def require_cfg(cfg: dict) -> dict:
     return {"base": base, "model": model, "key": key}
 
 
+def require_len(text: str) -> str:
+    """正文去空白 + 长度上限，返回干净的那份。
+
+    总结、问答、测验三层共用这一处。上限是一份「一次能发多少」的约定，三处各写
+    一份的话，改上限的那天一定漏掉一层，而漏掉那一层报的是提供方的 400，看不出
+    是自己这边没拦住。
+    """
+    body = (text or "").strip()
+    if len(body) > MAX_TEXT:
+        raise SummaryError(
+            "empty",
+            "这一篇有 %d 字，超过单次 %.0f 万字的处理上限。"
+            "先分段读，或者换一个上下文更长的模型。"
+            % (len(body), MAX_TEXT / 10000.0), 413)
+    return body
+
+
 def complete(cfg: dict, messages: list,
              timeout: float = DEFAULT_TIMEOUT) -> dict:
     """发一次 chat/completions，返回 ``{"content": 助手说的话, "model": 模型名}``。
@@ -473,15 +507,9 @@ def call(cfg: dict, text: str, timeout: float = DEFAULT_TIMEOUT) -> dict:
     """
     cfg = require_cfg(cfg)
 
-    body = (text or "").strip()
+    body = require_len(text)
     if not body:
         raise SummaryError("empty", "这一篇没有正文，没什么可总结的。", 400)
-    if len(body) > MAX_TEXT:
-        raise SummaryError(
-            "empty",
-            "这一篇有 %d 字，超过单次 %.0f 万字的处理上限。"
-            "先分段读，或者换一个上下文更长的模型。"
-            % (len(body), MAX_TEXT / 10000.0), 413)
 
     out = complete(cfg, [{"role": "system", "content": PROMPT},
                          {"role": "user", "content": body}], timeout)

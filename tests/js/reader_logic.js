@@ -212,6 +212,15 @@ function main() {
     },
   });
   const sumStore = api.parseSumStore(sumA);
+  const quizStoreRaw = JSON.stringify({
+    v: 1, parts: { "a.srt": { sig: "s", questions: [
+      { stem: "问", options: ["甲", "乙", "丙", "丁"], answer: 0 }], picks: [] } },
+  });
+  const quizStoreBase = api.parseQuizStore(quizStoreRaw);
+  const quizStoreWrite = api.withQuiz(quizStoreBase, "d.srt",
+    { sig: "9:9:x|y", questions: [], picks: [] });
+  const quizStoreOriginal = Object.keys(quizStoreBase.parts).join(",");
+
   const out = {
     playerUrl: api.playerUrl({ bvid: "BV1RXx169Exu", page: 2 }, 62.7),
     playerUrlZero: api.playerUrl({ bvid: "BV1RXx169Exu", page: 1 }, 0),
@@ -302,6 +311,10 @@ function main() {
     readyEmpty: api.modelReady(null),
     modelKeyName: api.modelKey(),
     sumKeyName: api.sumKey("T-test"),
+    // 「缺什么」那句：中文与拉丁字母之间空一格，顿号后面不空
+    lackKey: api.lackText(["API key"]),
+    lackTwo: api.lackText(["服务地址", "API key"]),
+    lackNone: api.lackText([]),
 
     srcP2: srcP2,
     srcAsr: srcAsr,
@@ -364,8 +377,8 @@ function main() {
       "先装 Python [01:03]。", fullAsr.parts[0].segments, false),
 
     // 问答的正文：和总结同一份，但摘掉了「所有要点的 t 请写成 null」那句
-    askSrcP1: api.buildAskSource(fullMulti, 1),
-    askSrcAsr: api.buildAskSource(fullAsr, 0),
+    askSrcP1: api.buildModelSource(fullMulti, 1),
+    askSrcAsr: api.buildModelSource(fullAsr, 0),
 
     qaStore: api.parseQaStore(JSON.stringify({
       v: 1,
@@ -392,6 +405,77 @@ function main() {
       v: 1, parts: { "a.srt": { sig: "s", msgs: [{ q: "q", a: "a" }] },
                        "b.srt": { sig: "t", msgs: [{ q: "q2", a: "a2" }] } },
     })), "a.srt"),
+    // ── 小测验 ──────────────────────────────────────
+    quizKeyName: api.quizKey("T-test"),
+
+    // 题目清洗：坏数据逐条丢，好的留着。判据和服务端一致（题干 / 四个选项 / 答案 0-3）
+    quizQs: api.quizQuestionsOf([
+      { stem: "先装什么？", options: ["装 Python", "装 Node", "装 Java", "都不用"],
+        answer: 0, why: "原文说先装 Python [01:03]。", t: 63 },
+      { stem: "只有两个选项", options: ["甲", "乙"], answer: 0 },
+      { stem: "", options: ["甲", "乙", "丙", "丁"], answer: 1 },
+      { stem: "答案是 9", options: ["甲", "乙", "丙", "丁"], answer: 9 },
+      { stem: "选项是空的", options: ["甲", "", "丙", "丁"], answer: 1 },
+      { stem: "解析缺了也留着", options: ["甲", "乙", "丙", "丁"], answer: 3 },
+      "不是对象",
+    ]),
+    quizQsNotList: api.quizQuestionsOf("oops"),
+
+    // 作答记录：短了补 null，长了截掉，越界的当没答
+    picksPad: api.quizPicksOf([1], 3),
+    picksTrim: api.quizPicksOf([1, 2, 3], 2),
+    picksJunk: api.quizPicksOf([1, 9, "2", -1], 4),
+    picksNone: api.quizPicksOf(null, 2),
+
+    // 进度与错题
+    scoreHalf: api.quizScore(
+      [{ answer: 0 }, { answer: 1 }, { answer: 2 }], [0, 0, null]),
+    scoreEmpty: api.quizScore([], []),
+    wrongOf: api.quizWrong(
+      [{ answer: 0 }, { answer: 1 }, { answer: 2 }], [0, 0, null]),
+
+    // 解析：引用核对复用第 2 层；解析里没引用时给这道题的出处
+    exOk: api.quizExplain(
+      { why: "原文说先装 Python [01:03]。", t: "01:03" },
+      fullMulti.parts[1].segments, true),
+    exMadeUp: api.quizExplain(
+      { why: "大概在 [07:12] 吧。", t: "01:03" },
+      fullMulti.parts[1].segments, true),
+    // 解析里没有引用：要靠 t 补一个出处锚点
+    exNoCite: api.quizExplain(
+      { why: "没有时间的一句话。", t: "01:03" },
+      fullMulti.parts[1].segments, true),
+    // 解析里没引用、题上的 t 也落不到任何一段：别补——补出来是一行「出处 无出处」
+    exNoRef: api.quizExplain(
+      { why: "没有时间的一句话。", t: "59:59" },
+      fullMulti.parts[1].segments, true),
+    // 这一篇本来没有逐句时间：一个锚点都不给
+    exNoTime: api.quizExplain(
+      { why: "先装 Python [01:03]。", t: "01:03" },
+      fullAsr.parts[0].segments, false),
+
+    // 存法：和总结、对话同一个路数
+    quizStore: api.parseQuizStore(JSON.stringify({
+      v: 1,
+      parts: {
+        "a.srt": { sig: "2:9:x|y", at: "2026-11-07 10:00", model: "m",
+                   questions: [{ stem: "问", options: ["甲", "乙", "丙", "丁"],
+                                 answer: 2, why: "", t: null }],
+                   picks: [2] },
+        "b.srt": { sig: "1:1:a|b", questions: [] },
+        "c.srt": { sig: "1:1:a|b", questions: "不是数组" },
+      },
+    })),
+    quizBad: [api.parseQuizStore("{oops"), api.parseQuizStore("[1,2]"),
+              api.parseQuizStore('{"v":1,"parts":[]}')],
+    quizOfA: api.quizOf(api.parseQuizStore(JSON.stringify({
+      v: 1, parts: { "a.srt": { sig: "s", questions: [
+        { stem: "问", options: ["甲", "乙", "丙", "丁"], answer: 0 }], picks: [] } },
+    })), "a.srt"),
+    // 写一篇不动别的篇；也不改传进来的那个对象
+    quizWrite: quizStoreWrite,
+    quizWriteKeepsA: quizStoreWrite.parts["a.srt"] !== undefined,
+    quizWriteLeavesOrig: quizStoreOriginal,
   };
   process.stdout.write(JSON.stringify(out));
 }

@@ -404,7 +404,7 @@ class ReaderMarkupTest(unittest.TestCase):
         self.assertIn("先配模型", body)
         self.assertIn("off", body)
         self.assertIn("qamiss", body)
-        self.assertIn("missing.join", body)
+        self.assertIn("lackText(rd.missing)", body)
 
     def test_every_question_is_a_paid_call(self) -> None:
         """每次提问都是一次计费调用，界面上必须说清楚，而且常驻。
@@ -532,6 +532,220 @@ class ReaderMarkupTest(unittest.TestCase):
         # 问答那边必须传自己的作用域
         s = _page_script()
         self.assertIn('anchorEl(r, part, "qa")', s)
+
+    # ── 小测验 ──────────────────────────────────────
+    def test_quiz_entry_sits_in_the_header_and_panel_in_the_flow(self) -> None:
+        """入口在顶栏，面板在正文上方——和总结、问答同一个位置，不另起浮层。"""
+        page = self.html
+        self.assertIn('id="quizbtn" type="button"', page)
+        self.assertLess(page.index('class="bar"'), page.index('id="quizbtn"'))
+        self.assertLess(page.index('id="quizbtn"'), page.index("</header>"))
+        self.assertIn('class="quiz" id="quiz"', page)
+        # 面板必须在 main 里、在正文舞台之前：不挡正文，也不浮动盖住谁
+        self.assertLess(page.index('id="quiz"'), page.index('class="stage"'))
+        for box in ("qzhead", "qzstat", "qzlist", "qznote", "qzbtn", "qzmiss",
+                    "qzretry", "qzreset"):
+            self.assertIn('id="%s"' % box, page)
+
+    def test_quiz_button_says_what_is_missing(self) -> None:
+        """没配好就说缺什么，沿用总结、问答那一套（文案 + 虚线框 + 旁边写清楚）。"""
+        m = re.search(r"function updateQuizButtons\(.*?\n\}", _page_script(), re.S)
+        self.assertIsNotNone(m, "找不到 updateQuizButtons")
+        body = m.group(0)
+        self.assertIn("modelReady(", body)
+        self.assertIn("先配模型", body)
+        self.assertIn("off", body)
+        self.assertIn("qzmiss", body)
+        self.assertIn("lackText(rd.missing)", body)
+
+    def test_every_generation_is_a_paid_call(self) -> None:
+        """出题是一次计费调用，界面上要写清楚；重做不算，也得写清楚。
+
+        这句是价格标签，不是免责声明：用户隔几天来做一套，只在第一次弹的提示
+        等于没说过。
+        """
+        page = self.html
+        self.assertIn("每点一次「生成」都真的调一次模型服务", page)
+        self.assertIn("按你填的那家计费", page)
+        self.assertIn("「重做」不再调模型", page)
+        self.assertIn("不花钱", page)
+
+    def test_quiz_is_local_only(self) -> None:
+        """题目和作答只存浏览器：没有账号，也就不该有第二份。"""
+        page = self.html
+        self.assertIn("asr-polish:quiz:v1:", page)
+        self.assertNotIn("/api/quiz", page)        # 没有把作答交给后端存
+
+    def test_quiz_never_runs_on_page_load(self) -> None:
+        """打开页面、切任务、切分 P、重画都不许顺手调模型。"""
+        s = _page_script()
+        for fn in ("renderDoc", "switchTo", "selectPart", "renderQuiz"):
+            m = re.search(r"function " + fn + r"\(.*?\n\}", s, re.S)
+            self.assertIsNotNone(m, "找不到 " + fn)
+            self.assertNotIn("generateQuiz", m.group(0), fn + " 里不该调模型")
+        # 只有按钮那一下会真的出题（绑定传的是函数引用，不算调用）
+        self.assertEqual(s.count("generateQuiz("), 1)
+        self.assertIn('$("#qzbtn").addEventListener("click", generateQuiz)',
+                      s)
+
+    def test_switching_part_repaints_the_quiz(self) -> None:
+        """多分 P：每篇一套题和一份作答，切到哪篇看哪篇。"""
+        s = _page_script()
+        m = re.search(r"function selectPart\(.*?\n\}", s, re.S)
+        self.assertIn("renderQuiz()", m.group(0))
+        m = re.search(r"function switchTo\(.*?\n\}", s, re.S)
+        self.assertIn('$("#quiz").hidden = true', m.group(0))
+
+    def test_stale_quiz_is_checked_against_the_text(self) -> None:
+        """拿着旧题配新字幕：题干还在，答案可能已经不是那个了。"""
+        m = re.search(r"function renderQuiz\(.*?\n\}", _page_script(), re.S)
+        self.assertIsNotNone(m, "找不到 renderQuiz")
+        self.assertIn("summarySig(", m.group(0))
+
+    def test_quiz_without_time_says_so_and_gives_no_anchor(self) -> None:
+        """没有逐句时间的篇：说明在顶上、常驻，而且解析里一个锚点都不给。"""
+        page = self.html
+        self.assertIn("这一篇没有逐句时间戳，解析无法定位到视频", page)
+        # 说明在题目列表之前：做完五道题才发现「定位不了」，等于白做
+        self.assertLess(page.index('id="qznote"'), page.index('id="qzlist"'))
+        body = re.search(r"function quizFeedback\(.*?\n\}", _page_script(), re.S)
+        self.assertIsNotNone(body, "找不到 quizFeedback")
+        self.assertIn("!part.hasTime", body.group(0))   # 原样留方括号、不画锚点
+        ex = re.search(r"function quizExplain\(.*?\n\}", _page_script(), re.S)
+        self.assertIn("!!hasTime", ex.group(0))         # needRef 只在有时间的篇成立
+
+    def test_empty_state_does_not_promise_timestamps_where_there_are_none(self) -> None:
+        """空态那句话要跟着这一篇走。
+
+        原来不分有没有时间都写「每道题都会标出原文时间」；放在没有逐句时间的篇里，
+        它和顶上那条「解析无法定位到视频」正好相反，看的人会以为时间只是还没出来。
+        """
+        body = re.search(r"function renderQuiz\(.*?\n\}", _page_script(), re.S).group(0)
+        empty = re.search(r'"还没有这一篇的测验。[^;]*;', body, re.S)
+        self.assertIsNotNone(empty, "找不到空态那句")
+        src = empty.group(0)
+        self.assertIn("cur.part.hasTime ?", src)        # 两种篇两句话
+        self.assertIn("不带时间锚点", src)
+
+    def test_wrong_answer_shows_the_right_one_and_the_explanation(self) -> None:
+        """答错：标出正确项、展开解析、给一条回原文的路。
+
+        只有颜色不够——红绿对色盲用户等于没有反馈，所以还加 ✓ / ✗。
+        """
+        s = _page_script()
+        body = re.search(r"function quizFeedback\(.*?\n\}", s, re.S).group(0)
+        self.assertIn("答错了，正确的是", body)
+        self.assertIn("解析", body)
+        self.assertIn('anchorEl(r, part, "quiz")', body)
+        # 解析里一条有效引用都没有时，补一个这道题自己的出处
+        self.assertIn("ex.needRef", body)
+        opt = re.search(r"function quizOption\(.*?\n\}", s, re.S).group(0)
+        self.assertIn("opt right", opt)
+        self.assertIn("opt wrong", opt)
+        self.assertIn('"✓"', opt)
+        self.assertIn('"✗"', opt)
+        self.assertIn("b.disabled = true", opt)
+
+    def test_quiz_answer_cannot_be_changed_after_judging(self) -> None:
+        """判过就定了：能改判的话，「我到底会不会」这个问题就没有答案了。"""
+        body = re.search(r"function pickAnswer\(.*?\n\}", _page_script(), re.S)
+        self.assertIsNotNone(body, "找不到 pickAnswer")
+        self.assertIn("item.picks[i] != null", body.group(0))
+        # 选项那边也不能再绑点击
+        opt = re.search(r"function quizOption\(.*?\n\}", _page_script(), re.S).group(0)
+        self.assertEqual(opt.count("addEventListener"), 1)
+
+    def test_quiz_progress_counts_right_over_total(self) -> None:
+        """顶部进度：答对 X 道 / 共 Y 道，答完一道更新一次。"""
+        body = re.search(r"function renderQuiz\(.*?\n\}", _page_script(), re.S)
+        src = body.group(0)
+        self.assertIn("quizScore(", src)
+        self.assertIn('"答对 " + sc.right + " 道 / 共 " + sc.total + " 道"', src)
+        self.assertIn("pickAnswer(", _page_script())   # 判完重画，进度跟着变
+
+    def test_redo_wrong_clears_only_the_wrong_ones(self) -> None:
+        """「只重做错题」只清错的那几道：答对的进度不该因为重做而减少。
+
+        筛选出来的题号存进 S.quizOnly 而不是每次重算——重算的话，答对一道它就会
+        当场从列表里消失，人还没看清解析。
+        """
+        src = re.search(r"function retryWrong\(.*?\n\}", _page_script(), re.S)
+        self.assertIsNotNone(src, "找不到 retryWrong")
+        body = src.group(0)
+        self.assertIn("quizWrong(", body)
+        self.assertIn('picks[i] = null', body)
+        self.assertIn("S.quizOnly = wrong", body)
+
+    def test_a_corrected_question_is_crossed_out_not_pulled_away(self) -> None:
+        """在「只重做错题」里答对了：划掉，但不抽走。
+
+        抽走的话，解析刚展开就没了——而「为什么错」正是重做的目的。下次再点
+        「只重做错题」会重算一遍，那时它才真的不在列表里。
+        """
+        src = re.search(r"function renderQuiz\(.*?\n\}", _page_script(), re.S).group(0)
+        self.assertIn("S.quizOnly && pick != null && pick === q.answer", src)
+        self.assertIn('"qz done"', _page_script())
+        self.assertIn("已答对，这道从错题里划掉了", _page_script())
+        # 只在筛选状态里划：整套里答对的题不该被划掉
+        self.assertIn(".quiz .qz.done", html())
+
+    def test_reset_keeps_the_questions_and_spends_nothing(self) -> None:
+        """「重做全部」只清作答、不重新出题：复习不该再花一次钱。"""
+        body = re.search(r"function resetQuiz\(.*?\n\}", _page_script(), re.S)
+        self.assertIsNotNone(body, "找不到 resetQuiz")
+        src = body.group(0)
+        self.assertIn("quizPicksOf(null", src)
+        self.assertNotIn("fetch", src)
+        self.assertNotIn("call(", src)              # 一个请求都不发
+        self.assertIn("S.quizOnly = null", src)
+
+    def test_regenerate_says_it_replaces_the_old_set(self) -> None:
+        """「重新生成一套」：换一套新题，旧题和旧记录一起作废。
+
+        这个名字得说清两件事——会再花一次钱、旧的那套不再回来。叫「换一批」
+        会让人以为旧的还能切回去。
+        """
+        src = re.search(r"function updateQuizButtons\(.*?\n\}", _page_script(), re.S)
+        self.assertIsNotNone(src, "找不到 updateQuizButtons")
+        body = src.group(0)
+        self.assertIn('"重新生成一套"', body)
+        self.assertIn("旧题和旧记录一起作废", body)
+        self.assertIn("会再花一次钱", body)
+        # 旧的题和记录不能留：生成成功之后整条 item 被替换
+        gen = re.search(r"async function generateQuiz\(.*?\n\}", _page_script(), re.S).group(0)
+        self.assertIn("picks: quizPicksOf(null, qs.length)", gen)
+
+    def test_a_question_without_explanation_says_so(self) -> None:
+        """模型没写解析：写一句，不留白——空白会被当成「界面没加载出来」。"""
+        body = re.search(r"function quizFeedback\(.*?\n\}", _page_script(), re.S).group(0)
+        self.assertIn("模型没给这道题的解析。", body)
+
+    def test_broken_questions_are_counted_on_screen(self) -> None:
+        """模型这次有几道题缺胳膊少腿：能用的照常做，坏的说清楚，别让人数着 5 道只看到 3 道。"""
+        gen = re.search(r"async function generateQuiz\(.*?\n\}", _page_script(), re.S).group(0)
+        self.assertIn("res.data.quiz || {}).skipped", gen)
+        body = re.search(r"function renderQuiz\(.*?\n\}", _page_script(), re.S).group(0)
+        self.assertIn("S.quizSkips", body)
+        self.assertIn("道题不能用，已经丢掉", body)
+
+    def test_a_wrong_key_opens_the_settings_panel(self) -> None:
+        """key 错就别让人自己找顶栏：面板里那三格正是要改的东西。
+
+        限流、超时、地址不通不打开——那些改设置没用，打开只会让人以为自己填错了。
+        """
+        gen = re.search(r"async function generateQuiz\(.*?\n\}", _page_script(), re.S).group(0)
+        self.assertIn('kind === "no_key" || kind === "auth"', gen)
+        self.assertIn("openModelBox(true)", gen)
+        self.assertIn("#modelnote", gen)
+        # 提供方的原话原样带出来，不吞成一句「生成失败」
+        self.assertIn("res.data.error", gen)
+
+    def test_summary_ask_and_quiz_anchors_do_not_share_click_state(self) -> None:
+        """三块各自的「第二次点击」要分开记，不能互相串。"""
+        s = _page_script()
+        self.assertIn('anchorEl(r, part, "quiz")', s)
+        # 测验的出处锚点也带同一个作用域
+        self.assertIn('anchorEl({ t: ex.t, idx: ex.idx }, part, "quiz")', s)
 
 
 @unittest.skipUnless(_NODE, "没有 node，跳过前端逻辑测试")
@@ -862,6 +1076,16 @@ class ReaderLogicTest(unittest.TestCase):
         self.assertEqual(self.d["readyEmpty"]["missing"],
                          ["服务地址", "模型名", "API key"])
 
+    def test_missing_config_is_spelled_out_with_a_space(self) -> None:
+        """「缺 API key」中间那格空格是排版的一部分，不是手滑。
+
+        只有 key 没填时句子以拉丁字母开头，中文紧贴上去就成了「缺API key」；
+        列表以「服务地址」开头时又不能加，否则「缺 服务地址」。
+        """
+        self.assertEqual(self.d["lackKey"], "缺 API key")
+        self.assertEqual(self.d["lackTwo"], "缺服务地址、API key")
+        self.assertEqual(self.d["lackNone"], "")
+
     def test_storage_keys(self) -> None:
         self.assertEqual(self.d["modelKeyName"], "asr-polish:model:v1")
         self.assertEqual(self.d["sumKeyName"], "asr-polish:summary:v1:T-test")
@@ -1018,6 +1242,101 @@ class ReaderLogicTest(unittest.TestCase):
         written = self.d["qaWrite"]
         self.assertIn("d.srt", written["parts"])
         self.assertEqual(written["parts"]["a.srt"]["msgs"][0]["q"], "旧问")
+
+    # ── 小测验：题、作答、解析、存法 ──────────────────────
+    def test_quiz_key_is_per_task(self) -> None:
+        self.assertEqual(self.d["quizKeyName"], "asr-polish:quiz:v1:T-test")
+
+    def test_bad_questions_are_dropped_one_by_one(self) -> None:
+        """坏题逐条丢，好的留着。判据和服务端 quiz.normalize 同一套。
+
+        一道题缺选项、答案是 9、题干是空的——留在页面上就是一道判错的题，
+        而判错的题比没有题更坏：它会告诉读者「你不会」。
+        """
+        qs = self.d["quizQs"]
+        self.assertEqual([q["stem"] for q in qs],
+                         ["先装什么？", "解析缺了也留着"])
+        self.assertEqual(qs[0]["options"], ["装 Python", "装 Node", "装 Java", "都不用"])
+        self.assertEqual(qs[0]["answer"], 0)
+        self.assertEqual(qs[0]["t"], 63)
+        # 没有解析、没有时间也留着：这两样缺了只是少一点帮助，不影响判分
+        self.assertEqual(qs[1]["why"], "")
+        self.assertIsNone(qs[1]["t"])
+        self.assertEqual(qs[1]["answer"], 3)
+
+    def test_questions_must_be_a_list(self) -> None:
+        self.assertEqual(self.d["quizQsNotList"], [])
+
+    def test_picks_are_aligned_to_the_questions(self) -> None:
+        """作答记录必须和题目等长：短了补「没答」，长了截掉，越界的当没答。
+
+        少一格会让后一道题的作答顶到前一道题上——整套分数全错，而且错得没痕迹。
+        """
+        self.assertEqual(self.d["picksPad"], [1, None, None])
+        self.assertEqual(self.d["picksTrim"], [1, 2])
+        self.assertEqual(self.d["picksJunk"], [1, None, None, None])   # 9 / "2" / -1
+        self.assertEqual(self.d["picksNone"], [None, None])
+
+    def test_progress_counts_right_over_total(self) -> None:
+        """「答对 X 道 / 共 Y 道」：Y 是这一套的总题数，不是已答数。
+
+        分母跟着答题进度走的话，答对第一道永远显示 1/1，看不出还剩几道。
+        """
+        self.assertEqual(self.d["scoreHalf"], {"done": 2, "right": 1, "total": 3})
+        self.assertEqual(self.d["scoreEmpty"], {"done": 0, "right": 0, "total": 0})
+        self.assertEqual(self.d["wrongOf"], [1])
+
+    def test_explanation_citations_are_checked_against_the_text(self) -> None:
+        ok = self.d["exOk"]
+        self.assertEqual(ok["cites"], 1)
+        self.assertEqual(ok["idx"], 0)          # 01:03 落到真实段首（63 秒）
+        self.assertFalse(ok["needRef"])         # 已经有引用，不用补
+
+    def test_made_up_time_in_the_explanation_is_marked(self) -> None:
+        """解析里编的时间核不过：那条引用是灰的，于是补上这道题自己的出处。"""
+        made = self.d["exMadeUp"]
+        self.assertEqual(made["cites"], 0)
+        self.assertTrue(made["needRef"])
+        self.assertEqual(made["idx"], 0)        # 题上的 t 是真的，补得出来
+
+    def test_explanation_without_citation_falls_back_to_its_own_time(self) -> None:
+        self.assertFalse(self.d["exNoCite"]["cites"])
+        self.assertTrue(self.d["exNoCite"]["needRef"])
+        self.assertEqual(self.d["exNoCite"]["idx"], 0)
+
+    def test_no_fallback_when_the_time_lands_nowhere(self) -> None:
+        """解析里没引用、题上的时间也落不到任何一段：不补。
+
+        补出来的是一行「出处 无出处」——没告诉读者任何事，还看着像坏了。
+        """
+        self.assertFalse(self.d["exNoRef"]["needRef"])
+        self.assertEqual(self.d["exNoRef"]["idx"], -1)
+
+    def test_without_time_no_anchor_at_all(self) -> None:
+        """必剪 ASR 那种没有逐句时间的篇：不画锚点，也不补出处。"""
+        nt = self.d["exNoTime"]
+        self.assertEqual(nt["idx"], -1)
+        self.assertEqual(nt["cites"], 0)
+        self.assertFalse(nt["needRef"])
+        self.assertTrue(nt["runs"])             # 解析本身还在，只是没有时间
+
+    def test_quiz_store_is_per_part(self) -> None:
+        store = self.d["quizStore"]
+        self.assertEqual(sorted(store["parts"]), ["a.srt"])   # 没题/坏数据不占位
+        a = store["parts"]["a.srt"]
+        self.assertEqual(a["questions"][0]["stem"], "问")
+        self.assertEqual(a["picks"], [2])
+        self.assertEqual(self.d["quizOfA"]["sig"], "s")
+
+    def test_bad_quiz_stores_fall_back(self) -> None:
+        for store in self.d["quizBad"]:
+            self.assertEqual(store, {"v": 1, "parts": {}}, store)
+
+    def test_writing_a_quiz_does_not_mutate_the_input(self) -> None:
+        written = self.d["quizWrite"]
+        self.assertEqual(sorted(written["parts"]), ["a.srt", "d.srt"])
+        self.assertTrue(self.d["quizWriteKeepsA"])
+        self.assertEqual(self.d["quizWriteLeavesOrig"], "a.srt")
 
 
 if __name__ == "__main__":
