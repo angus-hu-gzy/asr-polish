@@ -34,6 +34,14 @@ _MAX_ERRORS_KEPT = 5
 #: 结果里最多保留多少条失败明细（面板要列出来，也不能无限长）
 _MAX_FAILED_KEPT = 200
 
+#: 调用方没写 formats 时落哪些格式。
+#:
+#: 不跟 CLI 的 `--format txt` 走：CLI 是用户自己说要什么（只要文字很正常），
+#: 服务端是产品在替用户决定——它只有两个门面，面板和阅读页，两个都要按时间轴
+#: 读。只落 txt 的任务在阅读页里点句子跳不动、问问题也没有一条可核对的出处，
+#: 用户看到的是「这功能坏了」，而原因藏在格式里，页面上根本看不出来。
+DEFAULT_FORMATS = "srt,txt"
+
 
 class JobFailure(RuntimeError):
     """执行失败，但已经跑出来的那部分结果要留着。
@@ -240,7 +248,7 @@ def resolve_targets(target: str, limit: Optional[int] = None,
 def run_subs(payload: dict, progress: Progress = _noop) -> dict:
     """抓字幕并落盘。payload 字段见模块文档。"""
     target = payload.get("target") or ""
-    raw_formats = payload.get("formats") or "txt"
+    raw_formats = payload.get("formats") or DEFAULT_FORMATS
     if isinstance(raw_formats, (list, tuple)):          # HTTP 里常写成数组
         raw_formats = ",".join(str(x) for x in raw_formats)
     formats = export.parse_formats(raw_formats)

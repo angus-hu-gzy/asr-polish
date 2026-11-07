@@ -268,5 +268,45 @@ class TestMaxParts(_RunJob):
         self.assertFalse(any(x.get("parts_capped") for x in result["items"]))
 
 
+class TestDefaultFormats(_RunJob):
+    """没写 formats 时落什么。
+
+    面板提交任务时不带 formats，服务端原来按 CLI 的习惯默认成 txt。txt 里没有
+    时间，阅读页打开只能给一句「点句子不能跳转」，问答也一条锚点都标不出来——
+    用户在界面上看到的是「功能坏了」，而原因是一个没人填的字段。
+    """
+
+    def test_default_keeps_a_time_axis(self) -> None:
+        bv = _bvs(1)[0]
+        result, _ = self._run({"target": bv, "outdir": self.tmp},
+                              lambda b, page=1, allow_asr=False: _res(b, page),
+                              [bv])
+        self.assertEqual(result["formats"], ["srt", "txt"])
+
+    def test_default_writes_both_files(self) -> None:
+        bv = _bvs(1)[0]
+        with mock.patch.object(jobs, "resolve_targets", return_value=[bv]), \
+                mock.patch.object(jobs, "get_video_info",
+                                  side_effect=lambda _bv: _info()), \
+                mock.patch.object(jobs, "fetch",
+                                  side_effect=lambda b, page=1, allow_asr=False:
+                                  _res(b, page)), \
+                mock.patch.object(jobs.export, "write_all",
+                                  return_value=[]) as write:
+            jobs.run_subs({"target": bv, "outdir": self.tmp},
+                          lambda _f, _m: None)
+        # write_all(outdir, stem, formats, res, part, skip_existing=…)
+        self.assertEqual(write.call_args[0][2], ["srt", "txt"])
+
+    def test_explicit_formats_still_win(self) -> None:
+        """调用方写清楚了就听它的：命令行只要文字是正常需求，不该被改。"""
+        bv = _bvs(1)[0]
+        result, _ = self._run({"target": bv, "outdir": self.tmp,
+                               "formats": ["txt"]},
+                              lambda b, page=1, allow_asr=False: _res(b, page),
+                              [bv])
+        self.assertEqual(result["formats"], ["txt"])
+
+
 if __name__ == "__main__":
     unittest.main()
