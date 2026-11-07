@@ -465,17 +465,40 @@ class ReaderMarkupTest(unittest.TestCase):
         self.assertIn("!part.hasTime", body)       # 无时间的篇原样留方括号、不画锚点
         self.assertIn("if (part.hasTime && !valid)", body)
 
-    def test_txt_only_part_says_how_to_fix_it(self) -> None:
-        """只落了 txt 的篇：不光说不能跳，还要说下一次怎么写。
+    def test_txt_only_part_offers_a_redo_button(self) -> None:
+        """只落了 txt 的篇：给一个能点的按钮，不是让人去学命令行。
 
-        原来这句是「任务提交时 formats 带上 srt」——从面板建任务的人凑巧没有
-        地方填 formats，看到等于没看到。现在面板和阅读页提交都默认带上，还能
-        走到这儿的只有命令行建的更早的任务，所以两种写法都要点名。
+        原来这句写的是「命令行加 --format srt / 接口里写 formats」。对着从
+        面板建任务的人等于没说：那两处他都没有。说得清「怎么补」不够，得让
+        他点得动。
         """
         body = re.search(r"function partNote\(.*?\n\}", _page_script(), re.S)
         self.assertIsNotNone(body, "找不到 partNote")
-        self.assertIn("--format srt", body.group(0))
-        self.assertIn('formats: [\\"srt\\", \\"txt\\"]', body.group(0))
+        self.assertIn('el("button", "btn sm redo"', body.group(0))
+        # 只有「这次确实没要 srt」才给按钮。必剪 ASR 落的是带占位时间的 srt，
+        # 走不到这一支；没有 BV 号的那一篇重抓也无从下手，也不给。
+        self.assertIn('part.source === "txt" && pm.bvid', body.group(0))
+        # 代价写清楚：新任务、只抓这一篇、原来那份留着
+        self.assertIn("原来那个任务留着不动", body.group(0))
+        self.assertIn('"只抓第 " + (pm.page || 1)', body.group(0))
+        # 按钮另起一行。和解释挤同一行时说明会被折成两行，第一版就这样
+        self.assertIn('el("div", "redo-row")', body.group(0))
+
+    def test_redo_asks_for_a_time_axis(self) -> None:
+        """重抓这一篇：要 srt，只抓这一分 P，失败要说原因。
+
+        只抓这一篇是有意的——一条 100 P 的课程从「点不动」变成「重抓两小时」
+        不是这个按钮该干的事。失败要能再点一次，而不是把按钮永久变灰。
+        """
+        body = re.search(r"async function refetchWithTime\(.*?\n\}", _page_script(), re.S)
+        self.assertIsNotNone(body, "找不到 refetchWithTime")
+        src = body.group(0)
+        self.assertIn('formats: ["srt", "txt"]', src)
+        self.assertIn("pages: String(pm.page || 1)", src)
+        self.assertIn("target: pm.bvid", src)
+        self.assertIn("没能提交", src)              # 失败说原因，不是只说「失败」
+        self.assertIn("btn.disabled = false", src)  # 还能再点
+        self.assertIn("switchTo(res.data.id", src)  # 成了就切到新任务并开始轮询
 
     def test_submit_asks_for_a_time_axis(self) -> None:
         """阅读页自己提交任务时，srt 与 txt 一起要。

@@ -296,6 +296,13 @@ main{max-width:1240px;margin:0 auto;padding:22px 20px 120px}
   padding:9px 12px;margin:0 0 20px;font-size:12.5px;line-height:1.75;color:var(--muted);
 }
 .partnote b{color:var(--note-strong);font-weight:600}
+/* 只落了 txt 的篇：提示条里给一个「重抓」按钮，省掉让人去学命令行。
+   按钮另起一行——和那句解释挤在同一行时，说明会被折成两行，读起来像踩到了
+   尾巴。（第一版就是这么排的，截图一看就换掉了。） */
+.partnote .redo-row{display:block;margin-top:7px}
+.partnote .redo{margin-right:8px;vertical-align:middle}
+.partnote .redonote{opacity:.85}
+.partnote .redobad{display:block;margin-top:6px;color:var(--bad)}
 /* 没有时间戳的分 P：把左边那一列也收掉。留着一个空格子会让整篇正文右移
    半个缩进，看起来像是排版错了。 */
 .part.notime .cue{grid-template-columns:1fr 26px}
@@ -943,19 +950,56 @@ function partNote(part, pm){
     why = "这一篇定位不到视频：产物文件名里没有 BV 号（`--only` 重跑或手工放进"
         + "输出目录的文件会这样），所以点句子不跳转。读和搜索都照常。";
   } else if (part.source === "txt"){
-    // 落盘时只要了 txt。这句得说清「怎么补」，不能只说「不能跳」：
-    // 面板提交默认已经带 srt 了，还能走到这儿的只有更早的任务和命令行建的，
-    // 两种人都得知道下一次该怎么写。
-    why = "这一篇来自纯文本导出（落盘时只写了 txt），没有时间戳，所以点句子不能跳转。"
-        + "重抓一次并带上 srt 就能跳：命令行加 `--format srt`，"
-        + "接口里写 `formats: [\"srt\", \"txt\"]`。";
+    // 落盘时只要了 txt。走到这儿只有一种原因：这次请求里没有 srt（默认还是
+    // txt 的老任务，或者命令行写了 --format txt）。所以补抓一定有意义——
+    // 必剪 ASR 那条路落的是带占位时间的 srt，不会落到这个分支。
+    why = "这一篇来自纯文本导出（落盘时只写了 txt），没有时间戳，所以点句子不能跳转。";
   } else {
     why = "这一篇没有逐句时间戳：必剪 ASR 只给了 0 → 99:59:59 的一整块占位时间，"
         + "整篇是按行拆开的。跳转会落到视频开头，看着像跳错，所以这里不给跳。";
   }
   box.appendChild(el("b", null, "不能跳到视频"));
   box.appendChild(document.createTextNode(" · " + why));
+  // 说得清「怎么补」不够，得让人点得动。原来这里只有一句「命令行加 --format
+  // srt」，对着从面板建任务的人等于没说：面板上没有地方填 formats。
+  if (part.source === "txt" && pm.bvid){
+    var redo = el("button", "btn sm redo", "重抓这一篇");
+    redo.type = "button";
+    redo.addEventListener("click", function(){ refetchWithTime(pm, redo, box); });
+    var row = el("div", "redo-row");
+    row.appendChild(redo);
+    row.appendChild(el("span", "redonote", "只抓第 " + (pm.page || 1) + " 篇，"
+                     + "原来那个任务留着不动。"));
+    box.appendChild(row);
+  }
   return box;
+}
+
+/* 只落了 txt 的这一篇，补抓一次时间轴。
+   新建任务，不动原来那一个：原任务里的划重点、总结、对话都按任务 id 存着，
+   覆盖掉就真找不回来了；新任务跑起来之后，旧的那条在列表里也还在。
+
+   只抓这一分 P（payload.pages）。一个 100 P 的课程从「点不动」变成「重抓两
+   小时」，不是这个按钮该干的事——哪一篇点不动，就在哪一篇点。
+
+   抓回来还是 txt 的话（视频没有字幕轨），新任务的结果里会照实说明，不会假
+   装成功。 */
+async function refetchWithTime(pm, btn, box){
+  if (btn.disabled) return;
+  btn.disabled = true;
+  btn.textContent = "正在提交…";
+  var res = await call("POST", "/api/tasks",
+                       { kind: "subs", target: pm.bvid,
+                         pages: String(pm.page || 1),
+                         formats: ["srt", "txt"] });
+  if (!res.ok){
+    btn.disabled = false;
+    btn.textContent = "重抓这一篇";
+    box.appendChild(el("span", "redobad", "没能提交：" +
+                       (res.data.error || ("HTTP " + res.code)) + "。可以稍后再点一次。"));
+    return;
+  }
+  switchTo(res.data.id, "已提交重抓（任务 " + res.data.id + "），跑完会自动打开");
 }
 
 /* ── 目录：多分 P 才有 ──────────────────────────── */
