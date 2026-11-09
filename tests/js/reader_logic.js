@@ -91,11 +91,12 @@ function makeEnv(src) {
   return win;
 }
 
-function main() {
+// runTasks 是 async 的：失败隔离和「代次作废」都要真的走一遍 await，
+// 不能只看代码里有没有那两行。
+async function main() {
   const src = fs.readFileSync(process.argv[2], "utf8");
   const api = makeEnv(src).__reader;
   if (!api) throw new Error("页面脚本没有挂出 window.__reader，测试钩子被删了？");
-
   const task = {
     id: "T-test",
     result: {
@@ -229,6 +230,118 @@ function main() {
   const quizStoreWrite = api.withQuiz(quizStoreBase, "d.srt",
     { sig: "9:9:x|y", questions: [], picks: [] });
   const quizStoreOriginal = Object.keys(quizStoreBase.parts).join(",");
+
+  // ── 一键学完：计划与队列 ────────────────────────
+  // 四篇：有正文的两篇、一篇没有产出、一篇没有时间轴（纯文本导出）。
+  // 段与段之间留间隔，groupCues 才会断段——贴着排的会被并成一段。
+  const fullLearn = api.buildFullText({
+    parts: [
+      { name: "BV1LEARN001-P1-第一篇.srt", source: "srt",
+        segments: [{ start: 0, end: 2, text: "第一篇的正文" },
+                   { start: 5, end: 7, text: "第一篇的第二句" }] },
+      { name: "BV1LEARN001-P2-第二篇.srt", source: "srt",
+        segments: [{ start: 0, end: 2, text: "第二篇的正文" },
+                   { start: 5, end: 7, text: "第二篇的第二句" }] },
+      { name: "BV1LEARN001-P3-空的.srt", source: "txt", segments: [] },
+      { name: "BV1LEARN001-P4-没时间.srt", source: "txt",
+        segments: [{ start: null, end: null, text: "纯文本导出的那一行" }] },
+    ],
+  }, task);
+
+  const N1 = "BV1LEARN001-P1-第一篇.srt";
+  const N2 = "BV1LEARN001-P2-第二篇.srt";
+  const N3 = "BV1LEARN001-P3-空的.srt";
+  const N4 = "BV1LEARN001-P4-没时间.srt";
+  const SIG1 = api.summarySig(fullLearn.parts[0]);
+  const SIG2 = api.summarySig(fullLearn.parts[1]);
+  const SIG4 = api.summarySig(fullLearn.parts[3]);
+  const QS = [{ stem: "问", options: ["甲", "乙", "丙", "丁"], answer: 0 }];
+
+  // 全做完：每层都该跳过，0 次调用
+  const planDone = api.planParts(fullLearn.parts,
+    { [N1]: { sig: SIG1, summary: {} }, [N4]: { sig: SIG4, summary: {} } },
+    { [N1]: { sig: SIG1, questions: QS, picks: [] },
+      [N4]: { sig: SIG4, questions: QS, picks: [] } },
+    [{ part_name: N1, stale: false }, { part_name: N4, stale: false }]);
+
+  // 三种「看着做过、其实过期了」：总结 sig 变了、测验 sig 变了、笔记来源变了。
+  // 一个都不许当成做过——流水线跳过它就等于把过期的东西当成结果。
+  const planStale = api.planParts(fullLearn.parts,
+    { [N1]: { sig: "旧指纹", summary: {} }, [N2]: { sig: SIG2, summary: {} } },
+    { [N1]: { sig: SIG1, questions: QS, picks: [] },
+      [N2]: { sig: "旧指纹", questions: QS, picks: [] } },
+    [{ part_name: N1, stale: false }, { part_name: N2, stale: true,
+                                        stale_why: "字幕变过了" }]);
+
+  // 什么都没做过：除了没产出的那篇，三层全要跑
+  const planFresh = api.planParts(fullLearn.parts, {}, {}, []);
+
+  // 队列：一篇三层连在一起，按篇顺序
+  const tasksOfStale = api.learnTasks(planStale);
+
+  // ── 队列的三种收场：单篇失败继续、致命错整轮停、代次作废立刻收手 ──
+  const qTasks = [
+    { index: 0, name: "a", label: "P1", layer: "summary" },
+    { index: 0, name: "a", label: "P1", layer: "quiz" },
+    { index: 0, name: "a", label: "P1", layer: "notes" },
+    { index: 1, name: "b", label: "P2", layer: "summary" },
+    { index: 1, name: "b", label: "P2", layer: "quiz" },
+    { index: 1, name: "b", label: "P2", layer: "notes" },
+    { index: 2, name: "c", label: "P3", layer: "summary" },
+  ];
+  const seen = [];
+  // failAt.layer 给了就只错那一层，没给就整篇都错：两种都要覆盖，
+  // 因为「总结就没成」和「总结成了、测验没成」跳过的是不同的层。
+  const runAll = (failAt, fatalKind) => async (t) => {
+    seen.push(t.label + "." + t.layer);
+    const hit = failAt && t.index === failAt.index
+      && (!failAt.layer || t.layer === failAt.layer);
+    if (hit) return { ok: false, kind: fatalKind || "model", message: "模拟失败" };
+    return { ok: true };
+  };
+
+  // 整篇第一层就失败：这一篇的后两层不许再发，后面的篇照跑
+  seen.length = 0;
+  const qFailWhole = await api.runTasks(qTasks, runAll({ index: 0 }, null),
+                                        () => true);
+  const qFailWholeSeen = seen.slice();
+
+  // 中间层失败：前面的层算数，后面的不发；后面的篇照跑
+  seen.length = 0;
+  const qFailMid = await api.runTasks(qTasks, runAll({ index: 1, layer: "quiz" }, null),
+                                      () => true);
+  const qFailMidSeen = seen.slice();
+
+  // 致命错（key 错/没 key/限流）：整轮停，已完成的不回滚
+  seen.length = 0;
+  const qFatal = await api.runTasks(qTasks, runAll({ index: 1 }, "auth"),
+                                   () => true);
+  const qFatalSeen = seen.slice();
+
+  // 换模型也不该救：这条判据必须是白名单，不是「没成功就算致命」
+  const qFatalKind = api.learnFatal("auth");
+  const qNotFatal = api.learnFatal("model");
+
+  let aliveCount = 0;
+  const qStop = await api.runTasks(qTasks, runAll(null, null),
+                                  () => (++aliveCount <= 2));
+
+  // 迟到的返回：runOne 自己说「这一轮已经作废」，队列立刻停，后面的不再发
+  seen.length = 0;
+  const qLate = await api.runTasks(qTasks, async (t) => {
+    seen.push(t.label + "." + t.layer);
+    return t.index === 1 && t.layer === "summary"
+      ? { ok: false, aborted: true } : { ok: true };
+  }, () => true);
+  const qLateSeen = seen.slice();
+
+  // 停在半路：那一层已经发出去过、作废了，别让它在目录里一直挂着「…」
+  const qSweep = { status: {
+    0: { summary: "ok", quiz: "run", notes: "todo" },
+    1: { summary: "run", quiz: "todo", notes: "skip" },
+    2: { summary: "fail", quiz: "run", notes: "run" },
+  } };
+  api.clearRunning(qSweep);
 
   const out = {
     playerUrl: api.playerUrl({ bvid: "BV1RXx169Exu", page: 2 }, 62.7),
@@ -528,8 +641,29 @@ function main() {
     quizWrite: quizStoreWrite,
     quizWriteKeepsA: quizStoreWrite.parts["a.srt"] !== undefined,
     quizWriteLeavesOrig: quizStoreOriginal,
+
+    // ── 一键学完 ────────────────────────────────────
+    planDone: planDone,
+    planStale: planStale,
+    planFresh: planFresh,
+    tasksOfStale: tasksOfStale,
+    qFailWhole: qFailWhole,
+    qFailWholeSeen: qFailWholeSeen,
+    qFailMid: qFailMid,
+    qFailMidSeen: qFailMidSeen,
+    qFatal: qFatal,
+    qFatalSeen: qFatalSeen,
+    qFatalKind: qFatalKind,
+    qNotFatal: qNotFatal,
+    qStop: qStop,
+    qLate: qLate,
+    qLateSeen: qLateSeen,
+    qSweep: qSweep,
   };
   process.stdout.write(JSON.stringify(out));
 }
 
-main();
+main().catch(function(e){
+  console.error(e && e.stack ? e.stack : e);
+  process.exit(1);
+});

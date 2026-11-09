@@ -577,16 +577,22 @@ class ReaderMarkupTest(unittest.TestCase):
         self.assertNotIn("/api/quiz", page)        # 没有把作答交给后端存
 
     def test_quiz_never_runs_on_page_load(self) -> None:
-        """打开页面、切任务、切分 P、重画都不许顺手调模型。"""
+        """打开页面、切任务、切分 P、重画都不许顺手调模型。
+
+        调用点只有两处：点「生成」那一下，和「一键学完」跑到这一篇的这一层。
+        两处之外多一处，就是有人又给渲染路径塞了一次计费调用。
+        """
         s = _page_script()
         for fn in ("renderDoc", "switchTo", "selectPart", "renderQuiz"):
             m = re.search(r"function " + fn + r"\(.*?\n\}", s, re.S)
             self.assertIsNotNone(m, "找不到 " + fn)
             self.assertNotIn("generateQuiz", m.group(0), fn + " 里不该调模型")
-        # 只有按钮那一下会真的出题（绑定传的是函数引用，不算调用）
-        self.assertEqual(s.count("generateQuiz("), 1)
+        self.assertEqual(s.count("generateQuiz("), 2)
         self.assertIn('$("#qzbtn").addEventListener("click", generateQuiz)',
                       s)
+        m = re.search(r"async function runLearnTask\(.*?\n\}", s, re.S)
+        self.assertIsNotNone(m, "找不到 runLearnTask")
+        self.assertIn("generateQuiz(", m.group(0))
 
     def test_switching_part_repaints_the_quiz(self) -> None:
         """多分 P：每篇一套题和一份作答，切到哪篇看哪篇。"""
@@ -1338,6 +1344,126 @@ class ReaderLogicTest(unittest.TestCase):
         self.assertTrue(self.d["quizWriteKeepsA"])
         self.assertEqual(self.d["quizWriteLeavesOrig"], "a.srt")
 
+    # ── 一键学完：先算清「哪些篇的哪一层要跑」 ────────────
+    def test_plan_skips_what_is_already_done(self) -> None:
+        """跑过的层不许再跑——重跑一遍是白花钱，还会把用户手改的结果盖掉。"""
+        plan = self.d["planDone"]
+        self.assertEqual(plan["parts"], 4)
+        self.assertEqual(plan["empty"], 1)
+        # P1/P3/P4 全跳过，只剩从没跑过的 P2 三层
+        self.assertEqual(plan["calls"], 3)
+        self.assertEqual(plan["run"], {"summary": 1, "quiz": 1, "notes": 1})
+        self.assertEqual(plan["skip"], {"summary": 3, "quiz": 3, "notes": 3})
+        layers = plan["rows"][0]["layers"]
+        for name in ("summary", "quiz", "notes"):
+            self.assertFalse(layers[name]["run"])
+            self.assertEqual(layers[name]["why"], "已有")
+
+    def test_plan_reruns_stale_layers(self) -> None:
+        """「看着做过」不等于做过：指纹变了、笔记 stale 了，都得重跑。
+
+        这一条一旦退化成「有记录就跳过」，字幕换了之后整轮会全部跳过，
+        用户拿到的是上一版字幕的总结，而界面显示「已完成」。
+        """
+        plan = self.d["planStale"]
+        self.assertEqual(plan["calls"], 6)          # 2 篇 × 3 层
+        self.assertEqual(plan["run"], {"summary": 2, "quiz": 2, "notes": 2})
+        p1, p2 = plan["rows"][0]["layers"], plan["rows"][1]["layers"]
+        self.assertTrue(p1["summary"]["run"])       # 总结 sig 变了
+        self.assertFalse(p1["quiz"]["run"])         # 测验 sig 没变
+        self.assertFalse(p1["notes"]["run"])        # 服务端说没过期
+        self.assertFalse(p2["summary"]["run"])
+        self.assertTrue(p2["quiz"]["run"])          # 测验 sig 变了
+        self.assertTrue(p2["notes"]["run"])         # 服务端说 stale
+
+    def test_plan_on_a_part_without_produce_skips_every_layer(self) -> None:
+        """空正文 / 没字幕的那篇：三层全跳，别让模型对着空气写。"""
+        plan = self.d["planFresh"]
+        empty = plan["rows"][2]
+        self.assertTrue(empty["empty"])
+        for name in ("summary", "quiz", "notes"):
+            self.assertFalse(empty["layers"][name]["run"])
+            self.assertEqual(empty["layers"][name]["why"], "无产出")
+        # 3 篇有内容的 × 3 层；那篇空的没有占掉名额
+        self.assertEqual(plan["calls"], 9)
+
+    def test_tasks_run_one_part_at_a_time(self) -> None:
+        """队列必须按篇聚在一起：跳着跑会让「这一篇没成」变得没法解释。"""
+        tasks = self.d["tasksOfStale"]
+        self.assertEqual([t["label"] + "." + t["layer"] for t in tasks],
+                         ["P1.summary",
+                          "P2.quiz", "P2.notes",
+                          "P4.summary", "P4.quiz", "P4.notes"])
+        indexes = [t["index"] for t in tasks]
+        self.assertEqual(indexes, sorted(indexes))
+
+    # ── 一键学完：三种收场 ──────────────────────────────
+    def test_one_bad_part_does_not_stop_the_run(self) -> None:
+        """单篇失败只记这一篇，后面的篇照跑；这一篇剩的层不再试。
+
+        第一篇的总结就失败（没字幕、模型抽风都长这样），后面两层的输入还是
+        空的，硬着头皮跑等于再花两次钱换两个同样的错。
+        """
+        res, seen = self.d["qFailWhole"], self.d["qFailWholeSeen"]
+        self.assertEqual(res["failed"], 1)
+        self.assertFalse(res["aborted"])
+        self.assertIsNone(res["fatal"])
+        self.assertEqual([f["label"] + "." + f["layer"] for f in res["fails"]],
+                         ["P1.summary"])
+        self.assertEqual(seen, ["P1.summary",
+                                "P2.summary", "P2.quiz", "P2.notes",
+                                "P3.summary"])
+        self.assertEqual(res["done"], 4)
+
+    def test_failure_in_the_middle_layer_skips_the_rest_of_that_part(self) -> None:
+        """总结成了、测验不成：笔记照样不发，但这一篇前面的成果留着。"""
+        res, seen = self.d["qFailMid"], self.d["qFailMidSeen"]
+        self.assertEqual(len(res["fails"]), 1)
+        self.assertEqual(res["fails"][0]["layer"], "quiz")
+        self.assertEqual(seen, ["P1.summary", "P1.quiz", "P1.notes",
+                                "P2.summary", "P2.quiz",     # P2.notes 被跳过
+                                "P3.summary"])
+        self.assertEqual(res["done"], 5)
+
+    def test_fatal_error_stops_everything(self) -> None:
+        """没 key / key 错 / 限流：再跑下去每一篇都是同一个错，整轮停。"""
+        res, seen = self.d["qFatal"], self.d["qFatalSeen"]
+        self.assertEqual(res["fatal"]["kind"], "auth")
+        self.assertEqual(res["done"], 3)            # 已完成的篇不回收
+        self.assertEqual(res["failed"], 0)          # 致命错不算「这一篇失败」
+        self.assertEqual(seen, ["P1.summary", "P1.quiz", "P1.notes",
+                                "P2.summary"])
+
+    def test_only_real_fatal_kinds_stop_the_run(self) -> None:
+        self.assertTrue(self.d["qFatalKind"])
+        self.assertFalse(self.d["qNotFatal"])       # 模型报错还能换一篇再试
+
+    def test_stop_button_takes_effect_between_tasks(self) -> None:
+        """用户点停：手上这一步跑完就收手，不让它接着发下一个请求。"""
+        res = self.d["qStop"]
+        self.assertTrue(res["aborted"])
+        self.assertEqual(res["done"], 2)
+        self.assertEqual(res["failed"], 0)
+
+    def test_a_late_return_after_stop_is_dropped(self) -> None:
+        """已经在飞的那个请求回来了，也不能再写缓存、再发下一个。"""
+        res, seen = self.d["qLate"], self.d["qLateSeen"]
+        self.assertTrue(res["aborted"])
+        self.assertEqual(seen[-1], "P2.summary")
+        self.assertEqual(len(seen), 4)
+
+    def test_stopping_clears_the_layer_that_was_in_flight(self) -> None:
+        """停在半路的那一层要退回「没做」。
+
+        不回退的话它会在目录里一直挂着一个「…」——那是在说「还在跑」，而那一轮
+        早就作废了，没人会再去管它。用户看到的就是一条永远不动的进度。
+        """
+        st = self.d["qSweep"]["status"]
+        self.assertEqual(st["0"], {"summary": "ok", "quiz": "todo", "notes": "todo"})
+        self.assertEqual(st["1"], {"summary": "todo", "quiz": "todo", "notes": "skip"})
+        # 已经失败的不许被抹成「没做」：那是要「只重跑失败的篇」用的
+        self.assertEqual(st["2"], {"summary": "fail", "quiz": "todo", "notes": "todo"})
+
 
 class NotesMarkupTest(unittest.TestCase):
     """笔记面板该有的东西在不在（不依赖 node）。
@@ -1378,6 +1504,84 @@ class NotesMarkupTest(unittest.TestCase):
         """笔记库是本地目录，不该带来任何新的外部请求。"""
         hosts = set(re.findall(r"https?://([^/\s\"'<>)]+)", self.html))
         self.assertEqual(hosts, {"player.bilibili.com", "www.bilibili.com"})
+
+
+class LearnMarkupTest(unittest.TestCase):
+    """「一键学完」的入口在页面上得说清三件事（不依赖 node）。
+
+    这是一个会连发几十个模型请求的按钮，所以：单分 P 不许出现、点之前要先给
+    预估、跑起来要能停。任何一条在界面上说不清，用户就会在不知情的情况下花钱。
+    """
+
+    def setUp(self) -> None:
+        self.html = html()
+
+    def test_button_sits_after_notes_and_starts_hidden(self) -> None:
+        self.assertIn('id="learnbtn"', self.html)
+        m = re.search(r'<button[^>]*id="learnbtn"[^>]*>', self.html)
+        self.assertIsNotNone(m)
+        # 首帧就是灰/藏着的：单分 P 的页面不该闪一下这个按钮
+        self.assertIn("hidden", m.group(0))
+        self.assertLess(self.html.index('id="notesbtn"'),
+                        self.html.index('id="learnbtn"'))
+
+    def test_only_multi_part_pages_get_the_button(self) -> None:
+        """单分 P 没有「合集」可跑，不显示，也不留个灰按钮占位。"""
+        m = re.search(r"function updateLearnButton\(\)\{(.*?)\n\}", self.html, re.S)
+        self.assertIsNotNone(m)
+        self.assertIn("n < 2", m.group(1))
+        self.assertIn("partSections().length", m.group(1))
+
+    def test_panel_is_closed_by_default(self) -> None:
+        m = re.search(r'<div class="learn" id="learn"[^>]*>', self.html)
+        self.assertIsNotNone(m)
+        self.assertIn("hidden", m.group(0))
+
+    def test_title_says_what_runs_and_that_it_costs(self) -> None:
+        m = re.search(r'<button[^>]*id="learnbtn"[^>]*title="([^"]*)"', self.html)
+        self.assertIsNotNone(m)
+        title = m.group(1)
+        self.assertIn("总结", title)
+        self.assertIn("测验", title)
+        self.assertIn("笔记", title)
+
+    def test_running_state_turns_the_button_into_stop(self) -> None:
+        self.assertIn(".learnbtn.stop{", self.html)
+        m = re.search(r"function updateLearnButton\(\)\{(.*?)\n\}", self.html, re.S)
+        self.assertIn("停止", m.group(1))
+        # 按下「停止」之后已经跑完的篇还在，这一点得写在 title 里
+        self.assertIn("已经跑完的篇会留着", m.group(1))
+
+    def test_toc_has_a_status_row_for_each_part(self) -> None:
+        """目录里每篇下面挂一行状态：进度得能一眼看出卡在哪一篇。"""
+        self.assertIn('.toc .pst{', self.html)
+        m = re.search(r"function buildToc\([^)]*\)\{(.*?)\n\}", self.html, re.S)
+        self.assertIsNotNone(m)
+        self.assertIn('el("div", "pst")', m.group(1))
+        self.assertIn("_pst", m.group(1))
+        # 没跑过的时候不占位（空行会在目录里留一道白）
+        self.assertIn("pst.hidden = true", m.group(1))
+
+    def test_aborted_requests_still_release_the_button(self) -> None:
+        """停下之后那三个单篇按钮必须能再点。
+
+        实测踩到的：点了「停止」，在飞的那次请求回来时先判「这一轮作废」再收
+        busy——于是 `S.sumBusy` 永远是 true，顶栏「总结」灰到刷新页面为止。
+        三层都有同一个坑，所以三处都要求：作废的那条返回之前，busy 已经收掉。
+        """
+        for name, busy in (("generateSummary", "S.sumBusy"),
+                           ("generateQuiz", "S.quizBusy"),
+                           ("saveNotes", "S.ntBusy")):
+            m = re.search(r"async function %s\([^)]*\)\{(.*?)\n\}" % name,
+                          self.html, re.S)
+            self.assertIsNotNone(m, name)
+            body = m.group(1)
+            self.assertIn("function drop(){", body, name)
+            self.assertIn(busy + " = false", body, name)
+            # 整段里只有 drop 自己那一行能写这个返回值。谁再手写一条裸 return，
+            # 就是又把按钮锁死一次——这一条会当场红。
+            self.assertEqual(
+                body.count("return { ok: false, aborted: true }"), 1, name)
 
 
 class ReaderNotesEntryTest(unittest.TestCase):

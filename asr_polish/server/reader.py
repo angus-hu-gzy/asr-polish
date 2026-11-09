@@ -360,6 +360,22 @@ mark.cur{background:var(--mark-cur);color:var(--mark-cur-ink);
 .toc button.on .n{color:var(--accent)}
 .toc .tt{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .toc .c{display:block;color:var(--faint);font-size:11px;margin-top:1px}
+/* 目录里每篇下面那行状态（总结 ✓ 测验 … 笔记 ✗）。没跑过一键学完时整行是
+   hidden 的——空着留白会让人以为「这篇做过了、只是没显示」。 */
+.toc .pst{display:flex;flex-wrap:wrap;gap:7px;margin:1px 0 7px 11px;
+  font-size:11px;line-height:1.6;color:var(--faint)}
+.toc .pst[hidden]{display:none}
+.toc .pst .x{white-space:nowrap}
+.toc .pst .x.ok{color:var(--ok)}
+.toc .pst .x.bad{color:var(--bad)}
+.toc .pst .x.run{color:var(--accent)}
+.toc .pst .nt{color:var(--warn)}
+.toc .pst .why{flex-basis:100%;color:var(--bad);word-break:break-word}
+/* 跑着的时候顶栏那个按钮变成「停止」，用语义色标出来：原地换功能是最容易点错
+   的一种按钮，颜色和文字一起换才够。 */
+.learnbtn{min-width:76px;text-align:center}
+.learnbtn.stop{color:var(--bad);border-color:var(--bad-line);background:var(--bad-bg)}
+.learnbtn.stop:hover{color:var(--bad);border-color:var(--bad);background:var(--bad-bg)}
 
 /* 播放器：右侧一栏，滚到哪儿都在。不自动加载——只在真的点了句子才建 iframe，
    否则光是打开一篇文字稿就会去 B站拉一个播放器（慢、且没必要）。 */.player{
@@ -461,6 +477,31 @@ mark.cur{background:var(--mark-cur);color:var(--mark-cur-ink);
 .summary .s-empty{font-size:13px;color:var(--muted);line-height:1.9}
 .summary .s-err{font-size:13px;line-height:1.85;color:var(--bad);word-break:break-word}
 .summary .s-err .fix{display:block;margin-top:7px;color:var(--muted);font-size:12.5px}
+
+/* 一键学完：和总结同一块地方、同一种排法（正文上方、流内展开）。
+   它是唯一一个「点一次连着调几十次模型」的东西，所以面板在动手之前先把要做多少
+   件事摊开——那份估算是这个功能的确认凭据，不是装饰。 */
+.learn{
+  max-width:46em;margin:0 auto 22px;background:var(--panel);
+  border:1px solid var(--line);border-radius:11px;padding:13px 15px 15px;
+  box-shadow:var(--shadow);
+}
+.learn[hidden]{display:none}
+.learn .sh{display:flex;align-items:center;gap:9px;margin-bottom:10px}
+.learn h3{margin:0;font-size:13.5px;font-weight:600}
+.learn .sp{flex:1}
+.learn .lstat{font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums}
+.learn .lrow{display:grid;grid-template-columns:58px 1fr;gap:10px;padding:2px 0;
+  font-size:13px;line-height:1.85;color:var(--sub)}
+.learn .lrow b{color:var(--ink);font-weight:600}
+.learn .lsum{margin:11px 0 0;padding:9px 12px;background:var(--field);border-radius:8px;
+  font-size:13px;line-height:1.85;color:var(--ink)}
+.learn .lsum.ldone{color:var(--ok)}
+.learn .lact{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:12px}
+.learn .lhint{font-size:12px;line-height:1.8;color:var(--muted);margin:10px 0 0}
+.learn .lfail{margin:9px 0 0;padding:0;list-style:none}
+.learn .lfail li{font-size:12.5px;line-height:1.85;color:var(--bad);word-break:break-word}
+.learn .lfail .why{color:var(--muted)}
 
 /* 问答：和总结同一块地方、同一种排法——正文上方、流内展开，不盖住正文。
    两处差别是它比总结长得多，所以对话列表自己有最大高度，超过就在框里滚；
@@ -675,6 +716,8 @@ mark.cur{background:var(--mark-cur);color:var(--mark-cur-ink);
             title="就这一篇出几道题，做完看自己会不会。每题都标出原文时间">测验</button>
     <button class="btn sm notesbtn" id="notesbtn" type="button" disabled
             title="把这一篇的要点和概念写进 notes/ 笔记库，Obsidian 直接能打开">笔记</button>
+    <button class="btn sm learnbtn" id="learnbtn" type="button" hidden
+            title="把这个合集里的每一篇都跑一遍：总结 → 测验 → 存笔记。会按篇数调用模型，按你配的那家计费">一键学完</button>
     <button class="btn sm themetog" id="themebtn" type="button">🌙 夜间</button>
   </div>
   <div id="run" hidden>
@@ -729,6 +772,16 @@ mark.cur{background:var(--mark-cur);color:var(--mark-cur-ink);
             title="把整篇文字稿导出成 Markdown，每段前面带时间戳。没有正文时这个按钮是灰的">导出全文 md</button>
     <span class="count" id="count"></span>
     <span class="stat" id="stat"></span>
+  </div>
+
+  <div class="learn" id="learn" hidden>
+    <div class="sh">
+      <h3 id="learnh">一键学完</h3>
+      <span class="sp"></span>
+      <span class="lstat" id="learnstat"></span>
+      <button class="pbtn" id="learnclose" type="button" title="收起">✕</button>
+    </div>
+    <div id="learnbody"></div>
   </div>
 
   <div class="summary" id="summary" hidden>
@@ -887,7 +940,12 @@ var S = { id:null, timer:null, tick:null, startedAt:0, marks:[], cur:-1,
           /* 笔记这一层。ntStored 是服务端那份清单里属于这个任务的几条
              （用来回答「这一篇以前存过没有」），ntLast 是这一次刚写完的结果。
              两者分开：存过不等于这次成功，这次成功也不等于清单已经刷新。 */
-          ntBusy:false, ntErr:null, ntStored:null, ntLast:null };
+          ntBusy:false, ntErr:null, ntStored:null, ntLast:null,
+          /* 一键学完这一层。runId 是这一轮的代次：切任务、点停止、跑完整轮都 +1，
+             迟回来的响应凭它对不上号，一律丢弃（和 S.gen 同一个手法，但那个管
+             「页面属于哪个任务」，这个管「这一次返回还该不该写」）。
+             run 在跑着、或跑完还没关面板时非空；learn 是面板要画的那份状态。 */
+          runId:0, run:null, learn:null };
 
 /* ── 小工具 ──────────────────────────────────────── */
 function el(tag, cls, text){
@@ -985,6 +1043,9 @@ function switchTo(id, note){
   S.quizMem = {}; S.quizErr = null; S.quizBusy = false; S.quizOnly = null;
   S.quizSkips = null;
   S.ntBusy = false; S.ntErr = null; S.ntStored = null; S.ntLast = null;
+  // 一键学完也到此为止：它的每一次 await 回来都要核 runId，这里 +1 之后那些
+  // 返回全部作废——否则上一个任务的第 3 篇会写到新任务的缓存和笔记库里。
+  cancelLearn();
   updateAskEntry();
   updateQuizEntry();
   updateNotesEntry();
@@ -1272,6 +1333,12 @@ function buildToc(infos){
     });
     var li = el("li");
     li.appendChild(btn);
+    // 一键学完跑过之后，每篇下面挂一行「总结 ✓ 测验 … 笔记 ✗」。挂在 li 上、
+    // 认在 section 上，是为了流水线按篇更新时不用重新查 DOM 找那一行。
+    var pst = el("div", "pst");
+    pst.hidden = true;
+    li.appendChild(pst);
+    x.sec._pst = pst;
     ol.appendChild(li);
   });
   $("#toch").textContent = "目录 · " + infos.length + " 篇";
@@ -1298,6 +1365,7 @@ function renderDoc(d, task){
     updateAskEntry();                  // 没有正文，问答入口也点不动
     updateQuizEntry();                 // 测验入口同理
     updateNotesEntry();                // 笔记入口同理
+    updateLearnButton();               // 一键学完同理（单分 P 本来就不显示）
     if (r.parts_truncated) {
       notice("warn", "分 P 被截断", "这条合集共 " + (r.parts_truncated + (r.parts_written||0)) +
              " 个分 P，按单条上限只取了一部分。要全取请用命令行带 max_parts=0 或走任务面板。");
@@ -1389,6 +1457,7 @@ function renderDoc(d, task){
   updateAskEntry();                  // 问答入口同理
   updateQuizEntry();                 // 测验入口也是
   updateNotesEntry();                // 笔记入口也是
+  updateLearnButton();               // 多分 P 才把「一键学完」摆出来
   renderFailures(r, task);
   restoreMarks();
   // 从笔记页点一条出处进来时带着 t（和 part）：落在这一段上，比「回到上次
@@ -2340,7 +2409,8 @@ function renderSummary(){
   var body = $("#sumbody");
   clear(body);
   $("#sumstat").textContent = "";
-  $("#sumregen").disabled = !!S.sumBusy;
+  $("#sumregen").disabled = !!S.sumBusy || runLocked();
+  lockIfRunning($("#sumregen"));
 
   var cur = currentPart();
   if (!cur.part){
@@ -2386,7 +2456,9 @@ function renderSummary(){
    未配置时不是简单置灰：按钮文字变成「先配模型」，点它是去填设置而不是报错。
    灰着点不动的按钮只会让人猜「为什么」。
    也不加 aria-disabled：这个按钮**是可点的**（点了打开设置），对读屏器谎称
-   禁用，等于把它从键盘和读屏用户的路径里摘掉。 */
+   禁用，等于把它从键盘和读屏用户的路径里摘掉。
+   一键学完跑着的时候例外：那时它是真的不能点（同一条流水线不能并发两条），
+   所以那时候连「先配模型」这套文案也一并让位给一句原因。 */
 function updateSumButton(){
   var btn = $("#sumbtn");
   if (!btn) return;
@@ -2394,61 +2466,88 @@ function updateSumButton(){
   var hasDoc = !!(S.transcript && S.transcript.parts && S.transcript.parts.length);
   btn.className = "btn sm sumbtn" + (rd.ok ? "" : " off");
   btn.textContent = rd.ok ? "总结" : "先配模型";
-  btn.disabled = !hasDoc || !!S.sumBusy;
+  btn.disabled = !hasDoc || !!S.sumBusy || runLocked();
   btn.title = rd.ok
     ? "把这一篇整理成要点。会调用设置里配的模型服务，按它那边花钱"
     : (rd.why + "。点这里去填。");
+  lockIfRunning(btn);
 }
 
-async function generateSummary(){
-  var cur = currentPart();
-  if (!cur.part || !S.id) return;
+/* 做一篇的总结。
+   `tgt` 不给就是当前这一篇（顶栏那个按钮走的就是这条），给了就按那一篇做、
+   页面不跟着动——一键学完靠这一点跑别的篇。
+   `opts.runId` 给定时，每次 await 回来先核代次：切了任务或点了停止，这份结果
+   就不属于现在这一轮，直接扔掉，不写缓存、不画界面、不改这一篇的状态。 */
+async function generateSummary(tgt, opts){
+  var cur = tgt || currentPart();
+  var runId = opts && opts.runId;
+  if (!cur.part || !S.id)
+    return { ok: false, kind: "empty", message: "这一篇没有正文，没什么可总结的。" };
+  // 「这一篇是不是用户正看着的那一篇」：是，才去动那些属于当前页的状态
+  // （busy / err / 面板）。跑别的篇时动它们，等于把第 1 篇的界面改成第 3 篇的。
+  var mine = !tgt || cur.i === currentPartIndex();
 
   var cfg = cfgNow();
   var rd = modelReady(cfg);
   if (!rd.ok){
     // 缺配置就别发请求：发出去也只会换回一句「key 无效」，白等一轮
-    openModelBox(true);
-    $("#modelnote").textContent = rd.why + "，填完再点总结。";
-    return;
+    if (!runId){
+      openModelBox(true);
+      $("#modelnote").textContent = rd.why + "，填完再点总结。";
+    }
+    return { ok: false, kind: "no_key", message: rd.why };
   }
 
-  S.sumBusy = true; S.sumErr = null;
-  updateSumButton();
-  renderSummary();
+  if (mine){
+    S.sumBusy = true; S.sumErr = null;
+    updateSumButton();
+    renderSummary();
+  }
 
   var src = buildSummarySource(cur.full, cur.i);
   var res = null, thrown = null;
+  // 作废的只是这一轮的结果，不是这次请求留下的状态：busy 必须先收掉再判
+  // 「还作不作数」。反过来的话，点了停止之后那个按钮会一直灰着——它在等的
+  // 东西永远不会回来了，只能刷新页面解开。
+  function drop(){
+    if (mine){ S.sumBusy = false; updateSumButton() }
+    return { ok: false, aborted: true };
+  }
   try {
     res = await call("POST", "/api/tasks/" + encodeURIComponent(S.id) + "/summary",
                      { model: cfg, text: src.text, hasTime: src.hasTime,
                        part: cur.part.name });
   } catch(e){ thrown = e }
 
-  S.sumBusy = false;
-  updateSumButton();
+  if (runId != null && !runAlive(runId)) return drop();
+  if (mine){ S.sumBusy = false; updateSumButton(); }
 
   if (thrown){
-    S.sumErr = { part: cur.part.name, kind: "net",
+    var err = { part: cur.part.name, kind: "net",
       message: "请求发不出去：这一页和本机服务断开了（" + (thrown.message || thrown) + "）。",
       fix: "确认 asr-polish serve 还在跑，然后刷新页面重试。" };
-    renderSummary();
-    return;
+    if (mine){ S.sumErr = err; renderSummary() }
+    return { ok: false, kind: err.kind, message: err.message, fix: err.fix };
   }
   if (!res.ok){
-    S.sumErr = { part: cur.part.name, kind: res.data.kind || "model",
-                 message: res.data.error || ("HTTP " + res.code) };
-    renderSummary();
-    return;
+    var bad = { part: cur.part.name, kind: res.data.kind || "model",
+                message: res.data.error || ("HTTP " + res.code) };
+    if (mine){ S.sumErr = bad; renderSummary() }
+    return { ok: false, kind: bad.kind, message: bad.message };
   }
+
+  // 写缓存之前再核一次。上面那次和这次之间没有 await，核一次按说够用；但
+  // 「先核后写」是这件事唯一的正确姿势，省掉这一行的代价是整轮跑到一半的
+  // 时候切任务，缓存里多出一篇属于旧任务的总结。
+  if (runId != null && !runAlive(runId)) return drop();
 
   var item = { sig: summarySig(cur.part),
                at: mdStamp(new Date()),
                model: res.data.model || cfg.model,
                summary: res.data.summary || { tldr:"", points:[], concepts:[] } };
   saveSummaryItem(cur.part.name, item);
-  S.sumAnchor = "";
-  renderSummary();
+  if (mine){ S.sumAnchor = ""; renderSummary() }
+  return { ok: true, item: item };
 }
 
 /* ── 模型设置面板 ─────────────────────────────────── */
@@ -3245,11 +3344,12 @@ function updateQuizButtons(){
   btn.className = "btn sm" + (rd.ok ? " primary" : " off");
   btn.textContent = !rd.ok ? "先配模型"
     : (qs.length ? "重新生成一套" : ("生成 " + QUIZ_COUNT + " 道题"));
-  btn.disabled = !!S.quizBusy;
+  btn.disabled = !!S.quizBusy || runLocked();
   btn.title = !rd.ok ? (rd.why + "。点这里去填。")
     : (qs.length
         ? "重新调一次模型、换一套新题；这一篇的旧题和旧记录一起作废（会再花一次钱）"
         : "就这一篇出题。会调用设置里配的模型服务，按它那边花钱");
+  lockIfRunning(btn);
   var miss = $("#qzmiss");
   if (miss){
     miss.hidden = rd.ok;
@@ -3344,65 +3444,81 @@ function renderQuiz(){
   });
 }
 
-async function generateQuiz(){
-  var cur = currentPart();
-  if (!cur.part || !S.id || S.quizBusy) return;
+/* 出一套题。`tgt` / `opts.runId` 的规矩和 generateSummary 完全一样：
+   不给 tgt 就是当前这一篇；给了就按那一篇做，不动当前页。 */
+async function generateQuiz(tgt, opts){
+  var cur = tgt || currentPart();
+  var runId = opts && opts.runId;
+  if (!cur.part || !S.id)
+    return { ok: false, kind: "empty", message: "这一篇没有正文，出不了题。" };
+  var mine = !tgt || cur.i === currentPartIndex();
+  // 顶栏连点两下：第二下本来就不该发请求，也不算「失败」
+  if (mine && S.quizBusy) return { ok: false, kind: "busy", message: "这一篇正在出题。" };
 
   var cfg = cfgNow();
   var rd = modelReady(cfg);
   if (!rd.ok){
     // 缺配置就别发请求：发出去只会换回一句「key 无效」，白等一轮
-    openModelBox(true);
-    $("#modelnote").textContent = rd.why + "，填完再点「生成」。";
-    return;
+    if (!runId){
+      openModelBox(true);
+      $("#modelnote").textContent = rd.why + "，填完再点「生成」。";
+    }
+    return { ok: false, kind: "no_key", message: rd.why };
   }
 
   var name = cur.part.name;
   var gen = S.gen;                 // 换任务了的话，这一批题不属于新页面
-  S.quizBusy = true; S.quizErr = null;
-  renderQuiz();
+  if (mine){ S.quizBusy = true; S.quizErr = null; renderQuiz() }
 
   var src = buildModelSource(cur.full, cur.i);
   var res = null, thrown = null;
+  // 同 generateSummary：先收 busy 再判作废，否则停下之后「测验」一直灰着
+  function drop(){
+    if (mine){ S.quizBusy = false; renderQuiz() }
+    return { ok: false, aborted: true };
+  }
   try {
     res = await call("POST", "/api/tasks/" + encodeURIComponent(S.id) + "/quiz",
                      { model: cfg, text: src.text, hasTime: src.hasTime,
                        count: QUIZ_COUNT, part: name });
   } catch(e){ thrown = e }
 
-  if (S.gen !== gen) return;       // 换任务了：这份结果不属于现在这一篇
-  S.quizBusy = false;
+  if (S.gen !== gen) return drop();
+  if (runId != null && !runAlive(runId)) return drop();
+  if (mine) S.quizBusy = false;
 
   if (thrown){
-    S.quizErr = { part: name, kind: "net",
+    var err = { part: name, kind: "net",
       message: "请求发不出去：这一页和本机服务断开了（" + (thrown.message || thrown) + "）。",
       fix: "确认 asr-polish serve 还在跑，然后刷新页面重试。" };
-    renderQuiz();
-    return;
+    if (mine){ S.quizErr = err; renderQuiz() }
+    return { ok: false, kind: err.kind, message: err.message, fix: err.fix };
   }
   if (!res.ok){
     // 提供方给的原因原样带出来：key 错、限流、地址不通，处理方式各不相同
     var kind = res.data.kind || "model";
-    S.quizErr = { part: name, kind: kind,
-                  message: res.data.error || ("HTTP " + res.code) };
+    var bad = { part: name, kind: kind, message: res.data.error || ("HTTP " + res.code) };
     // key 错就别让人自己找顶栏了：直接把设置面板打开，把提供方的原话写在
     // 面板里——要改的正是面板里那三格。限流、超时、地址不通不打开：
     // 那些改设置没用，打开只会让人以为是自己填错了。
     if (kind === "no_key" || kind === "auth"){
       openModelBox(true);
-      $("#modelnote").textContent = S.quizErr.message;
+      $("#modelnote").textContent = bad.message;
     }
-    renderQuiz();
-    return;
+    if (mine){ S.quizErr = bad; renderQuiz() }
+    return { ok: false, kind: kind, message: bad.message };
   }
 
   var qs = quizQuestionsOf((res.data.quiz || {}).questions);
   if (!qs.length){
-    S.quizErr = { part: name, kind: "parse",
+    var pe = { part: name, kind: "parse",
       message: "模型这次没给出能用的题。再点一次「重新生成一套」，或者换一个更听话的模型。" };
-    renderQuiz();
-    return;
+    if (mine){ S.quizErr = pe; renderQuiz() }
+    return { ok: false, kind: "parse", message: pe.message };
   }
+  // 写缓存之前再核一次代次（理由同 generateSummary）
+  if (runId != null && !runAlive(runId)) return drop();
+
   var skips = (res.data.quiz || {}).skipped;
   if (skips && skips.length){
     if (!S.quizSkips) S.quizSkips = {};
@@ -3413,9 +3529,11 @@ async function generateQuiz(){
                model: res.data.model || cfg.model,
                questions: qs,
                picks: quizPicksOf(null, qs.length) };
-  S.quizOnly = null;
+  // 「只看错题」是当前页的视图状态，跑别的篇时不许把它清掉
+  if (mine) S.quizOnly = null;
   saveQuizItem(name, item);
-  renderQuiz();
+  if (mine) renderQuiz();
+  return { ok: true, item: item, skipped: skips || [] };
 }
 
 /* 选一个答案。判过就定了：再点别的选项不改判——这一层要的是「我到底会不会」，
@@ -3472,7 +3590,8 @@ function updateQuizEntry(){
   var btn = $("#quizbtn");
   if (!btn) return;
   btn.disabled = !(S.transcript && S.transcript.parts
-                   && S.transcript.parts.length);
+                   && S.transcript.parts.length) || runLocked();
+  lockIfRunning(btn);
 }
 
 function openQuiz(open){
@@ -3521,12 +3640,13 @@ function updateNotesEntry(){
   /* 和总结、问答、测验同一套：没配好时文案变「先配模型」、虚线框，点它不是
      报错而是去填设置。存笔记是这四层里唯一一件会往磁盘写东西的事，按钮更该
      在点之前就说清「现在点下去会发生什么」。 */
-  btn.disabled = !has;
+  btn.disabled = !has || runLocked();
   btn.className = "btn sm notesbtn" + (rd.ok ? "" : " off");
   btn.textContent = rd.ok ? "笔记" : "先配模型";
   btn.title = !has ? "这一篇没有正文，存不进笔记库。"
     : rd.ok ? "看这一篇存过没有。存一次会调用设置里的模型服务，按它那边花钱"
     : (rd.why + "。点这里去填。");
+  lockIfRunning(btn);
 }
 
 /* 这一篇在库里对应的那条记录（如果有）。按分 P 文件名认，不按标题——
@@ -3543,14 +3663,23 @@ function storedNoteOf(partName){
   return noteFor(S.ntStored || [], partName);
 }
 
-async function loadNotesIndex(){
-  if (!S.id) return;
+/* 这个任务在笔记库里的那几条。拉不到（断网、服务没起）返回 null——**不能返回
+   空数组**：那会让「清单里没有」和「清单没拿到」变成同一件事，一键学完据此就会
+   把二十篇全都重存一遍。 */
+async function notesIndex(){
+  if (!S.id) return null;
   var gen = S.gen;
   var res = await call("GET", "/api/notes");
-  if (gen !== S.gen || !res.ok) return;
-  S.ntStored = (res.data.videos || []).filter(function(v){
+  if (gen !== S.gen || !res.ok) return null;
+  return (res.data.videos || []).filter(function(v){
     return v.task_id === S.id;
   });
+}
+
+async function loadNotesIndex(){
+  var list = await notesIndex();
+  if (list === null) return;
+  S.ntStored = list;
   if (!$("#notes").hidden) renderNotes();
 }
 
@@ -3572,7 +3701,7 @@ function renderNotes(){
   $("#ntstat").textContent = "";
   var save = $("#ntbtn");
   var rd = modelReady(cfgNow());
-  save.disabled = !!S.ntBusy;
+  save.disabled = !!S.ntBusy || runLocked();
   save.className = "btn sm primary" + (rd.ok ? "" : " off");
   save.textContent = !rd.ok ? "先配模型"
     : (S.ntBusy ? "正在写…" : "存入笔记库");
@@ -3658,22 +3787,38 @@ function renderNotes(){
   }
 }
 
-async function saveNotes(){
-  var cur = currentPart();
-  if (!cur.part || !S.id) return;
+/* 把一篇写进笔记库。`tgt` / `opts.runId` 的规矩和前两层一样。
+   这一层有一处不同：**它是唯一会在服务端落盘的一层**。所以「发请求之前」必须核
+   一次代次——一次迟到的调用会真的在 notes/ 里写出一个属于上一个任务的文件，
+   事后再丢弃结果也收不回来。 */
+async function saveNotes(tgt, opts){
+  var cur = tgt || currentPart();
+  var runId = opts && opts.runId;
+  if (!cur.part || !S.id)
+    return { ok: false, kind: "empty", message: "这一篇没有正文，存不进笔记库。" };
+  var mine = !tgt || cur.i === currentPartIndex();
 
   var cfg = cfgNow();
   var rd = modelReady(cfg);
   if (!rd.ok){
-    openModelBox(true);
-    $("#modelnote").textContent = rd.why + "，填完再点「存入笔记库」。";
-    return;
+    if (!runId){
+      openModelBox(true);
+      $("#modelnote").textContent = rd.why + "，填完再点「存入笔记库」。";
+    }
+    return { ok: false, kind: "no_key", message: rd.why };
   }
 
-  S.ntBusy = true; S.ntErr = null;
-  updateNotesEntry(); renderNotes();
+  if (mine){ S.ntBusy = true; S.ntErr = null; updateNotesEntry(); renderNotes() }
 
   var src = buildModelSource(cur.full, cur.i);
+  // 同 generateSummary：先收 busy 再判作废，否则停下之后「笔记」一直灰着
+  function drop(){
+    if (mine){ S.ntBusy = false; updateNotesEntry() }
+    return { ok: false, aborted: true };
+  }
+  // 发请求前先核一次：这一层会**落盘**，写进去就撤不回来了
+  if (runId != null && !runAlive(runId)) return drop();
+
   var res = null, thrown = null;
   try {
     res = await call("POST", "/api/tasks/" + encodeURIComponent(S.id) + "/notes",
@@ -3681,33 +3826,37 @@ async function saveNotes(){
                        part: cur.part.name });
   } catch(e){ thrown = e }
 
-  S.ntBusy = false;
-  updateNotesEntry();
+  if (runId != null && !runAlive(runId)) return drop();
+  if (mine){ S.ntBusy = false; updateNotesEntry() }
 
   if (thrown){
-    S.ntErr = { part: cur.part.name, kind: "net",
+    var err = { part: cur.part.name, kind: "net",
       message: "请求发不出去：这一页和本机服务断开了（" + (thrown.message || thrown) + "）。",
       fix: "确认 asr-polish serve 还在跑，然后刷新页面重试。" };
-    renderNotes();
-    return;
+    if (mine){ S.ntErr = err; renderNotes() }
+    return { ok: false, kind: err.kind, message: err.message, fix: err.fix };
   }
   if (!res.ok){
     // 提供方给的原因原样带出来：key 错、限流、地址不通，处理方式各不相同
-    if (res.data.kind === "auth" || res.data.kind === "no_key") openModelBox(true);
-    S.ntErr = { part: cur.part.name, kind: res.data.kind || "model",
+    var bad = { part: cur.part.name, kind: res.data.kind || "model",
                 message: res.data.error || ("HTTP " + res.code) };
-    renderNotes();
-    return;
+    if (bad.kind === "auth" || bad.kind === "no_key") openModelBox(true);
+    if (mine){ S.ntErr = bad; renderNotes() }
+    return { ok: false, kind: bad.kind, message: bad.message };
   }
 
-  S.ntLast = { partName: res.data.partName || cur.part.name,
-               file: res.data.file || "",
-               points: (res.data.points || []).length,
-               concepts: (res.data.concepts || []).length,
-               added: res.data.added || [], reused: res.data.reused || [],
-               skipped: res.data.skipped || [] };
-  renderNotes();
-  loadNotesIndex();          // 清单变了（新文件 / 新的出处），重新取一次
+  var saved = { partName: res.data.partName || cur.part.name,
+                file: res.data.file || "",
+                points: (res.data.points || []).length,
+                concepts: (res.data.concepts || []).length,
+                added: res.data.added || [], reused: res.data.reused || [],
+                skipped: res.data.skipped || [] };
+  if (mine){
+    S.ntLast = saved;
+    renderNotes();
+    loadNotesIndex();        // 清单变了（新文件 / 新的出处），重新取一次
+  }
+  return { ok: true, saved: saved };
 }
 
 function openNotes(open){
@@ -3731,6 +3880,581 @@ $("#notesbtn").addEventListener("click", function(){
 });
 $("#ntclose").addEventListener("click", function(){ openNotes(false) });
 $("#ntbtn").addEventListener("click", function(){ saveNotes() });
+
+/* ── 一键学完（学习工作台 · 合集流水线）───────────── */
+/* 点一次，把这个合集的每一篇都跑一遍：总结 → 测验 → 存笔记。
+
+   三件事要说清楚：
+
+   1. **跑哪些、跳哪些**（`planParts`，纯函数）。判据一律沿用各层自己的「做过
+      没有」，不为流水线另发明一套指纹：总结看缓存里的 sig 是不是这一篇的
+      `summarySig`；测验同理（`renderQuiz` 本来就把对不上的整套作废，把过期
+      的那套当成「做过」等于骗自己）；笔记看服务端清单里的 `stale`——那边是用
+      `notes.part_sig` 和现在的字幕比出来的，它说没过期才算做过。没有产出的篇
+      整篇跳过，不记失败。
+
+   2. **怎么跑**（`runTasks`）。按篇顺序、一篇跑完再跑下一篇，**绝不并行**：
+      概念笔记是按名字归一的，两篇同时写同一个概念会丢出处。一篇里某一层失败，
+      就把这一篇记成失败、跳过它剩下的层——同一篇、同一个模型、同一次运行，
+      另外两层多半是同样的错，再花两次钱不值得，留给「只重跑失败的篇」。
+
+   3. **什么时候该扔结果**（runId）。切任务、点停止、一轮跑完，三处都让代次 +1。
+      每个 await 回来先核代次，对不上就丢：不写缓存、不动当前页、不改这一篇的
+      状态。笔记那一层还要在**发请求之前**核一次——它是唯一会落盘的一层，写下去
+      的文件事后收不回来。这个坑 v0.15.1 踩过一次（切了任务，上一个任务的响应把
+      新页面改了），这次一开始就按同一套做。
+
+   界面只有两处：顶栏那个按钮（跑着时变「停止」）和合集目录里每篇下面那行状态。
+   跑之前先在面板里把「要做多少件事」摊开——那份估算是这个功能的确认凭据。 */
+
+var LEARN_LAYERS = ["summary", "quiz", "notes"];
+var LEARN_NAME = { summary: "总结", quiz: "测验", notes: "笔记" };
+var LEARN_MARK = { todo: "·", run: "…", ok: "✓", fail: "✗", skip: "–" };
+/* 这三种错一出现，整轮停下：换一篇重试没有任何意义，只会把同一个错重复二十遍，
+   还可能把帐单越滚越大（限流那一支尤其）。 */
+var LEARN_FATAL = { no_key: 1, auth: 1, rate: 1 };
+var RUN_LOCK_TITLE = "「一键学完」正在跑：同一篇同时跑两次会互相覆盖缓存和笔记，"
+                   + "先停下，或者等它跑完";
+
+function runLocked(){ return !!(S.run && S.run.active) }
+
+/* 跑着的时候把单层入口锁住。置灰之外必须给一句为什么——灰着不动的按钮
+   只会让人以为坏了，然后去点第二次。 */
+function lockIfRunning(btn){
+  if (!btn || !runLocked()) return;
+  btn.disabled = true;
+  btn.title = RUN_LOCK_TITLE;
+}
+
+/* 这一轮还该不该写。晚于这一轮的返回（迟到的 fetch）一律 false。 */
+function runAlive(id){
+  return id != null && S.runId === id && !!S.run && S.run.id === id && S.run.active;
+}
+
+function learnFatal(kind){ return !!LEARN_FATAL[kind] }
+
+function clipText(text, n){
+  text = String(text == null ? "" : text).replace(/\s+/g, " ")
+                                             .replace(/^\s+|\s+$/g, "");
+  return text.length > n ? text.slice(0, n) + "…" : text;
+}
+
+/* 每一篇每一层：跑还是跳过。纯函数——不读 S、不碰 DOM、不发请求，所以能拿夹具
+   在 node 里跑（tests/js/reader_logic.js）。
+   `notes` 直接给 /api/notes 的 videos 数组（已经按任务筛过）。 */
+function planParts(parts, sums, quizzes, notes){
+  sums = sums || {}; quizzes = quizzes || {}; notes = notes || [];
+  var plan = { rows: [], calls: 0, parts: 0, empty: 0, allDone: false,
+               run: { summary: 0, quiz: 0, notes: 0 },
+               skip: { summary: 0, quiz: 0, notes: 0 } };
+  (parts || []).forEach(function(p, i){
+    var name = (p && p.name) || "";
+    var segs = (p && p.segments) || [];
+    var chars = 0;
+    for (var k = 0; k < segs.length; k++) chars += String(segs[k].text || "").length;
+    var row = { index: i, name: name,
+                label: (p && p.label) || ("第 " + (i + 1) + " 篇"),
+                title: (p && (p.title || p.name)) || "",
+                hasTime: !!(p && p.hasTime),
+                source: (p && p.source) || "",
+                empty: !chars, layers: {} };
+    var sig = summarySig(p);
+    var sm = sums[name] || null;
+    var qz = quizzes[name] || null;
+    var nt = noteFor(notes, name);
+    var done = {
+      summary: !!(sm && sm.sig === sig),
+      quiz: !!(qz && qz.questions && qz.questions.length && qz.sig === sig),
+      notes: !!(nt && !nt.stale)
+    };
+    LEARN_LAYERS.forEach(function(layer){
+      var skip = row.empty || done[layer];
+      row.layers[layer] = { run: !skip,
+                            why: row.empty ? "无产出" : (done[layer] ? "已有" : "") };
+      if (skip) plan.skip[layer]++;
+      else { plan.run[layer]++; plan.calls++ }
+    });
+    plan.parts++;
+    if (row.empty) plan.empty++;
+    plan.rows.push(row);
+  });
+  plan.allDone = plan.calls === 0;
+  return plan;
+}
+
+/* 计划 → 队列。一篇的三层连在一起，顺序就是总结、测验、笔记。 */
+function learnTasks(plan){
+  var tasks = [];
+  ((plan && plan.rows) || []).forEach(function(row){
+    LEARN_LAYERS.forEach(function(layer){
+      if (row.layers[layer] && row.layers[layer].run){
+        tasks.push({ index: row.index, name: row.name, label: row.label, layer: layer });
+      }
+    });
+  });
+  return tasks;
+}
+
+/* 按顺序跑队列。`runOne(task)` 返回：
+     {ok:true}                          这一步成了
+     {ok:false, kind, message, fix}     这一步失败（kind 决定是继续还是整轮停）
+     {aborted:true}                     这一轮的代次已经作废，结果是迟到的
+   抽出来是为了能测：失败隔离和代次作废全在这十几行里，拿假队列跑一遍才算真测过。 */
+async function runTasks(tasks, runOne, alive){
+  var out = { done: 0, failed: 0, aborted: false, fatal: null, fails: [] };
+  for (var k = 0; k < tasks.length; k++){
+    if (alive && !alive()){ out.aborted = true; break }
+    var t = tasks[k], r;
+    try {
+      r = await runOne(t);
+    } catch(e){
+      r = { ok: false, kind: "net",
+            message: "这一步抛了异常：" + clipText((e && e.message) || e, 120) };
+    }
+    if (r && r.aborted){ out.aborted = true; break }
+    if (r && r.ok){ out.done++; continue }
+    if (r && learnFatal(r.kind)){ out.fatal = r; break }
+    out.failed++;
+    out.fails.push({ index: t.index, name: t.name, label: t.label, layer: t.layer,
+                     kind: (r && r.kind) || "model",
+                     message: (r && r.message) || "这一层没有成功，也没说原因。",
+                     fix: (r && r.fix) || "" });
+    // 这一篇剩下的层不再跑（理由见本节开头第 2 条）
+    while (k + 1 < tasks.length && tasks[k + 1].index === t.index) k++;
+  }
+  return out;
+}
+
+/* ── 顶栏那个按钮 ─────────────────────────────────── */
+function updateLearnButton(){
+  var btn = $("#learnbtn");
+  if (!btn) return;
+  var running = runLocked();
+  var n = partSections().length;
+  // 单分 P 没有「合集」可跑：不显示，也不留个灰按钮占位
+  btn.hidden = !running && n < 2;
+  btn.textContent = running ? "停止" : "一键学完";
+  btn.className = "btn sm learnbtn"
+    + (running ? " stop" : (modelReady(cfgNow()).ok ? "" : " off"));
+  btn.title = running
+    ? "停下：已经跑完的篇会留着，没跑的留到下次（「只重跑失败的篇」接着跑）"
+    : (n < 2 ? "" : "把这个合集里的每一篇都跑一遍：总结 → 测验 → 存笔记。"
+       + "先给你一份预估，点确认才真的跑；跑之前可以停");
+}
+
+/* ── 面板：预估 / 跑着 / 跑完 ─────────────────────── */
+function renderLearnPanel(){
+  var box = $("#learn");
+  if (!box || box.hidden) return;
+  var body = $("#learnbody");
+  clear(body);
+  var stat = $("#learnstat");
+  stat.textContent = "";
+
+  var state = S.learn;
+  var plan = (state && state.plan) || null;
+  $("#learnh").textContent = plan ? ("一键学完 · " + plan.parts + " 篇") : "一键学完";
+
+  if (!state){ return }
+
+  var act = function(label, title, fn, primary){
+    var b = el("button", "btn sm" + (primary ? " primary" : ""), label);
+    b.type = "button";
+    if (title) b.title = title;
+    b.addEventListener("click", fn);
+    return b;
+  };
+
+  if (state.phase === "est"){
+    if (!plan) { body.textContent = "正在核对每一篇做过什么…"; return }
+    var line = function(label, text){
+      var row = el("div", "lrow");
+      row.appendChild(el("b", null, label));
+      row.appendChild(el("span", null, text));
+      body.appendChild(row);
+    };
+    line("一共", plan.parts + " 篇"
+         + (plan.empty ? ("（其中 " + plan.empty + " 篇没有产出，会跳过）") : ""));
+    LEARN_LAYERS.forEach(function(layer){
+      line(LEARN_NAME[layer], "要跑 " + plan.run[layer] + " 篇 · 跳过 "
+           + plan.skip[layer] + " 篇");
+    });
+
+    if (plan.allDone){
+      stat.textContent = "已全部完成";
+      body.appendChild(el("div", "lsum ldone",
+        "已经全部完成：这 " + plan.parts + " 篇的总结、测验、笔记都在，"
+        + "这一轮不用调模型（0 次调用）。"));
+      var a0 = el("div", "lact");
+      a0.appendChild(act("重新跑全部", "不管已有结果，每篇三层重跑一遍（会花钱）",
+                         function(){ openLearn("all") }));
+      a0.appendChild(act("关闭", "", function(){ closeLearn() }));
+      body.appendChild(a0);
+      return;
+    }
+
+    body.appendChild(el("div", "lsum",
+      "最多调用模型 " + plan.calls + " 次（每篇每层各 1 次；已有结果的、没有产出的都"
+      + "减掉了）。按你配的那家计费，点一下「开始跑」就是这一串请求。"));
+    var a1 = el("div", "lact");
+    a1.appendChild(act("开始跑", "按顺序一篇一篇跑；中途可以停", function(){
+      startLearn(plan);
+    }, true));
+    a1.appendChild(act("取消", "", function(){ closeLearn() }));
+    body.appendChild(a1);
+    body.appendChild(el("p", "lhint",
+      "跑着的时候这一页不用管它，也可以切到别的篇看——流水线不会动"
+      + "你正在看的那一篇。切任务或点顶栏那个「停止」都会立刻收手。"));
+    return;
+  }
+
+  if (state.phase === "run"){
+    var run = S.run;
+    var tally = learnTally();
+    stat.textContent = "跑着";
+    body.appendChild(el("div", "lsum",
+      (run && run.stopped ? "正在停下…" : "正在跑…")
+      + " 已完成 " + tally.doneLayers + " 层，跳过 " + tally.skipLayers + " 层"
+      + (tally.failLayers ? ("，失败 " + tally.failLayers + " 层") : "")
+      + (run && run.currentLabel ? ("　当前：" + run.currentLabel) : "")));
+    body.appendChild(el("p", "lhint",
+      "每一篇的进度写在左边目录那一行。要停下点顶栏那个「停止」，"
+      + "已经跑完的篇会留着。"));
+    return;
+  }
+
+  // phase === "done"
+  var t2 = learnTally();
+  stat.textContent = (S.run && S.run.stopped) ? "已停止" : "跑完了";
+  body.appendChild(el("div", "lsum",
+    ((S.run && S.run.stopped) ? "已停止：" : "跑完了：")
+    + "完成 " + t2.doneParts + " 篇 · 跳过 " + t2.skipLayers + " 层 · 失败 "
+    + t2.failParts + " 篇" + (t2.doneLayers ? ("（本次成功 " + t2.doneLayers + " 层）") : "")));
+  if (S.run && S.run.fatal){
+    body.appendChild(el("div", "lsum",
+      "整轮停下：" + (S.run.fatal.message || "")
+      + "。这一步改设置就能解决，已经跑完的篇都留着。"));
+  }
+  var fails = (S.run && S.run.fails) || [];
+  if (fails.length){
+    var ul = el("ul", "lfail");
+    fails.forEach(function(f){
+      var li = el("li", null, (f.label || ("第 " + (f.index + 1) + " 篇")) + " · "
+                              + LEARN_NAME[f.layer] + "：" + clipText(f.message, 90));
+      ul.appendChild(li);
+    });
+    body.appendChild(ul);
+  }
+  var a2 = el("div", "lact");
+  if (fails.length){
+    a2.appendChild(act("只重跑失败的篇", "只把出错的那几篇里没做成的层再跑一遍", function(){
+      openLearn("failed");
+    }, true));
+  }
+  a2.appendChild(act("重新跑全部", "不管已有结果，每篇三层重跑一遍（会花钱）", function(){
+    openLearn("all");
+  }));
+  a2.appendChild(act("关闭", "", function(){ closeLearn() }));
+  body.appendChild(a2);
+}
+
+/* 从状态里数出面板要的三个数。不另存计数——存了就一定会和状态对不上。 */
+function learnTally(){
+  var out = { doneLayers: 0, skipLayers: 0, failLayers: 0,
+              doneParts: 0, failParts: 0 };
+  var run = S.run;
+  if (!run || !run.status) return out;
+  var failIdx = {};
+  var rows = (run.plan && run.plan.rows) || [];
+  rows.forEach(function(row){
+    var st = run.status[row.index] || {};
+    var all = true, anyFail = false;
+    LEARN_LAYERS.forEach(function(layer){
+      var v = st[layer] || "todo";
+      if (v === "ok") out.doneLayers++;
+      else if (v === "skip") out.skipLayers++;
+      else if (v === "fail"){ out.failLayers++; anyFail = true }
+      if (v !== "ok" && v !== "skip") all = false;
+    });
+    if (anyFail) failIdx[row.index] = 1;
+    if (all && !row.empty) out.doneParts++;
+  });
+  for (var k in failIdx){ if (Object.prototype.hasOwnProperty.call(failIdx, k)) out.failParts++ }
+  return out;
+}
+
+/* ── 目录里那一行状态 ─────────────────────────────── */
+function paintAllRows(){
+  var n = partSections().length;
+  for (var i = 0; i < n; i++) paintRow(i);
+}
+
+function paintRow(i){
+  var secs = partSections();
+  var sec = secs[i];
+  var box = sec && sec._pst;
+  if (!box) return;
+  var run = S.run;
+  var st = (run && run.status) ? run.status[i] : null;
+  if (!st){ box.hidden = true; clear(box); return }
+
+  box.hidden = false;
+  clear(box);
+  LEARN_LAYERS.forEach(function(layer){
+    var v = st[layer] || "todo";
+    var cls = "x" + (v === "ok" ? " ok" : v === "fail" ? " bad"
+                    : v === "run" ? " run" : "");
+    var span = el("span", cls, LEARN_NAME[layer] + " " + (LEARN_MARK[v] || "·"));
+    if (v === "skip"){
+      var why = (run.plan.rows[i] && run.plan.rows[i].layers[layer]
+                 && run.plan.rows[i].layers[layer].why) || "";
+      span.title = why ? ("跳过：" + why) : "跳过";
+    }
+    box.appendChild(span);
+  });
+  // 没有逐句时间的篇：标一下。这不是错误——三层照跑，只是锚点没有，
+  // 标出来是为了让人别以为「没锚点」是流水线漏了。
+  var row = run.plan && run.plan.rows[i];
+  if (row && !row.hasTime){
+    var tag = el("span", "nt", "无时间轴");
+    tag.title = row.source === "txt"
+      ? "这一篇来自纯文本导出，没有时间戳：三层照跑，但不带锚点"
+      : "这一篇只有必剪 ASR 的占位时间：三层照跑，但不带锚点";
+    box.appendChild(tag);
+  }
+  var reasons = [];
+  LEARN_LAYERS.forEach(function(layer){
+    if (st[layer] === "fail" && st.why && st.why[layer]){
+      reasons.push(LEARN_NAME[layer] + "：" + clipText(st.why[layer], 48));
+    }
+  });
+  if (reasons.length){
+    var w = el("span", "why", reasons.join("；"));
+    w.title = reasons.join("\n");
+    box.appendChild(w);
+  }
+}
+
+/* ── 打开面板：先算预估 ───────────────────────────── */
+/* mode: "plan" 按现状算；"all" 忽略已有结果；"failed" 只补失败的篇。 */
+async function openLearn(mode){
+  if (!S.id) return;
+  if (runLocked()) return;
+  var rd = modelReady(cfgNow());
+  if (!rd.ok){
+    openModelBox(true);
+    $("#modelnote").textContent = rd.why + "，填完再点「一键学完」。";
+    return;
+  }
+  var full = buildFullText(S.transcript, S.task);
+  if (full.parts.length < 2) return;      // 单分 P 没有这个入口
+
+  var box = $("#learn");
+  box.hidden = false;
+  S.learn = { phase: "est", mode: mode || "plan", plan: null };
+  renderLearnPanel();
+  if (box.scrollIntoView) box.scrollIntoView({ block: "start", behavior: "smooth" });
+
+  // 笔记清单要现拉：**只有服务端知道这一篇存过没有、来源变没变**。
+  // 拉不到就退回上一次拿到的那份，别当成「一篇都没存过」——那会白白重写一遍。
+  var notes = await notesIndex();
+  if (notes === null) notes = S.ntStored || [];
+  if (!S.learn || S.learn.phase !== "est") return;   // 等的时候被关掉了
+
+  var sums = {}, quizzes = {};
+  full.parts.forEach(function(p){
+    sums[p.name] = summaryFor(p.name);
+    quizzes[p.name] = quizItemFor(p.name);
+  });
+  var plan = planParts(full.parts, sums, quizzes, notes);
+  plan.full = full;                       // 跑的时候不用再拼一遍全文
+
+  if (mode === "all"){
+    plan.rows.forEach(function(row){
+      if (row.empty) return;
+      LEARN_LAYERS.forEach(function(layer){
+        if (row.layers[layer].run) return;
+        row.layers[layer].run = true;
+        plan.skip[layer]--; plan.run[layer]++; plan.calls++;
+      });
+    });
+  } else if (mode === "failed"){
+    var prev = S.run;
+    var keep = {};
+    ((prev && prev.fails) || []).forEach(function(f){ keep[f.index] = 1 });
+    plan.rows.forEach(function(row){
+      LEARN_LAYERS.forEach(function(layer){
+        var want;
+        if (!keep[row.index] || row.empty){
+          want = false;                    // 不是失败的篇：整篇不跑
+        } else {
+          var was = prev && prev.status && prev.status[row.index]
+                    ? prev.status[row.index][layer] : "";
+          // 上次真做成了的不重跑；失败的和「因为上一篇失败而没跑」的都要补上
+          want = (was !== "ok");
+        }
+        if (want === row.layers[layer].run) return;
+        row.layers[layer].run = want;
+        if (want){ plan.skip[layer]--; plan.run[layer]++; plan.calls++ }
+        else { plan.skip[layer]++; plan.run[layer]--; plan.calls-- }
+        row.layers[layer].why = want ? "" : "上次已成";
+      });
+    });
+  }
+  plan.allDone = plan.calls === 0;
+  S.learn = { phase: "est", mode: mode || "plan", plan: plan };
+  renderLearnPanel();
+}
+
+function closeLearn(){
+  var box = $("#learn");
+  if (box) box.hidden = true;
+  if (!runLocked()) S.learn = null;      // 跑着的时候关面板只是收起来，状态留着
+}
+
+/* ── 真的开始跑 ───────────────────────────────────── */
+async function startLearn(plan){
+  if (!plan || !plan.calls || runLocked()) return;
+  var id = ++S.runId;
+  var full = plan.full || buildFullText(S.transcript, S.task);
+  var run = { id: id, active: true, stopped: false, fatal: null,
+              plan: plan, status: {}, fails: [], currentLabel: "" };
+  plan.rows.forEach(function(row){
+    var st = {};
+    LEARN_LAYERS.forEach(function(layer){
+      st[layer] = row.layers[layer].run ? "todo" : "skip";
+    });
+    run.status[row.index] = st;
+  });
+  S.run = run;
+  S.learn = { phase: "run", mode: S.learn ? S.learn.mode : "plan", plan: plan };
+
+  updateLearnButton();
+  refreshSingles();
+  renderLearnPanel();
+  paintAllRows();
+
+  var out = await runTasks(learnTasks(plan), function(t){
+    return runLearnTask(t, full, id);
+  }, function(){ return runAlive(id) });
+
+  // 切了任务：这一轮的界面已经被 switchTo 收干净了，什么都不画
+  if (!S.run || S.run.id !== id) return;
+
+  run.active = false;
+  run.done = out.done;
+  run.fails = out.fails;
+  if (out.fatal) run.fatal = out.fatal;
+  if (out.aborted && !out.fatal) run.stopped = true;
+  if (out.aborted) clearRunning(run);
+  S.runId++;                       // 跑完了：迟到的返回一律作废
+  S.learn = { phase: "done", mode: S.learn ? S.learn.mode : "plan", plan: plan };
+  S.run.currentLabel = "";
+
+  if (out.fatal){
+    // key 错、没 key、限流：整轮停下，把设置摆出来。已经跑完的篇不动。
+    openModelBox(true);
+    $("#modelnote").textContent = (out.fatal.message || "模型服务拒绝了这一轮请求。")
+      + "　已经跑完的篇都留着，处理完点「只重跑失败的篇」接着跑。";
+  }
+  updateLearnButton();
+  refreshSingles();
+  paintAllRows();
+  renderLearnPanel();
+  loadNotesIndex();                // 清单变了（多了几篇笔记），顺手刷新
+}
+
+/* 跑队列里的一步。只做三件事：标「正在跑」、调那一层、按结果标状态。 */
+async function runLearnTask(t, full, id){
+  var run = S.run;
+  if (!run || run.id !== id) return { ok: false, aborted: true };
+  var st = run.status[t.index];
+  st[t.layer] = "run";
+  run.currentLabel = (t.label || ("第 " + (t.index + 1) + " 篇")) + " · " + LEARN_NAME[t.layer];
+  paintRow(t.index);
+  renderLearnPanel();
+
+  var tgt = { full: full, i: t.index, part: full.parts[t.index] };
+  var res;
+  if (t.layer === "summary") res = await generateSummary(tgt, { runId: id });
+  else if (t.layer === "quiz") res = await generateQuiz(tgt, { runId: id });
+  else res = await saveNotes(tgt, { runId: id });
+
+  if (res && res.aborted) return res;
+  // 等到这里，S.run 可能已经换人了（切任务 / 停止）：状态就不该再写
+  var now = S.run;
+  if (!now || now.id !== id) return res || { ok: false, aborted: true };
+  var cur = now.status[t.index];
+  if (res && res.ok){
+    cur[t.layer] = "ok";
+  } else {
+    cur[t.layer] = "fail";
+    if (!cur.why) cur.why = {};
+    cur.why[t.layer] = (res && res.message) || "";
+  }
+  paintRow(t.index);
+  return res;
+}
+
+/* 停下时把「这一层正在跑」抹掉。停在半路的那一层算没做，下次接着跑；
+   留着不管的话，那个已经作废的请求会在目录里永远挂着一个「…」，
+   看起来像还在飞，实际早就没人管它了。 */
+function clearRunning(run){
+  if (!run || !run.status) return;
+  for (var k in run.status){
+    if (!Object.prototype.hasOwnProperty.call(run.status, k)) continue;
+    var st = run.status[k];
+    LEARN_LAYERS.forEach(function(layer){
+      if (st[layer] === "run") st[layer] = "todo";
+    });
+  }
+}
+
+/* 点顶栏那个「停止」：立刻作废，不等当前这一层回来。 */
+function stopLearn(){
+  var run = S.run;
+  if (!run || !run.active) return;
+  run.stopped = true;
+  run.active = false;
+  run.currentLabel = "";
+  S.runId++;                       // 迟到的一律作废
+  clearRunning(run);
+  S.learn = { phase: "done", mode: S.learn ? S.learn.mode : "plan", plan: run.plan };
+  updateLearnButton();
+  refreshSingles();
+  paintAllRows();
+  renderLearnPanel();
+}
+
+/* 切任务：把这一轮彻底收掉，面板也收起来（它属于上一个任务）。 */
+function cancelLearn(){
+  if (S.run) S.run.active = false;
+  S.run = null;
+  S.learn = null;
+  S.runId++;
+  var box = $("#learn");
+  if (box) box.hidden = true;
+  updateLearnButton();
+  refreshSingles();
+}
+
+/* 三个单层入口 + 三个面板里的付费按钮，一起按「跑没跑着」重算一遍。
+   跑着时置灰，跑完/停下立刻回到正常——不这么做的话，锁是锁上了，解开要等
+   下一次渲染，期间那三个按钮会一直是灰的。 */
+function refreshSingles(){
+  updateSumButton();
+  updateQuizEntry();
+  updateNotesEntry();
+  if (!$("#summary").hidden) renderSummary();
+  if (!$("#quiz").hidden) renderQuiz();
+  if (!$("#notes").hidden) renderNotes();
+}
+
+$("#learnbtn").addEventListener("click", function(){
+  if (runLocked()){ stopLearn(); return }
+  openLearn("plan");
+});
+$("#learnclose").addEventListener("click", function(){ closeLearn() });
 
 /* 从一串「带起止时间的段落」里挑出 sec 该落在哪一段，返回下标（挑不出给 -1）。
 
@@ -4285,6 +5009,13 @@ window.__reader = {
   withQuiz: withQuiz,
   storedNoteOf: storedNoteOf,
   noteFor: noteFor,
+  // 一键学完里两段「算」的部分：计划怎么排、队列怎么跑（失败隔离与代次作废
+  // 都在这两处）。它们不碰 DOM，也不发请求，所以能在 node 里拿夹具跑。
+  planParts: planParts,
+  learnTasks: learnTasks,
+  runTasks: runTasks,
+  learnFatal: learnFatal,
+  clearRunning: clearRunning,
   // 两个「挑一段」是不同的问题：pickCueIndex 挑视口顶部那一段（续读用），
   // seekCueIndex 挑 sec 该落在哪一段（从笔记跳回来用）。
   pickCueIndex: pickCueIndex,

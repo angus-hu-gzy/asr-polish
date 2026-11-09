@@ -27,6 +27,9 @@ tasks.db-shm
 *.sqlite
 *.sqlite3
 
+# 真浏览器跑端到端时的工作目录：临时任务库、字幕副本、无头浏览器的 profile
+tools/e2e_learn/_work/
+
 # 个人数据 / 凭证
 # 别按具体名字一个个列：浏览器插件导出的文件名五花八门——cookies.txt、
 # bilibili_cookies.txt、www.bilibili.com_cookies.txt……按后缀统一拦。
