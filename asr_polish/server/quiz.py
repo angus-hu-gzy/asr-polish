@@ -115,7 +115,9 @@ def _text_of(v) -> str:
 
 #: 选项自带的标号：`A. 文字` / `B、文字` / `C．文字` / `D 文字` 四种写法都认。
 #: 字母后面必须跟标点或者空白——「A股大涨」没有分隔，那是内容，不是标号。
-_OPT_LABEL = re.compile(r"^([A-Da-d])(?:\s*[.、．)）:：]\s*|\s+)")
+#: 认到 E 是给削枝那一路用的：模型给五个选项时会写 A–E，`_strip_labels_after_shrink`
+#: 要先认得出第 5 个字母，才谈得上把它连同削掉的那项一起去干净。
+_OPT_LABEL = re.compile(r"^([A-Ea-e])(?:\s*[.、．)）:：]\s*|\s+)")
 
 
 def _strip_labels(out: list) -> list:
@@ -132,6 +134,39 @@ def _strip_labels(out: list) -> list:
         m = _OPT_LABEL.match(o)
         if not m or m.group(1).upper() != "ABCD"[i]:
             return out
+    bare = [_OPT_LABEL.sub("", o).strip() for o in out]
+    return bare if all(bare) else out
+
+
+def _strip_labels_after_shrink(out: list) -> list:
+    """削回四个之后再去一次标号——这一批的标号是「五个里缺一个」的形状。
+
+    不能复用 ``_strip_labels``：它的判据钉着「第 i 条必须是 ABCD[i]」，而削掉的
+    那项如果在中间，剩下的就是 A/B/C/E（答案是 E 时删的是 D），顺序校验认不出，
+    标号全留下——前端自己还会画 A/B/C/D，界面上就出现「D  E. 装 Go」。
+
+    判据放宽到「每个字母都比上一个前进 1 或 2」：前进 1 是正常连号，前进 2 是跳过
+    了被削掉的那个。第一条仍必须是 A，这条是防误伤的主闸——「B 站很火 / A 股大涨」
+    这类内容列表第一条就不会是 A 标号。
+
+    代价与 ``_strip_labels`` 同级：「A 股大涨 / B 站很火 / C 盘满了 / D 盘没空间」
+    这种恰好从 A 起、字母又连号的真实内容仍会被误剥。这是已知的、与现状相同的
+    风险，不因为这次改动变差；真要根治得看选项文字本身，那是另一个量级的事。
+    """
+    if len(out) != CHOICES:
+        return out
+    expect = ord("A")
+    for i, o in enumerate(out):
+        m = _OPT_LABEL.match(o)
+        if not m:
+            return out
+        cur = ord(m.group(1).upper())
+        if i == 0:
+            if cur != expect:          # 第一条不是 A 就不是标号，是内容
+                return out
+        elif cur - expect not in (0, 1):
+            return out
+        expect = cur + 1
     bare = [_OPT_LABEL.sub("", o).strip() for o in out]
     return bare if all(bare) else out
 
@@ -162,8 +197,14 @@ def answer_index(raw, options) -> int | None:
 
     三种写法依次认：
     1. 选项原文一字不差地抄回来——最可信，因为它和四个选项本身能直接对上；
-    2. 字母 A/B/C/D（允许「选项B」「B.」这种写法）；
+    2. 字母 A–E（允许「选项B」「B.」这种写法）；
     3. 0 起的下标（整数字面量，或纯数字字符串）。
+
+    字母认到 E，是因为 ``normalize`` 要先把「多给了一个选项」的题削回四个再判：
+    五选项的题，正确答案可能就落在第 5 个上，那时候必须先能算出一个越界于「四个」
+    但合法于「五个」的下标，削枝才知道该动哪一项。传四个选项进来时 E 照样越界、
+    照样返回 None（`test_unusable_values_give_none` 钉着），所以放宽这个字符集
+    不会让四选项的判分变松。
 
     先认原文再认字母：模型经常在 answer 里把正确选项整句抄一遍，那是最不容易
     歧义的表达。纯数字按 0 起算，和 JSON 里给整数时的含义保持一致——两处含义
@@ -186,7 +227,7 @@ def answer_index(raw, options) -> int | None:
         if o.strip() == s:
             return i
 
-    m = re.search(r"(?:^|[^A-Za-z])([A-Da-d])(?![A-Za-z])", s)
+    m = re.search(r"(?:^|[^A-Za-z])([A-Ea-e])(?![A-Za-z])", s)
     if m:
         i = ord(m.group(1).upper()) - ord("A")
         return i if 0 <= i < n else None
@@ -198,6 +239,41 @@ def answer_index(raw, options) -> int | None:
     return None
 
 
+def _shrink_to_four(opts: list, answer) -> tuple[list, int | None]:
+    """五个选项削回四个，返回 ``(新选项, 新答案下标)``。削不动时返回 ``(原样, None)``。
+
+    为什么削而不是丢题：五选一在中文单选里很常见，模型给五个选项并不说明这道题
+    坏了——题干、出处、解析可能都对，只是多了一个干扰项。整题丢掉等于把好题一起
+    扔了，而第二轮真跑里 P4 是五道题全这样，一篇的测验直接变成「一道都用不了」。
+
+    削哪一个：**最后一个非答案项**。削哪个干扰项在题目质量上没有差别（都只是少
+    一个干扰项），但「最后一个」是确定的——测试能钉住，用户复现时也不用猜。
+
+    答案先按五个选项算：它可能就落在第 5 个上（"E"）。不先算出来，就不知道该
+    保谁、也就无从判断削完之后答案还在不在。
+    """
+    idx = answer_index(answer, opts)
+    if idx is None:
+        return opts, None
+
+    drop = max(i for i in range(len(opts)) if i != idx)
+    kept = [o for i, o in enumerate(opts) if i != drop]
+    # 五个进来时标号还留着（`_strip_labels` 只在恰好四个时动手），削完再抓一次。
+    kept = _strip_labels_after_shrink(kept)
+
+    # 重算而不是直接挪下标：答案是原文抄的，去掉标号之后可能不再一字不差。
+    new_idx = answer_index(answer, kept)
+    if new_idx is None:
+        # 用位移兜底，这不是猜：删掉的一定是非答案项，剩下四项的相对位置只受这
+        # 一次删除影响，映射是确定的。两个走这里的场景——答案给的是整数下标 4
+        # （重算必然越界），以及「E 装 Go」这种带标号的原文（去掉标号后字母 E
+        # 已经越界于四个选项）。
+        new_idx = idx - (1 if drop < idx else 0)
+    if not 0 <= new_idx < len(kept):
+        return kept, None
+    return kept, new_idx
+
+
 def normalize(obj: dict) -> dict:
     """模型吐出来的对象 → 前端要的 ``{"questions": [...]}``。
 
@@ -205,8 +281,15 @@ def normalize(obj: dict) -> dict:
     **不补内容**：没有解析就是没有，不拿题干顶上去——那等于替模型编一句解析，
     而解析正是读者用来判断「我到底会不会」的东西。
 
-    一道题要同时满足：题干非空、恰好四个选项、正确答案能对上。缺一样就丢：
+    一道题要同时满足：题干非空、四个选项、正确答案能对上。缺一样就丢：
     少一个选项的题，剩下的选项反而更好猜；答案对不上的题，判分就是错的。
+
+    **多一个选项是唯一的例外**：削掉一个干扰项，题照出。五选一在中文单选里很
+    常见，模型给五个不说明题干或出处坏了，整题丢掉损失的是本来能用的题。但只削
+    一个——六个及以上说明模型对形状已经完全没概念了，那种不替它揉。
+
+    削过的题不进 ``skipped``：能判分就是能用，界面不需要知道「这题本来多一个干扰
+    项」。那对读者没有意义，只会把一次安静的修正变成一条需要解读的提示。
 
     丢掉的每一道都记一条理由，放在 ``skipped`` 里带回前端。一道都不剩时要报
     「哪一项不对」（第几题、几个选项、答案对不上），而不是一句「生成失败」——
@@ -231,10 +314,16 @@ def normalize(obj: dict) -> dict:
             skipped.append("第 %d 题没有题干" % n)
             continue
         opts = _options_of(_pick(q, "options", "choices", "选项"))
-        if len(opts) != CHOICES:
+        answer = _pick(q, "answer", "correct", "答案")
+        if len(opts) == CHOICES + 1:
+            # 多给了一个：削掉一个干扰项，题留下来（见 docstring）。
+            opts, idx = _shrink_to_four(opts, answer)
+        elif len(opts) != CHOICES:
+            # 少了不能补：「不补内容」同样适用于选项——凑出来的第四项只能靠编。
             skipped.append("第 %d 题有 %d 个选项（要 %d 个）" % (n, len(opts), CHOICES))
             continue
-        idx = answer_index(_pick(q, "answer", "correct", "答案"), opts)
+        else:
+            idx = answer_index(answer, opts)
         if idx is None:
             skipped.append("第 %d 题的答案对不上任何一个选项" % n)
             continue

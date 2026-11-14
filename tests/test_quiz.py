@@ -143,6 +143,19 @@ class AnswerIndexTest(unittest.TestCase):
         self.assertEqual(quiz.answer_index("C", _OPTIONS[:3]), 2)
         self.assertIsNone(quiz.answer_index("D", _OPTIONS[:3]))
 
+    def test_fifth_letter_when_there_really_are_five(self) -> None:
+        """认到 E：五选项的题，答案可能就在第 5 个上。
+
+        削枝要先算出这个下标，才知道该保哪一项。四个选项时 "E" 照样越界、
+        照样 None（上面 `test_unusable_values_give_none` 钉着），所以放宽字符集
+        不会让四选项的判分变松。
+        """
+        five = _OPTIONS + ["装 Go"]
+        self.assertEqual(quiz.answer_index("E", five), 4)
+        self.assertEqual(quiz.answer_index("e", five), 4)
+        self.assertEqual(quiz.answer_index("选项E", five), 4)
+        self.assertEqual(quiz.answer_index("装 Go", five), 4)
+
 
 class NormalizeTest(unittest.TestCase):
     """不管模型吐什么，出去的题目都得是能判分的。"""
@@ -161,21 +174,88 @@ class NormalizeTest(unittest.TestCase):
         out = quiz.normalize({"questions": [
             _q(),                                       # 好的
             _q(options=_OPTIONS[:3]),                   # 只有三个选项
-            _q(options=_OPTIONS + ["装 Go"]),           # 五个选项
+            _q(options=_OPTIONS + ["装 Go"]),           # 五个选项：削一个，留下
             _q(answer="Z"),                             # 答案对不上
             _q(stem=""),
             _q(options=["装 Python", "", "装 Java", "装 Go"]),
             "不是对象",
         ]})
-        self.assertEqual(len(out["questions"]), 1)
+        self.assertEqual(len(out["questions"]), 2)
         # 丢掉的每一道都带一句理由：界面上要说清「模型这次哪几道不能用」，
         # 而不是让人数着 5 道却只看到 1 道
-        self.assertEqual(len(out["skipped"]), 6)
+        self.assertEqual(len(out["skipped"]), 5)
         self.assertIn("第 2 题有 3 个选项", out["skipped"][0])
-        self.assertIn("第 3 题有 5 个选项", out["skipped"][1])
-        self.assertIn("第 4 题的答案对不上", out["skipped"][2])
-        self.assertIn("第 5 题没有题干", out["skipped"][3])
-        self.assertIn("第 7 题不是一个对象", out["skipped"][5])
+        self.assertIn("第 4 题的答案对不上", out["skipped"][1])
+        self.assertIn("第 5 题没有题干", out["skipped"][2])
+        self.assertIn("第 7 题不是一个对象", out["skipped"][4])
+
+    def test_five_options_shrink_to_four(self) -> None:
+        """五选一不是坏题：削掉一个干扰项，题照出。
+
+        第二轮真跑里 P4 五道题全是五个选项，一篇的测验直接「一道都用不了」。
+        丢掉的其实是本来能判分的题，只因为多了一个干扰项。
+        """
+        out = quiz.normalize({"questions": [_q(options=_OPTIONS + ["装 Go"])]})
+        self.assertEqual(len(out["questions"]), 1)
+        q = out["questions"][0]
+        self.assertEqual(q["options"], _OPTIONS)        # 削的是最后那个非答案项
+        self.assertEqual(q["answer"], 0)                # A 还在原位
+        # 削过的题不算「跳过的题」：能判分就是能用，读者不需要知道本来多一项
+        self.assertNotIn("skipped", out)
+
+    def test_five_options_answer_at_the_end(self) -> None:
+        """答案是 E：削掉最后一个**非答案**项，答案跟着落到下标 3。
+
+        断言落在「下标指向的那一项还是不是原来那句」，而不是只比下标数字——
+        判分对不对是由这个决定的。
+        """
+        five = _OPTIONS + ["装 Go"]
+        for answer in ("E", "装 Go"):     # 字母、原文两种写法
+            q = quiz.normalize({"questions": [_q(options=five, answer=answer)]})["questions"][0]
+            self.assertEqual(q["options"], ["装 Python", "装 Node", "装 Java", "装 Go"])
+            self.assertEqual(q["answer"], 3, answer)
+            self.assertEqual(q["options"][q["answer"]], "装 Go", answer)
+
+    def test_five_options_with_unusable_answer_still_dropped(self) -> None:
+        """答案对不上就还是不能判分：不知道该保哪一项，也就没法削。"""
+        with self.assertRaises(summary.SummaryError) as cm:
+            quiz.normalize({"questions": [_q(options=_OPTIONS + ["装 Go"], answer="Z")]})
+        self.assertIn("第 1 题的答案对不上", cm.exception.message)
+
+    def test_five_options_with_labels_lose_them_all(self) -> None:
+        """五选项带标号，削完标号必须一起去干净。
+
+        这是最难的一格：答案是 E 时删掉的是 D，剩下 A/B/C/E。`_strip_labels` 的
+        顺序校验认不出这种「缺一个」的形状，会把标号全留下，前端自己再画一遍
+        A/B/C/D，界面上就成了「D  E. 装 Go」。
+        """
+        labelled = ["A. 装 Python", "B、装 Node", "C．装 Java",
+                    "D 什么都不用装", "E. 装 Go"]
+        q = quiz.normalize({"questions": [_q(options=labelled, answer="E")]})["questions"][0]
+        self.assertEqual(q["options"], ["装 Python", "装 Node", "装 Java", "装 Go"])
+        self.assertEqual(q["options"][q["answer"]], "装 Go")
+
+    def test_five_options_with_labels_and_fourth_answer(self) -> None:
+        """同样是带标号的五选项，但答案是 D：删掉的是 E，剩下 A/B/C/D 连号。"""
+        labelled = ["A. 装 Python", "B、装 Node", "C．装 Java",
+                    "D 什么都不用装", "E. 装 Go"]
+        q = quiz.normalize({"questions": [_q(options=labelled, answer="D")]})["questions"][0]
+        self.assertEqual(q["options"], _OPTIONS)
+        self.assertEqual(q["options"][q["answer"]], "什么都不用装")
+
+    def test_six_options_are_still_dropped(self) -> None:
+        """只削一个。六个说明模型根本没在看「四个选项」这条要求，不替它揉。"""
+        with self.assertRaises(summary.SummaryError) as cm:
+            quiz.normalize({"questions": [
+                _q(options=_OPTIONS + ["装 Go", "装 Rust"])]})
+        self.assertIn("第 1 题有 6 个选项", cm.exception.message)
+
+    def test_five_option_labels_that_are_content(self) -> None:
+        """削枝那一路的去标号也不能误伤内容：不在正位就原样留着。"""
+        opts = ["B 站很火", "A 股大涨", "C 盘满了", "D 盘没空间", "E 盘是光驱"]
+        q = quiz.normalize({"questions": [_q(options=list(opts), answer="E")]})["questions"][0]
+        self.assertEqual(q["options"], [opts[0], opts[1], opts[2], opts[4]])   # 内容一字不动
+        self.assertEqual(q["options"][q["answer"]], "E 盘是光驱")
 
     def test_all_usable_means_no_skipped_key(self) -> None:
         """全都能用时不带 skipped：界面据此不画那行说明。"""
