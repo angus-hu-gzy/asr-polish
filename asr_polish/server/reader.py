@@ -2570,6 +2570,17 @@ $("#modelbtn").addEventListener("click", function(){
 });
 $("#modelclose").addEventListener("click", function(){ openModelBox(false); });
 
+/* 模型配置变了（保存或清除）：四个入口一起重新判一遍。
+   合成一个函数，是因为「谁该跟着模型配置变」这件事只该有一处定义——保存和
+   清除各写一份的下场就是加第四层那天只补了一处：清掉 key 之后「总结」「提问」
+   回到「先配模型」，而「笔记」还写着「笔记」，点下去才发现没配。 */
+function modelChanged(){
+  updateSumButton();
+  updateAskButton();
+  updateQuizButtons();               // 测验面板里那个「出题」，文案也跟着配置走
+  updateNotesEntry();                // 笔记入口
+}
+
 $("#modelsave").addEventListener("click", function(){
   var cfg = {
     base:  $("#mbase").value.trim(),
@@ -2585,19 +2596,15 @@ $("#modelsave").addEventListener("click", function(){
   $("#modelnote").textContent = ok
     ? "已保存，只在这个浏览器里。"
     : "存不进浏览器（隐私模式或禁用了站点数据）：这次能用，刷新就没了。";
-  updateSumButton();
-  updateAskButton();                 // 填完配置，四个入口一起活过来
-  updateQuizButtons();
-  updateNotesEntry();
+  modelChanged();                    // 填完配置，四个入口一起活过来
   if (ok) setTimeout(function(){ openModelBox(false) }, 700);
 });
 
 $("#modelclear").addEventListener("click", function(){
   lsDel(modelKey());
   $("#mbase").value = ""; $("#mname").value = ""; $("#mkey").value = "";
-  $("#modelnote").textContent = "已清除。总结、提问、出题都会回到「先配模型」。";
-  updateSumButton();
-  updateAskButton();
+  $("#modelnote").textContent = "已清除。总结、提问、出题、笔记都会回到「先配模型」。";
+  modelChanged();                    // 和保存走同一条：少刷一个就会留下假的可点状态
 });
 
 $("#sumbtn").addEventListener("click", function(){

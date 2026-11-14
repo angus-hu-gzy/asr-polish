@@ -1699,5 +1699,48 @@ class ReaderJumpTargetTest(unittest.TestCase):
         self.assertEqual(self.d["segEmpty"], [-1, -1, -1])
 
 
+class ModelEntryTest(unittest.TestCase):
+    """模型配置变了之后，哪几个入口要跟着重判。
+
+    这一条是 0.19.0 漏的：第四层「笔记」接进来时只补了保存那一处，清掉 key
+    之后「总结」「提问」回到「先配模型」，而「笔记」还写着「笔记」——点下去
+    才发现没配。跑着的时候点它，等于白等一次请求。
+
+    钉的是「两处走同一个函数」，不是「各自列了哪几个 updater」：后者加第五层
+    的时候又得改一遍测试，而且改完还是两处各写各的。
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.html = html()
+
+    def _body(self, pattern: str) -> str:
+        m = re.search(pattern, self.html, re.S)
+        self.assertIsNotNone(m, pattern)
+        return m.group(1)
+
+    def test_both_handlers_refresh_through_one_function(self) -> None:
+        for which in ("modelsave", "modelclear"):
+            body = self._body(
+                r'\$\("#%s"\)\.addEventListener\("click", function\(\)\{(.*?)\n\}\);'
+                % which)
+            self.assertIn("modelChanged();", body, which)
+            # 别在处理器里再手写一遍：那样下一次加一层又会只补一处
+            for fn in ("updateSumButton", "updateAskButton",
+                       "updateQuizButtons", "updateNotesEntry"):
+                self.assertNotIn(fn + "()", body, "%s 里又手写了 %s" % (which, fn))
+
+    def test_the_shared_function_covers_all_four_entries(self) -> None:
+        body = self._body(r"function modelChanged\(\)\{(.*?)\n\}")
+        for fn in ("updateSumButton", "updateAskButton",
+                   "updateQuizButtons", "updateNotesEntry"):
+            self.assertIn(fn + "()", body, "modelChanged 漏了 " + fn)
+
+    def test_clearing_says_the_note_entry_will_reset_too(self) -> None:
+        body = self._body(
+            r'\$\("#modelclear"\)\.addEventListener\("click", function\(\)\{(.*?)\n\}\);')
+        self.assertIn("笔记", body)
+
+
 if __name__ == "__main__":
     unittest.main()
