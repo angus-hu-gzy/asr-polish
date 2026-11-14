@@ -64,6 +64,39 @@ def _reply(content: str) -> str:
     return json.dumps({"choices": [{"message": {"content": content}}]})
 
 
+def _serve_seq(steps):
+    """按顺序回，``steps`` 是 ``[(http_code, body), ...]``，多出来的请求重复最后一条。
+
+    返回 ``(srv, recs)``；``recs`` 收每一次的请求体——降级重试要看清第二次带了
+    什么、一共打了几次。
+    """
+    recs: list = []
+
+    class H(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:                       # noqa: N802
+            n = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(n) if n else b"{}"
+            try:
+                recs.append(json.loads(raw.decode("utf-8")))
+            except ValueError:
+                recs.append({})
+            code, text = steps[min(len(recs) - 1, len(steps) - 1)]
+            payload = text.encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *a) -> None:
+            pass
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, recs
+
+
 class BaseUrlTest(unittest.TestCase):
 
     def test_keeps_a_full_endpoint(self) -> None:
@@ -298,8 +331,9 @@ class CallTest(unittest.TestCase):
         # 提示词从服务端来，前端说了不算
         self.assertEqual(self.rec.body["messages"][0]["content"], summary.PROMPT)
         self.assertEqual(self.rec.body["messages"][1]["content"], "第一段")
-        # 不传 response_format：很多兼容服务不认这个参数
-        self.assertNotIn("response_format", self.rec.body)
+        # 总结要的是 JSON 对象，采样阶段就约束住，别等写完再去残片里挖。
+        # （没带会把 400 的端点由 complete 兜底降级，见 JsonModeFallbackTest）
+        self.assertEqual(self.rec.body["response_format"], {"type": "json_object"})
 
         self.assertEqual(out["model"], "m1")
         self.assertEqual(out["summary"]["tldr"], "讲了安装")
@@ -316,6 +350,99 @@ class CallTest(unittest.TestCase):
             summary.call({"base": self.base, "model": "m1", "key": _KEY}, "   ")
         self.assertEqual(cm.exception.kind, "empty")
         self.assertEqual(self.rec.path, "")
+
+
+class JsonModeFallbackTest(unittest.TestCase):
+    """要 JSON 的三层带上采样约束；不认这个参数的端点自动降级，别的 400 不降。
+
+    这一层值得盯着的地方是「别把真错误吞掉」：降级的触发条件必须是**点名**
+    response_format 的 400。放宽成「400 就重试」，模型名写错也会被静默重发一遍，
+    用户最后看到的是同一条 400，但多花了一次调用、原因还更难认。
+    """
+
+    _GOOD = {
+        "summary": '{"tldr":"讲了安装","points":[]}',
+        "quiz": '{"questions":[{"stem":"题","options":["a","b","c","d"],"answer":"A"}]}',
+        "notes": '{"points":[{"text":"要点","t":"00:10"}],"concepts":[]}',
+    }
+
+    def setUp(self) -> None:
+        summary._NO_JSON_MODE.clear()
+        self._srvs: list = []
+
+    def tearDown(self) -> None:
+        for srv in self._srvs:
+            srv.shutdown()
+            srv.server_close()
+        summary._NO_JSON_MODE.clear()
+
+    def _start(self, *steps):
+        srv, recs = _serve_seq(list(steps))
+        self._srvs.append(srv)
+        return "http://127.0.0.1:%d/v1" % srv.server_address[1], recs
+
+    def _cfg(self, base: str) -> dict:
+        return {"base": base, "model": "m1", "key": _KEY}
+
+    def test_fallback_retries_without_the_param(self) -> None:
+        base, recs = self._start(
+            (400, '{"error":{"message":"Unknown parameter: response_format"}}'),
+            (200, _reply(self._GOOD["summary"])))
+        out = summary.call(self._cfg(base), "正文")
+        self.assertEqual(len(recs), 2)
+        self.assertEqual(recs[0].get("response_format"), {"type": "json_object"})
+        self.assertNotIn("response_format", recs[1])
+        self.assertEqual(out["summary"]["tldr"], "讲了安装")   # 降级之后照常出结果
+
+    def test_endpoint_without_support_is_remembered(self) -> None:
+        """同一端点第二次别再白打一遍注定被拒的请求——那也是一次调用。"""
+        base, recs = self._start(
+            (400, '{"error":{"message":"response_format is not supported"}}'),
+            (200, _reply(self._GOOD["summary"])))
+        summary.call(self._cfg(base), "正文")
+        self.assertEqual(len(recs), 2)
+        summary.call(self._cfg(base), "正文")
+        self.assertEqual(len(recs), 3)
+        self.assertNotIn("response_format", recs[2])
+
+    def test_other_bad_request_is_not_retried(self) -> None:
+        base, recs = self._start(
+            (400, '{"error":{"message":"model not found"}}'),
+            (200, _reply(self._GOOD["summary"])))
+        with self.assertRaises(summary.SummaryError) as cm:
+            summary.call(self._cfg(base), "正文")
+        self.assertEqual(len(recs), 1)
+        self.assertIn("model not found", cm.exception.message)
+
+    def test_quiz_and_notes_also_ask(self) -> None:
+        from asr_polish.server import notes, quiz
+        base, recs = self._start((200, _reply(self._GOOD["quiz"])),
+                                 (200, _reply(self._GOOD["notes"])))
+        quiz.call(self._cfg(base), "正文")
+        notes.call(self._cfg(base), "正文")
+        self.assertEqual([r.get("response_format") for r in recs],
+                         [{"type": "json_object"}] * 2)
+
+    def test_qa_does_not_ask(self) -> None:
+        """问答要的是人话。开了这个开关，模型会把回答包进对象里，答错还看不见。"""
+        from asr_polish.server import qa
+        base, recs = self._start((200, _reply("先装 Python。")))
+        out = qa.call(self._cfg(base), "正文", "怎么装")
+        self.assertEqual(out["answer"], "先装 Python。")
+        self.assertNotIn("response_format", recs[0])
+
+    def test_three_json_prompts_still_say_json(self) -> None:
+        """JSON mode 的隐藏前提：提示词里得有 "json" 字样。
+
+        DeepSeek 这类服务会校验，缺了直接 400（Prompt must contain the word
+        'json'），而那个 400 不点名 response_format——它不会被当成降级理由，而是
+        一路抛上去，三层同时挂。所以这里钉住：谁把这句删了，先红在这里。
+        """
+        from asr_polish.server import notes, quiz
+        for name, prompt in (("summary", summary.PROMPT),
+                             ("quiz", quiz.QUIZ_PROMPT),
+                             ("notes", notes.PROMPT)):
+            self.assertIn("json", prompt.lower(), name)
 
 
 class KeyNeverLeaksTest(unittest.TestCase):

@@ -138,6 +138,9 @@ def call(cfg: dict, text: str, question: str, history=None,
             "empty", "这一篇没有正文，问不了。换一篇有字幕的再试。", 400)
 
     msgs = build_messages(body, q, history, has_time)
+    # 这里**不开** json_mode：要的是人话，不是对象。开了模型会把回答塞进
+    # {"answer": "..."}，正文里的引号一旦没转义，整段话就变成解析失败——
+    # 而这一层本来就没有解析步骤，答错了看得见，加约束只添风险。
     out = complete(cfg, msgs, timeout=timeout)
 
     answer = (out["content"] or "").strip()

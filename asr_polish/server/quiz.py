@@ -311,6 +311,6 @@ def call(cfg: dict, text: str, has_time: bool = True,
         {"role": "system", "content": system},
         # 正文包起来给：同一对标记问答也在用，模型看到的边界一致
         {"role": "user", "content": BODY_HEAD + body + BODY_TAIL},
-    ], timeout=timeout)
+    ], timeout=timeout, json_mode=True)
     return {"quiz": parse_content(out["content"]), "model": out["model"]}
 

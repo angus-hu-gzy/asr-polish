@@ -270,7 +270,7 @@ class CallTest(unittest.TestCase):
         self.assertEqual(self.rec.headers.get("Authorization"), "Bearer " + _KEY)
         self.assertEqual(self.rec.body["model"], "m1")
         self.assertFalse(self.rec.body["stream"])
-        self.assertNotIn("response_format", self.rec.body)
+        self.assertEqual(self.rec.body["response_format"], {"type": "json_object"})
         sysmsg = self.rec.body["messages"][0]["content"]
         self.assertTrue(sysmsg.startswith(quiz.QUIZ_PROMPT % {"count": 3}))
         self.assertNotIn(quiz.NO_TIME_RULE, sysmsg)

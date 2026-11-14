@@ -277,7 +277,7 @@ def call(cfg: dict, text: str, known: Optional[list[str]] = None,
     out = complete(cfg, [
         {"role": "system", "content": build_system(known or [], has_time)},
         {"role": "user", "content": BODY_HEAD + body + BODY_TAIL},
-    ], timeout=timeout)
+    ], timeout=timeout, json_mode=True)
     return {"notes": parse_content(out["content"], has_time),
             "model": out["model"]}
 

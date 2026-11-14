@@ -52,8 +52,10 @@ BODY_TAIL = "\n【正文结束】"
 #: 结构是被前端解析的，格式一变整块就崩，不该留一个「随便改」的口子。
 #:
 #: 几个刻意的约束：
-#: - **只要 JSON，不要围栏**。很多兼容服务不支持 response_format，只能靠提示词；
-#:   真带了 ```json 围栏也在 parse_reply 里兜住。
+#: - **只要 JSON，不要围栏**。结构靠两层保：请求带 `response_format`（服务端在
+#:   采样时约束，不认它的端点由 `complete` 降级掉），提示词里也明说一遍；真带了
+#:   ```json 围栏也在 parse_reply 里兜住。两层都不省——带参数的那一层保「合法」，
+#:   提示词和解析器保「字段对」。
 #: - **`t` 是原样抄的字符串，不是秒数**。让模型把 01:23 换算成 83 秒，它会算错；
 #:   让它抄，它基本不会错。换算的事交给 parse_stamp。
 #: - **要点不许整段抄原文**。抄出来的摘要读起来像摘录拼接，而且字数会失控。
@@ -124,12 +126,22 @@ def base_url(raw: str) -> str:
 # 提示词与请求体
 # --------------------------------------------------------------------------- #
 
-def build_request(base: str, model: str, key: str,
-                  messages: list) -> urllib.request.Request:
+def build_request(base: str, model: str, key: str, messages: list,
+                  json_mode: bool = False) -> urllib.request.Request:
     """拼一次 chat/completions 请求。
 
-    不传 `response_format`：OpenAI 有，很多兼容服务没有，带上会被直接拒绝
-    （400 unknown parameter）。结构靠提示词约束 + parse_reply 兜底，兼容性优先。
+    `json_mode` 为真时带 `response_format={"type": "json_object"}`：让服务端在采样
+    阶段就把输出约束成合法 JSON，而不是等模型写完再靠 ``_first_json_object`` 去
+    残片里挖。总结、测验、笔记三层都要 JSON，问答要的是人话，所以它默认关闭、
+    由调用方自己说要哪个。
+
+    这个参数不是所有 OpenAI 兼容服务都认（带上会被 400 拒掉），所以 ``complete``
+    在撞到「点名 response_format 的 400」时会去掉它重发一次——兼容性放在那一层
+    兜，这里只管拼。
+
+    带 JSON mode 还有一个前提：提示词里必须出现 "json" 字样（DeepSeek 等会校验），
+    否则报的是「Prompt must contain the word 'json'」。三层提示词都写着
+    「只输出一个 JSON 对象」，`test_three_json_prompts_still_say_json` 钉住了这点。
 
     `messages` 由调用方给：总结是「提示词 + 正文」两条，问答还要多几轮历史。
     这里不替调用方决定会话长什么样。
@@ -140,6 +152,8 @@ def build_request(base: str, model: str, key: str,
         "temperature": 0.2,
         "stream": False,
     }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     return urllib.request.Request(
         base_url(base), data=body, method="POST",
@@ -379,23 +393,34 @@ def _provider_message(raw: str) -> str:
     return (raw or "").strip()[:300] or "（提供方没有返回原因）"
 
 
-def http_error(exc: urllib.error.HTTPError) -> SummaryError:
+def _body_of(exc: urllib.error.HTTPError) -> str:
+    """读一次错误响应体，然后关掉。读不出来就返回空串。
+
+    读和关必须一步做完：``HTTPError`` 自己就是一份打开着的响应，分两处做迟早有
+    一条路会只读不关（``http_error`` 和历史版本的教训，见 ``_http`` 模块注释）。
+    """
+    try:
+        return exc.read().decode("utf-8", "replace")
+    except Exception:                      # 响应体读不出来也不该让整件事崩
+        return ""
+    finally:
+        close_quietly(exc)
+
+
+def http_error(exc: urllib.error.HTTPError,
+               raw: str | None = None) -> SummaryError:
     """HTTP 错误 → 分得清是哪一种的 SummaryError。
 
     分类是为了让前端能给不同的反应：key 错可以直接弹设置面板，限流可以提示
     「等一会儿再点」，其余的就是「把提供方的话原样给你看」。
+
+    `raw` 是已经读出来的响应体。``complete`` 为了判断要不要降级会先读一遍，再
+    交过来翻译——那时响应已经关掉了，这里不能再去读第二次（读空的对象会抛）。
+    不传就自己读，对外行为不变。
     """
     code = exc.code
-    try:
-        raw = exc.read().decode("utf-8", "replace")
-    except Exception:                      # 响应体读不出来也不该让整件事崩
-        raw = ""
-    finally:
-        # HTTPError 本身就是一份打开着的响应。读完不关，它会挂在 GC 上等着被
-        # 回收，Python 3.13+ 会为此打一条 ResourceWarning。真出错的时候，最不
-        # 需要的就是一条看着像「我们自己漏了资源」的噪音——它会把真正的失败
-        # 埋掉，而且每失败一次漏一个连接。
-        close_quietly(exc)
+    if raw is None:
+        raw = _body_of(exc)
     detail = _provider_message(raw)
     if code in (401, 403):
         return SummaryError(
@@ -482,22 +507,64 @@ def require_len(text: str) -> str:
     return body
 
 
+#: 明确说过「不认识 response_format」的端点，按完整端点地址记。
+#: 记下来是为了下一次不再白打一遍注定被拒的请求——那也是要占额度的一次调用。
+#: 换了地址就重新试，因为换服务商后能力可能不一样。
+_NO_JSON_MODE: set[str] = set()
+
+
+def _send(cfg: dict, messages: list, timeout: float, json_mode: bool) -> str:
+    """发一次，返回原始响应体（还没解析）。异常原样往上抛。"""
+    req = build_request(cfg["base"], cfg["model"], cfg["key"], messages,
+                        json_mode=json_mode)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read().decode("utf-8", "replace")
+
+
+def _blames_response_format(raw: str) -> bool:
+    """这个 400 是在嫌 ``response_format`` 这个参数。
+
+    判据故意收得很紧：必须点名。各家拒绝不支持的参数时措辞五花八门，但只要点
+    了名就说明是这条；不点名的 400（模型名写错、正文超长……）一律不当降级理由
+    ——那会把真错误吞掉，然后拿一个不带 JSON mode 的请求去重试，用户看到的还是
+    400，只是原因更难认了。
+    """
+    t = (raw or "").lower()
+    return "response_format" in t or "response format" in t
+
+
 def complete(cfg: dict, messages: list,
-             timeout: float = DEFAULT_TIMEOUT) -> dict:
+             timeout: float = DEFAULT_TIMEOUT, json_mode: bool = False) -> dict:
     """发一次 chat/completions，返回 ``{"content": 助手说的话, "model": 模型名}``。
 
-    总结和问答共用这一段：校验配置、拼端点、带 key、把提供方的错误翻成人话。
-    两层的差别只在 `messages` 怎么拼、回答怎么解析，所以不复制第二份——复制
-    出去的那一份不会跟着改（以后加超时重试、加代理设置），而这类分叉在
-    「只有一条路会被跑到」的时候没人发现。
+    总结、问答、测验、笔记四层共用这一段：校验配置、拼端点、带 key、把提供方的
+    错误翻成人话。各层的差别只在 `messages` 怎么拼、回答怎么解析，所以不复制第
+    二份——复制出去的那一份不会跟着改（以后加超时重试、加代理设置），而这类分叉
+    在「只有一条路会被跑到」的时候没人发现。
+
+    `json_mode` 只是传给服务端的采样约束（要 JSON 的那三层打开），解析仍走各层
+    自己那套兜底：这个参数保的是「JSON 合法」，保不了「字段对、每题四个选项」，
+    所以 `parse_content` 那层不能拿它当理由删掉。
+
+    不支持该参数的端点会 400，且错误体里点名它；这时去掉参数重发一次。降级是
+    静默的——用户要的是摘要，不是一次参数协商的日志。
     """
     cfg = require_cfg(cfg)
-    req = build_request(cfg["base"], cfg["model"], cfg["key"], messages)
+    endpoint = base_url(cfg["base"])
+    want = bool(json_mode) and endpoint not in _NO_JSON_MODE
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8", "replace")
+        try:
+            raw = _send(cfg, messages, timeout, want)
+        except urllib.error.HTTPError as e:
+            # 先读体：既要用它判断是不是「不认这个参数」，也要留给翻译那一步，
+            # 而响应体只能读一次。
+            body = _body_of(e)
+            if not (want and e.code == 400 and _blames_response_format(body)):
+                raise http_error(e, body) from None
+            _NO_JSON_MODE.add(endpoint)
+            raw = _send(cfg, messages, timeout, False)
     except urllib.error.HTTPError as e:
-        raise http_error(e) from None
+        raise http_error(e, _body_of(e)) from None
     except urllib.error.URLError as e:
         raise transport_error(e) from None
     except (socket.timeout, TimeoutError) as e:
@@ -520,5 +587,6 @@ def call(cfg: dict, text: str, timeout: float = DEFAULT_TIMEOUT) -> dict:
         raise SummaryError("empty", "这一篇没有正文，没什么可总结的。", 400)
 
     out = complete(cfg, [{"role": "system", "content": PROMPT},
-                         {"role": "user", "content": body}], timeout)
+                         {"role": "user", "content": body}], timeout,
+                   json_mode=True)
     return {"summary": parse_content(out["content"]), "model": out["model"]}
