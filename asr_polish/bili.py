@@ -185,7 +185,7 @@ class FetchResult:
     text: str
     subtitle_lan: str = ""                         # 字幕轨语言码，ai-zh = B站自动生成（ASR 产物）
     page: int = 1                                  # 多 P 视频实际取的分 P 序号
-    segments: list[dict] = field(default_factory=list)  # [{start,end,text}]，字幕轨才有
+    segments: list[dict] = field(default_factory=list)  # [{start,end,text}]，字幕轨或 ASR 都有
     warnings: list[str] = field(default_factory=list)
 
 
@@ -1146,10 +1146,37 @@ def _as_bili_error(fn):
     return wrapper
 
 
+def _bcut_segments(result: dict) -> list[dict]:
+    """必剪的 `utterances` → 统一的 `{start, end, text}`（秒）。
+
+    必剪给的是毫秒，这里换掉——下游（`export` 导 srt、`cli --correct` 逐段订正、
+    阅读页分段、笔记锚点）都只认秒。
+    """
+    out = []
+    for u in result.get("utterances") or []:
+        txt = (u.get("transcript") or "").strip()
+        if not txt:
+            continue
+        st, en = u.get("start_time"), u.get("end_time")
+        out.append({
+            "start": None if st is None else round(float(st) / 1000.0, 2),
+            "end": None if en is None else round(float(en) / 1000.0, 2),
+            "text": txt,
+        })
+    return out
+
+
 @_as_bili_error
-def transcribe_bcut(video: dict, cookie_path: Optional[str] = None,
-                    max_wait: int = 900) -> Optional[str]:
-    """必剪云端转写，返回带换行的文本，失败返回 None。"""
+def transcribe_bcut_detail(video: dict, cookie_path: Optional[str] = None,
+                           max_wait: int = 900) -> Optional[dict]:
+    """必剪云端转写，返回 `{"text": 带换行的文本, "segments": [...]}`。
+
+    原来这里只拼文本、把 `utterances` 里的起止时间丢了，于是走 ASR 的篇等于「没有
+    逐句时间」：srt 导不出、`--correct` 只能整篇糊一遍、笔记锚点全空、阅读页只能按
+    纯文本切段。时间本来就在返回里，没有理由丢。
+
+    失败返回 None（调用方按「字幕轨与 ASR 都没取到」处理）。
+    """
     tmpdir = tempfile.mkdtemp(prefix="asr_polish_")
     try:
         audio_path = _download_audio(video, tmpdir, cookie_path=cookie_path)
@@ -1200,17 +1227,25 @@ def transcribe_bcut(video: dict, cookie_path: Optional[str] = None,
             data = r["data"]
             state = data.get("state")
             if state == 4:                          # COMPLETE
-                result = json.loads(data.get("result") or "{}")
-                lines = [u.get("transcript", "").strip()
-                         for u in (result.get("utterances") or [])
-                         if (u.get("transcript") or "").strip()]
-                return "\n".join(lines) if lines else None
+                segs = _bcut_segments(json.loads(data.get("result") or "{}"))
+                if not segs:
+                    return None
+                return {"text": "\n".join(s["text"] for s in segs),
+                        "segments": segs}
             if state == 3:                          # ERROR
                 return None
             time.sleep(1)
         return None
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def transcribe_bcut(video: dict, cookie_path: Optional[str] = None,
+                    max_wait: int = 900) -> Optional[str]:
+    """只要文本的老口子，保留给调用方与测试。"""
+    got = transcribe_bcut_detail(video, cookie_path=cookie_path,
+                                 max_wait=max_wait)
+    return got["text"] if got else None
 
 
 # ── 主入口 ───────────────────────────────────────────────────
@@ -1247,7 +1282,12 @@ def fetch(url: str, cookie_path: Optional[str] = None,
         if 1 <= page <= len(pages):
             chosen = pages[page - 1]
             video = dict(video, cid=chosen.get("cid"),
-                         duration=chosen.get("duration", 0))
+                         duration=chosen.get("duration", 0),
+                         # 换 P 就必须换 URL：`_download_audio` 只认 page_url，
+                         # 丢了 `?p=` 每个 P 都会去下第 1 P 的音频（必剪 ASR 那条
+                         # 路的实际结果就是「六个 P 的正文一模一样」）
+                         page_url="https://www.bilibili.com/video/%s?p=%d"
+                                  % (bvid, page))
             result.duration = video["duration"]
             result.page = page
             result.warnings.append(
@@ -1279,9 +1319,10 @@ def fetch(url: str, cookie_path: Optional[str] = None,
         return result
 
     result.warnings.append("无字幕轨，音频将上传至 B站必剪服务做云端转写（公开视频音轨，风险低）")
-    text = transcribe_bcut(video, cookie_path=cookie_path)
-    if not text:
+    got = transcribe_bcut_detail(video, cookie_path=cookie_path)
+    if not got:
         raise BiliError("字幕轨与必剪 ASR 均未取到文本（可能音频下载失败或视频受限）")
     result.source = "必剪云端ASR"
-    result.text = text
+    result.text = got["text"]
+    result.segments = got["segments"]
     return result

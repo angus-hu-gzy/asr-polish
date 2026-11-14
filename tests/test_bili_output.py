@@ -102,5 +102,78 @@ class DownloadAudioTest(unittest.TestCase):
                              else "C:/tmp/audio.m4a")
 
 
+class BcutSegmentsTest(unittest.TestCase):
+    """必剪的 utterances → 统一的 ``{start, end, text}``（秒）。
+
+    原来这里只拼文本、把时间丢了，于是走 ASR 的篇等于「没有逐句时间」：srt 导不出、
+    ``--correct`` 只能整篇糊一遍、笔记锚点全空。时间本来就在返回里，没有理由丢。
+    """
+
+    def test_milliseconds_become_seconds(self) -> None:
+        got = bili._bcut_segments({"utterances": [
+            {"start_time": 219, "end_time": 920, "transcript": "大家好"},
+            {"start_time": 12500, "end_time": 13200, "transcript": "这一节讲分层"},
+        ]})
+        self.assertEqual([s["start"] for s in got], [0.22, 12.5])
+        self.assertEqual([s["end"] for s in got], [0.92, 13.2])
+        self.assertEqual([s["text"] for s in got], ["大家好", "这一节讲分层"])
+
+    def test_empty_lines_are_dropped(self) -> None:
+        got = bili._bcut_segments({"utterances": [
+            {"start_time": 0, "end_time": 400, "transcript": "  "},
+            {"start_time": 400, "end_time": 800, "transcript": None},
+            {"start_time": 800, "end_time": 1200, "transcript": "有内容"},
+        ]})
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0]["start"], 0.8)
+        self.assertEqual(got[0]["text"], "有内容")
+
+    def test_missing_time_stays_none(self) -> None:
+        """时间缺了就留 None，不要补 0——补出来的锚点会指到视频开头。"""
+        got = bili._bcut_segments({"utterances": [{"transcript": "没有时间的句子"}]})
+        self.assertEqual(len(got), 1)
+        self.assertIsNone(got[0]["start"])
+        self.assertIsNone(got[0]["end"])
+
+    def test_no_utterances(self) -> None:
+        self.assertEqual(bili._bcut_segments({}), [])
+        self.assertEqual(bili._bcut_segments({"utterances": []}), [])
+
+
+class PageUrlTest(unittest.TestCase):
+    """换 P 必须换 URL，否则 ASR 下的是第 1 P 的音频。
+
+    实际踩到的：抓一个 6 P 的合集，六个文件全是第 1 P 的正文（330 段、4175 字、
+    尾行都一样），因为 `page_url` 在建 `video` 时就固定成不带 `?p=` 的地址，而
+    `_download_audio` 只认它。字幕轨那条路用 cid，所以从来没暴露。
+    """
+
+    video = {"bvid": "BV1xx", "title": "t", "owner": "o", "duration": 600,
+             "cid": 111, "page_url": "https://www.bilibili.com/video/BV1xx",
+             "pages": [{"cid": 111, "duration": 300, "part": "P1"},
+                       {"cid": 222, "duration": 301, "part": "P2"}]}
+
+    def _fetch(self, page: int) -> str:
+        seen = {}
+
+        def fake_download(v, tmpdir, cookie_path=None):
+            seen["url"] = v["page_url"]
+            seen["cid"] = v["cid"]
+            return None                     # 早退：不真下载
+
+        with mock.patch.object(bili, "get_video_info", return_value=dict(self.video)), \
+                mock.patch.object(bili, "_fetch_subtitle_detail", return_value=None), \
+                mock.patch.object(bili, "_resolve_cookie_path", return_value=None), \
+                mock.patch.object(bili, "_download_audio", side_effect=fake_download):
+            with self.assertRaises(BiliError):
+                bili.fetch("BV1xx", page=page, allow_asr=True)
+        self.assertEqual(seen["cid"], 222)
+        return seen["url"]
+
+    def test_second_page_url_carries_p2(self) -> None:
+        self.assertEqual(self._fetch(2),
+                         "https://www.bilibili.com/video/BV1xx?p=2")
+
+
 if __name__ == "__main__":
     unittest.main()
