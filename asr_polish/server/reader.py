@@ -2947,7 +2947,7 @@ function openQa(open){
   renderQa();
   updateAskButton();
   // 顶栏是 sticky 的：在正文中间点「问答」，不滚一下等于什么都没发生
-  if (box.scrollIntoView) box.scrollIntoView({ block: "start", behavior: "smooth" });
+  scrollPanel(box);
 }
 
 async function askQuestion(text){
@@ -3609,7 +3609,7 @@ function openQuiz(open){
   S.quizErr = null;
   renderQuiz();
   // 顶栏是 sticky 的：在正文中间点「测验」，不滚一下等于什么都没发生
-  if (box.scrollIntoView) box.scrollIntoView({ block: "start", behavior: "smooth" });
+  scrollPanel(box);
 }
 
 $("#quizbtn").addEventListener("click", function(){
@@ -4260,7 +4260,7 @@ async function openLearn(mode){
   box.hidden = false;
   S.learn = { phase: "est", mode: mode || "plan", plan: null };
   renderLearnPanel();
-  if (box.scrollIntoView) box.scrollIntoView({ block: "start", behavior: "smooth" });
+  scrollPanel(box);
 
   // 笔记清单要现拉：**只有服务端知道这一篇存过没有、来源变没变**。
   // 拉不到就退回上一次拿到的那份，别当成「一篇都没存过」——那会白白重写一遍。
@@ -4606,6 +4606,18 @@ function visibleTop(){
   var h = document.querySelector("header");
   var b = (h && h.getBoundingClientRect) ? h.getBoundingClientRect().bottom : 0;
   return (b > 0 ? b : 0) + 6;
+}
+
+/* 把面板滚到「顶栏下面」，不是「视口顶上」。
+
+   `scrollIntoView({block:"start"})` 把面板顶对齐视口顶，而顶栏是吸顶的，正好
+   盖住面板的头两行——点「一键学完」第一眼看到的是「测验 / 笔记」，看不到「一共
+   3 篇 / 总结」。真数据上跑一遍才看得出来，夹具里没人往上看了一眼。 */
+function scrollPanel(box){
+  if (!box || !window.scrollTo) return;
+  var y = (window.scrollY || window.pageYOffset || 0)
+        + box.getBoundingClientRect().top - visibleTop();
+  window.scrollTo({ top: y < 0 ? 0 : y, behavior: "smooth" });
 }
 
 function currentPartIndex(){
