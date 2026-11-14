@@ -4111,7 +4111,8 @@ function renderLearnPanel(){
     body.appendChild(a1);
     body.appendChild(el("p", "lhint",
       "跑着的时候这一页不用管它，也可以切到别的篇看——流水线不会动"
-      + "你正在看的那一篇。切任务或点顶栏那个「停止」都会立刻收手。"));
+      + "你正在看的那一篇。切任务或点顶栏那个「停止」会立刻不再发新的请求；"
+      + "已经在跑的那一层会写完落盘，那次调用也已经计费。"));
     return;
   }
 
@@ -4125,8 +4126,8 @@ function renderLearnPanel(){
       + (tally.failLayers ? ("，失败 " + tally.failLayers + " 层") : "")
       + (run && run.currentLabel ? ("　当前：" + run.currentLabel) : "")));
     body.appendChild(el("p", "lhint",
-      "每一篇的进度写在左边目录那一行。要停下点顶栏那个「停止」，"
-      + "已经跑完的篇会留着。"));
+      "每一篇的进度写在左边目录那一行。要停下点顶栏那个「停止」：正在跑的"
+      + "这一层会写完落盘（那次调用已经计费），之后的不再开始，已经跑完的篇会留着。"));
     return;
   }
 

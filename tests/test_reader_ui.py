@@ -1552,6 +1552,24 @@ class LearnMarkupTest(unittest.TestCase):
         # 按下「停止」之后已经跑完的篇还在，这一点得写在 title 里
         self.assertIn("已经跑完的篇会留着", m.group(1))
 
+    def test_stop_hint_does_not_overclaim(self) -> None:
+        """「停止」拦不住已经在服务端算着的那一层，文案不能把它说成零成本。
+
+        实测：点停止后 1–3 秒，那一篇的笔记照样落盘——请求早发出去了，写盘在
+        `POST /api/tasks/{id}/notes` 里完成，前端的代次守卫只能让结果不写进界面。
+        文件本身是完整的（`_write` 走临时文件 + replace），所以后果只是「你叫停
+        之后它还写了一篇，钱也花了」。
+
+        这条不是文案洁癖：说成「立刻收手」，用户会以为停下来就不花钱，于是更愿意
+        在跑长合集时早早停手，然后发现账上多了一笔。两处提示（点之前 / 跑着时）
+        都得把这件事说出来。
+        """
+        hints = re.findall(r'el\("p", "lhint",(.*?)\)\);', self.html, re.S)
+        self.assertEqual(len(hints), 2, "计划态和运行态各一条提示")
+        for h in hints:
+            self.assertIn("会写完落盘", h, "停止的代价没写清: " + h[:60])
+            self.assertIn("计费", h, "花了钱这件事没写清: " + h[:60])
+
     def test_toc_has_a_status_row_for_each_part(self) -> None:
         """目录里每篇下面挂一行状态：进度得能一眼看出卡在哪一篇。"""
         self.assertIn('.toc .pst{', self.html)
