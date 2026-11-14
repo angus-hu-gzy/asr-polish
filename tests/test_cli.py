@@ -84,6 +84,61 @@ class TestSubsOnly(unittest.TestCase):
         self.assertIn("全部成功", err.getvalue())
 
 
+class TestSubsSummarySaysFenP(unittest.TestCase):
+    """多分 P 的汇总里，那个 3 是 3 个分 P，不能写成「3 段」。
+
+    `subs --only BV1kid5BnEPH#4 #5 #6` 的真实输出是「视频 1 个：有字幕 1，
+    无字幕 0 段」加「全部成功（3 段）」。这个项目里「段」专指字幕段，看到
+    「3 段」第一反应是只抓到三句字幕；而且同一行里「有字幕 1」数的是视频、
+    紧接着「无字幕 0 段」数的是分 P，两个单位并排放着，读的人只能靠猜。
+    """
+
+    def _run(self, out, only):
+        from asr_polish import bili, export
+
+        info = {"title": "标题", "cid": 1, "duration": 10,
+                "pages": [{"cid": i, "part": "P%d" % i, "duration": 5}
+                          for i in (1, 2, 3)]}
+
+        def fake_fetch(bvid, cookie_path=None, page=1, allow_asr=False):
+            return bili.FetchResult(
+                bvid=bvid, title="标题", owner="", duration=10, source="字幕轨",
+                text="x", page=page,
+                segments=[{"start": 0, "end": 1, "text": "x"}])
+
+        with mock.patch.object(bili, "get_video_info", lambda *a, **k: info), \
+                mock.patch.object(bili, "fetch", fake_fetch), \
+                mock.patch.object(export, "write_all"), \
+                mock.patch("sys.stderr", io.StringIO()) as err:
+            cli.main(["subs", "--only", *only, "-o", out])
+        return err.getvalue()
+
+    def test_multi_page_counts_are_not_called_duan(self):
+        import shutil
+        import tempfile
+
+        out = tempfile.mkdtemp(prefix="asrcli_")
+        self.addCleanup(shutil.rmtree, out, True)
+        text = self._run(out, ["BV1xx411c003#1", "BV1xx411c003#2",
+                               "BV1xx411c003#3"])
+        self.assertIn("全部成功（3 条）", text)
+        self.assertIn("视频 1 个 · 分 P 3 个", text)
+        self.assertIn("有字幕 3 条，无字幕 0 条", text)
+        self.assertNotIn("段", text)          # 一条「段」都不许留
+
+    def test_single_entry_has_no_fen_p_suffix(self):
+        import shutil
+        import tempfile
+
+        out = tempfile.mkdtemp(prefix="asrcli_")
+        self.addCleanup(shutil.rmtree, out, True)
+        # 只跑第 2 P：BV 数与条数都是 1，汇总行不该冒出「分 P」这种限定。
+        # （逐条进度行仍会写「1 个分 P」——那是在说这条 BV 本身多分 P、这次只跑了 1 个。）
+        text = self._run(out, ["BV1xx411c003#2"])
+        self.assertIn("视频 1 个：有字幕 1 条", text)
+        self.assertNotIn("视频 1 个 · 分 P", text)
+
+
 class TestRiskControlStopsTheBatch(unittest.TestCase):
     """被风控拦下时，剩下的条目不该再打出去。
 

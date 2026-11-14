@@ -312,8 +312,14 @@ def _cmd_subs(args: argparse.Namespace) -> None:
             mark = "✗"
         else:
             mark = "○"
-        extra = (f"{row['ok']} 段" if row["ok"]
-                 else (row["err"][:60] or "无字幕轨"))
+        # row["ok"] 数的是「这个 BV 抓到几个分 P」，不是字幕条数。写成「3 段」
+        # 会跟「一段字幕」撞词——多分 P 抓完看到「3 段」，第一反应是只抓到三句。
+        if not row["ok"]:
+            extra = row["err"][:60] or "无字幕轨"
+        elif row["multi"]:
+            extra = f"{row['ok']} 个分 P"
+        else:
+            extra = f"{row['ok']} 条"
         print(f"[{i}/{total}] {mark} {row['bvid']} {row['title'][:34]}  {extra}",
               file=sys.stderr, flush=True)
 
@@ -356,22 +362,27 @@ def _cmd_subs(args: argparse.Namespace) -> None:
     ok = sum(r["ok"] for r in rows)
     nosub = sum(r["nosub"] for r in rows)
     fail = sum(r["fail"] for r in rows)
-    done = sum(1 for r in rows if r["ok"])
+    #: 真正处理过的条数（一个分 P 算一条）。与 total（BV 数）不是一回事，
+    #: 多分 P 时两者不等，下面的汇总得把这层说清楚。
+    units = ok + nosub + fail
     if not ok and not nosub and not fail:
-        # 一段都没处理：`--pages 5` 打在只有 3 个分 P 的视频上就是这个形状。
+        # 一条都没处理：`--pages 5` 打在只有 3 个分 P 的视频上就是这个形状。
         # 以前这里落到「全部成功（0 段）」并退出 0，脚本化调用会把什么都没做
         # 当成成功——输出目录是空的，用户也看不出来哪里错了。
         verdict = "没有产出：没有可处理的条目（检查 --pages 是否越界）"
     elif not fail and not nosub:
-        verdict = "全部成功（%d 段）" % ok
+        verdict = "全部成功（%d 条）" % ok
     elif fail and not ok and not nosub:
         verdict = "全部失败"
     elif not ok:
-        verdict = "没有产出：%d 段都没有字幕" % nosub
+        verdict = "没有产出：%d 条都没有字幕" % nosub
     else:
         verdict = "部分成功"
     print(f"\n结果：{verdict}", file=sys.stderr)
-    print(f"视频 {total} 个：有字幕 {done}，无字幕 {nosub} 段，失败 {fail} 次",
+    head = "视频 %d 个" % total
+    if units != total:
+        head += " · 分 P %d 个" % units
+    print(f"{head}：有字幕 {ok} 条，无字幕 {nosub} 条，失败 {fail} 次",
           file=sys.stderr)
     print(f"输出目录：{outdir.resolve()}", file=sys.stderr)
 
@@ -383,7 +394,7 @@ def _cmd_subs(args: argparse.Namespace) -> None:
         print("\n只重跑失败的 %d 条（已成功的不会重做）：\n  asr-polish subs "
               "--only %s" % (len(retry), " ".join(retry)), file=sys.stderr)
     if not ok and (fail or not nosub):
-        # 一段都没拿到：要么全失败，要么一条都没轮到（--pages 越界）。
+        # 一条都没拿到：要么全失败，要么一条都没轮到（--pages 越界）。
         # 「有字幕需求但没有一条拿到」另算，那种情况输出里已经写明原因。
         sys.exit(2)
 
