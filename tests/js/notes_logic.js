@@ -135,6 +135,9 @@ function main() {
     // `[[阈值]] — 定义 [00:00](url)`：wikilink 必须先替换，否则普通链接那条
     // 正则会把 `[[阈值]] — 定义 [00:00` 整段当成链接文字。
     inlineMixed: api.inline("[[阈值]] — 触发判定的那条界线 [00:00](http://h/r?t=0)"),
+    // 昵称写法：文件名是 `TCP_IP`，概念名是 `TCP/IP`。链接要跳到按概念名搜的
+    // 结果页——拿文件名去搜是搜不到的。
+    inlineAlias: api.inline("[[TCP_IP|TCP/IP]] — 传输层协议族"),
     inlineEsc: api.inline('<script>alert(1)</script> & "引号"'),
     inlinePlain: api.inline("一句没有链接的话"),
 

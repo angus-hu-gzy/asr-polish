@@ -137,11 +137,16 @@ function noteHref(v){
 /* 一行里的三种东西：`[[概念]]`、`[12:41](链接)`、其余是字。
    先转 wikilink 再转普通链接——顺序反了的话 `[[阈值]] — 定义 [00:00](url)`
    会被普通链接那条正则从第一个方括号一路吃到 `](`，标题变成
-   「[阈值]] — 定义 [00:00」。 */
+   「[阈值]] — 定义 [00:00」。
+
+   `[[文件|显示名]]` 是 Obsidian 的别名写法：文件名带别名时（概念名里的
+   `/` `:` 落盘会变成 `_`，`TCP/IP` 存成 `TCP_IP.md`）链接指文件、显示指
+   概念名。搜的时候用**显示名**——搜索按概念名匹配，拿文件名去搜是搜不到的。 */
 function inline(text){
   var s = esc(text);
-  s = s.replace(/\[\[([^\]]+)\]\]/g, function(_, name){
-    return '<a href="/notes?q=' + encodeURIComponent(name) + '">' + name + '</a>';
+  s = s.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, function(_, target, label){
+    var shown = label || target;
+    return '<a href="/notes?q=' + encodeURIComponent(shown) + '">' + shown + '</a>';
   });
   s = s.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, function(_, label, url){
     return '<a class="t" href="' + url + '" title="回到原文这一段">'

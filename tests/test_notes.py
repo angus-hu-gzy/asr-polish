@@ -346,6 +346,24 @@ class VideoNoteTest(_TempNotes):
         self.assertNotIn("/", p.name)
         self.assertNotIn(":", p.name)
 
+    def test_concept_link_targets_the_file_not_the_display_name(self) -> None:
+        """`TCP/IP` 落到 `TCP_IP.md`：链接得指文件，显示得是概念名。
+
+        只写 `[[TCP/IP]]` 的话，Obsidian 在全库里找不到 `TCP/IP.md`——那一行
+        就是死链。而 `/` `:` `|` 在 CS 概念里太常见了（`TCP/IP`、`CI/CD`、
+        `HTTP/2`、`A/B 测试`），这一层又是「攒成库」的全部意义所在。
+        """
+        notes.save_video_note(self.root, _meta(), [],
+                              [_c("TCP/IP", "传输层协议族")], "h")
+        body = self.read("带时间的一篇 · P1.md")
+        self.assertIn("- [[TCP_IP|TCP/IP]] — 传输层协议族", body)
+        self.assertTrue((self.root / "concepts" / "TCP_IP.md").is_file())
+
+    def test_link_is_plain_when_the_name_is_already_a_file_name(self) -> None:
+        """名字不用改的时候别硬塞别名：`[[阈值]]` 比 `[[阈值|阈值]]` 干净。"""
+        notes.save_video_note(self.root, _meta(), [], [_c("阈值", "界线")], "h")
+        self.assertIn("- [[阈值]] — 界线", self.read("带时间的一篇 · P1.md"))
+
 
 class SaveTest(_TempNotes):
     """写入的整条路：视频笔记 + 概念笔记 + INDEX。"""
@@ -425,6 +443,44 @@ class SaveTest(_TempNotes):
         files = sorted(p.name for p in (self.root / "concepts").glob("*.md"))
         self.assertEqual(len(files), 2)
 
+    def test_collision_suffix_stays_out_of_the_file_name(self) -> None:
+        """撞名加的 `(2)` **只加在文件名上**，概念名保持原样。
+
+        加进 frontmatter 的话这条概念下一次就认不出自己了：名字从 `A:B` 变成
+        `A:B (2)`，`concept_key` 对不上，于是再落一个新文件，序号一路往下滚
+        （`(3)`、`(4)`…），一个概念在库里散成一串。
+        """
+        self.save(_meta(), [], [_c("A/B", "斜杠版本", "00:30")])
+        self.save(_meta(), [], [_c("A:B", "冒号版本", "00:30")])
+        names = {}
+        for p in (self.root / "concepts").glob("*.md"):
+            meta, _ = notes.split_front(p.read_text(encoding="utf-8"))
+            names[p.name] = meta["概念"]
+        self.assertEqual(names["A_B.md"], "A/B")
+        self.assertEqual(names["A_B (2).md"], "A:B")
+
+        # 再存一遍同一个概念：复用那一条，不再多出第三个文件
+        got = self.save(_meta(title="第三篇"), [], [_c("A:B", "冒号版本", "00:30")])
+        self.assertEqual(got["added"], [])
+        self.assertEqual(got["reused"], ["A:B"])
+        self.assertEqual(len(list((self.root / "concepts").glob("*.md"))), 2)
+
+    def test_every_wikilink_written_points_at_a_real_file(self) -> None:
+        """不逐个字符猜链接该长什么样，只验一件事：写出去的名字都落到了盘上。
+
+        这一条能同时管住撞名加了序号的、名字被 `_safe` 改过的、以及以后新加的
+        任何一种改写——链接和文件名是两处算的，它们对不上就是死链。
+        """
+        self.save(_meta(), [], [_c("TCP/IP", "传输层协议族", "00:00"),
+                                _c("A/B", "斜杠版本", "00:30"),
+                                _c("A:B", "冒号版本", "01:03")])
+        body = self.read("带时间的一篇 · P1.md")
+        targets = re.findall(r"\[\[([^\]|]+)", body)
+        self.assertEqual(len(targets), 3)
+        for t in targets:
+            self.assertTrue((self.root / "concepts" / (t + ".md")).is_file(),
+                            "链接指向了不存在的 %s.md" % t)
+
     def test_index_is_a_directory_and_nothing_else(self) -> None:
         """INDEX 只做目录：视频在前、概念在后，概念只写名字与次数，不写全文。"""
         self.save(_meta(), [], [_c("阈值", "触发判定的那条界线", "00:30")])
@@ -436,6 +492,12 @@ class SaveTest(_TempNotes):
         self.assertIn("[[阈值]] · 出现 2 次 · 首次 2026-11-07", idx)
         self.assertIn("第二篇", idx)
         self.assertNotIn("触发判定的那条界线", idx)     # 定义不进目录
+
+    def test_index_link_points_at_the_file_too(self) -> None:
+        """INDEX 是库的入口，它里面的死链比别处更贵——点进去什么都没有。"""
+        self.save(_meta(), [], [_c("TCP/IP", "传输层协议族", "00:00")])
+        self.assertIn("[[TCP_IP|TCP/IP]] · 出现 1 次 · 首次 2026-11-07",
+                      self.read("INDEX.md"))
 
     def test_index_is_rebuilt_from_disk(self) -> None:
         """用户手删一个文件之后，INDEX 不该还指着它（重建而不是增量维护）。"""
@@ -891,6 +953,17 @@ class NotesPageTest(unittest.TestCase):
         self.assertIn('<a class="t" href="http://h/r?t=0"', got)
         self.assertIn("— 触发判定的那条界线 ", got)
         self.assertNotIn("[[", got)
+
+    def test_wikilink_alias_searches_by_the_display_name(self) -> None:
+        """`[[TCP_IP|TCP/IP]]`：显示概念名，搜索也得用概念名。
+
+        用文件名去搜是搜不到的——`concept_key("TCP_IP")` 是 `tcp_ip`，
+        而概念名 `TCP/IP` 的键是 `tcp/ip`，两个词根本不沾。
+        """
+        got = self.d["inlineAlias"]
+        self.assertIn('href="/notes?q=TCP%2FIP">TCP/IP</a>', got)
+        self.assertNotIn("TCP_IP", got)          # 文件名一个字都不该露在页面上
+        self.assertIn("— 传输层协议族", got)
 
     def test_text_is_escaped(self) -> None:
         got = self.d["inlineEsc"]

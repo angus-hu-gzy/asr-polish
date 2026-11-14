@@ -468,6 +468,51 @@ def concept_path(root: Path, name: str) -> Path:
     return root / CONCEPT_DIR / (_safe(name or "未命名", limit=60) + ".md")
 
 
+def _concept_path_n(root: Path, name: str, n: int) -> Path:
+    """带序号的落点：``<概念> (2).md``。
+
+    序号要先留出位置再截断——`_safe` 砍 60 个字符，先拼 `" (2)"` 再截的话，
+    一个刚好 60 字的概念名会把序号截掉，两个不同的概念又落回同一个文件名。
+    """
+    if n <= 1:
+        return concept_path(root, name)
+    tag = " (%d)" % n
+    stem = _safe(name or "未命名", limit=60 - len(tag))
+    return root / CONCEPT_DIR / (stem + tag + ".md")
+
+
+def _free_concept_path(root: Path, name: str, taken: set) -> Path:
+    """给概念找个还没被占的文件名。
+
+    不同概念经 `_safe` 之后可能同名（`A/B` 和 `A:B`、`TCP/IP` 和 `TCP_IP`），
+    直接写就互相覆盖。加序号，但**只改文件名，不改概念名**：名字是要写进
+    frontmatter 的，带个 `(2)` 之后下次就再也匹配不上原来那一条了，序号
+    只会一路往下滚（`(3)`、`(4)`…），库里同一个概念散成一串。
+    """
+    path = concept_path(root, name)
+    if not path.exists() and path.name not in taken:
+        return path
+    for n in range(2, 1000):
+        cand = _concept_path_n(root, name, n)
+        if not cand.exists() and cand.name not in taken:
+            return cand
+    return _concept_path_n(root, name, 1000)
+
+
+def _wikilink(name: str, stem: str = "") -> str:
+    """`[[文件]]`；文件名和概念名不一致时写成 `[[文件|显示名]]`。
+
+    Obsidian 按**文件名**解析 wikilink，而文件名是 `_safe` 之后的形态
+    （`TCP/IP` 落到 `TCP_IP.md`）。只写 `[[TCP/IP]]` 在 Obsidian 里是死链；
+    只写 `[[TCP_IP]]` 又在笔记页搜不到——那一页拿链接里的字当搜索词，按概念名
+    匹配。两个都要，就得带别名（Obsidian 认 `[[文件|显示]]`，笔记页也认）。
+    """
+    label = (name or stem).replace("|", "｜")
+    if not stem or stem == label:
+        return "[[%s]]" % label
+    return "[[%s|%s]]" % (stem, label)
+
+
 def fmt_date(ts: Optional[float] = None) -> str:
     return datetime.fromtimestamp(ts or datetime.now().timestamp()).strftime("%Y-%m-%d")
 
@@ -568,7 +613,10 @@ def render_video_note(meta: dict, points: list[dict], concepts: list[dict],
         out.append("_模型这次没给出概念。_")
     for c in concepts:
         a = _anchor(host, task_id, idx, c.get("sec"))
-        line = "- [[%s]] — %s" % (c.get("stem") or c["term"], c["def"])
+        # 链接指到**落盘的那个文件**：`stem` 由 save_video_note 预先算好
+        # （`TCP/IP` → `TCP_IP`），显示名仍是模型给的原话。
+        line = "- %s — %s" % (_wikilink(c.get("term") or "", c.get("stem") or ""),
+                              c["def"])
         out.append(line + ((" " + a) if a else ""))
     out.append("")
     return "\n".join(out)
@@ -690,6 +738,9 @@ def load_concepts(root: Path) -> list[dict]:
         if not data["name"]:
             data["name"] = path.stem
         data["file"] = path.name
+        # 文件名（去扩展名）和概念名是两回事：`TCP/IP` 在磁盘上叫 `TCP_IP`。
+        # wikilink 认前者，搜索认后者，两个都得留着。
+        data["stem"] = path.stem
         out.append(data)
     return out
 
@@ -739,6 +790,38 @@ def load_videos(root: Path) -> list[dict]:
     return out
 
 
+def _plan_concepts(root: Path, concepts: list[dict]) -> list[dict]:
+    """这一批概念各自落到哪个文件：``[{"path": Path, "existing": dict|None}]``。
+
+    只算、不写。算这一趟是为了视频笔记里的 `[[链接]]`——链接指向的是**文件名**
+    （`TCP/IP` 落到 `TCP_IP.md`），不先算出来就只能猜，猜错就是 Obsidian 里的
+    一个死链，而且会跟文件一起攒在库里。
+
+    同一批里的两个概念可能撞到同一个文件名（`A/B` 和 `A:B`），所以这里一边算
+    一边占位，和真正写入的顺序保持一致。读一次盘：一批概念共用一份索引，
+    而不是每个概念重新扫一遍目录。
+    """
+    index: dict = {}
+    for item in load_concepts(root):
+        key = concept_key(item["name"])
+        if key and key not in index:
+            index[key] = item
+
+    plan, taken = [], set()
+    for c in concepts:
+        name = c.get("term") or ""
+        hit = index.get(concept_key(name))
+        if hit is not None:
+            path = root / CONCEPT_DIR / hit["file"]
+            taken.add(path.name)
+            plan.append({"path": path, "existing": hit})
+            continue
+        path = _free_concept_path(root, name, taken)
+        taken.add(path.name)
+        plan.append({"path": path, "existing": None})
+    return plan
+
+
 def save_video_note(root: Path, meta: dict, points: list[dict],
                     concepts: list[dict], host: str) -> dict:
     """写视频笔记 + 概念笔记 + INDEX。
@@ -756,12 +839,17 @@ def save_video_note(root: Path, meta: dict, points: list[dict],
     points = [_with_sec(p, meta) for p in points]
     concepts = _dedupe([_with_sec(c, meta) for c in concepts])
 
+    # 落点先算清楚（仍不落盘），视频笔记里的链接才指得到真文件
+    plan = _plan_concepts(root, concepts)
+    for c, slot in zip(concepts, plan):
+        c["stem"] = slot["path"].stem
+
     path = video_path(root, meta.get("title", ""), meta.get("label", ""))
     _write(path, render_video_note(meta, points, concepts, host))
 
     added, reused = [], []
-    for c in concepts:
-        _, is_new = upsert_concept(root, c, meta, host)
+    for c, slot in zip(concepts, plan):
+        _, is_new = upsert_concept(root, c, meta, host, slot)
         (added if is_new else reused).append(c.get("term") or "")
 
     rebuild_index(root, host)
@@ -798,32 +886,34 @@ def _with_sec(item: dict, meta: dict) -> dict:
     return out
 
 
-def upsert_concept(root: Path, c: dict, meta: dict, host: str) -> tuple[str, bool]:
+def upsert_concept(root: Path, c: dict, meta: dict, host: str,
+                   slot: Optional[dict] = None) -> tuple[str, bool]:
     """把一个概念写进库：有就追加一行出处，没有就新建。返回 ``(路径, 是否新建)``。
 
     去重按 `concept_key`。同一个键第二次出现时**只追加出处**，不覆盖定义——
     定义是「这个概念是什么」，不随哪一篇先讲而变化；覆盖会把它变成
     「最后一篇怎么讲」。
+
+    `slot` 是 `_plan_concepts` 算好的落点（`{"path", "existing"}`）。给定时
+    不再自己扫目录——同一批概念挨个扫一遍，是 O(概念数 × 库大小) 的白读。
     """
     name = c.get("term") or ""
-    key = concept_key(name)
-    existing = None
-    for item in load_concepts(root):
-        if concept_key(item["name"]) == key:
-            existing = item
-            break
+    if slot is None:
+        slot = _plan_concepts(root, [c])[0]
+    path, existing = slot["path"], slot["existing"]
 
     if existing is None:
-        path = concept_path(root, name)
-        # 不同概念撞到同一个文件名（去掉非法字符之后）：换个名字，别覆盖
-        if path.exists():
-            path = concept_path(root, name + " (2)")
-        stem = path.stem
         occ = [dict(meta, sec=c.get("sec"))]
-        _write(path, render_concept_note(stem, meta.get("date") or fmt_date(),
-                                        c.get("def", ""), occ, host))
+        # 写进文件的是**原始概念名**，不是文件名：`TCP/IP` 落到 `TCP_IP.md`
+        # 是磁盘的规矩，`# TCP/IP` 才是给人看的东西。撞名加了 `(2)` 时也照此
+        # 办——那条概念的身份仍然是它本来的名字，下次才认得出是同一条。
+        _write(path, render_concept_note(name or path.stem,
+                                         meta.get("date") or fmt_date(),
+                                         c.get("def", ""), occ, host))
         return str(path), True
 
+    # 已有文件的落点由 plan 给的 existing 决定，不再按名字重算一次——
+    # 名字和文件名早就不是一回事了（`TCP/IP` ↔ `TCP_IP.md`）。
     path = root / CONCEPT_DIR / existing["file"]
     name_used = existing["name"]
     define = existing["define"] or c.get("def", "")
@@ -922,8 +1012,10 @@ def rebuild_index(root: Path, host: str = "") -> Path:
     for c in concepts:
         # 概念名写成 wikilink：Obsidian 按文件名在全库解析，放哪个子目录都找得到。
         # 不写成 `[[名]](路径)` —— 那是「wikilink 后面跟一段括号」，两边都不算链接。
-        out.append("- [[%s]] · 出现 %d 次 · 首次 %s"
-                   % (c["name"], max(1, len(c["occ"])), c["first"] or "—"))
+        # 文件名被 `_safe` 改过的（`TCP/IP` → `TCP_IP`）带别名写，免得指向空气。
+        out.append("- %s · 出现 %d 次 · 首次 %s"
+                   % (_wikilink(c["name"], c.get("stem") or ""),
+                      max(1, len(c["occ"])), c["first"] or "—"))
     out.append("")
     path = root / INDEX_NAME
     _write(path, "\n".join(out))
