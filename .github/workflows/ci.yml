@@ -18,8 +18,13 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
         include:
+          # `ubuntu-latest` 已经迁到 26.04，那个镜像的 setup-python 清单里没有
+          # 3.9 的预编译包：「Set up Python」这一步直接失败，测试一个都没跑。
+          # 最低支持版本反而一天都没测过，所以单独挂在 24.04 上跑。
+          - os: ubuntu-24.04
+            python-version: "3.9"
           # Windows 专属坑：BOM、控制台编码、%APPDATA% 路径——只在这会炸
           - os: windows-latest
             python-version: "3.12"
