@@ -254,6 +254,27 @@ class StampTest(unittest.TestCase):
         self.assertEqual(notes.match_stamp(_SEGS, 31), 1)     # 差 0.6 秒，算对上
         self.assertEqual(notes.match_stamp(_SEGS, 32), -1)    # 差 1.6 秒，出了容差
 
+    def test_every_rounded_segment_start_matches_itself(self) -> None:
+        """写侧的输入永远是段首，所以 1.5 秒容差已经够——不需要区间包含。
+
+        喂给模型的正文按原始段一行一条、行首打的是这一段真实段首（`fmt` 只把秒
+        四舍五入），模型原样抄回来。这里逐段模拟那一次舍入，每一段都必须命中它
+        自己。哪天正文改成按合并段喂、或让模型自己换算秒数，这条会先红。
+
+        夹具里相邻段首至少差一秒：两段挤在 0.5 秒内时舍入后本来就分不开（阅读页
+        那边也一样），不归这条管。
+        """
+        segs = [{"start": 0.0, "end": 4.0, "text": "a"},
+                {"start": 30.4, "end": 34.0, "text": "b"},
+                {"start": 63.0, "end": 66.0, "text": "c"},
+                {"start": 64.0, "end": 65.0, "text": "d"},
+                {"start": 3725.4, "end": 3729.0, "text": "e"}]
+        for i, s in enumerate(segs):
+            shown = int(round(s["start"]))        # fmt() 就是这么舍的
+            self.assertEqual(
+                notes.match_stamp(segs, shown), i,
+                "第 %d 段（%.1f 秒）舍入成 %d 后没命中自己" % (i, s["start"], shown))
+
     def test_match_outside_tolerance(self) -> None:
         self.assertEqual(notes.match_stamp(_SEGS, 59), -1)    # 编的 59:59
         self.assertEqual(notes.match_stamp(_SEGS, 120), -1)
