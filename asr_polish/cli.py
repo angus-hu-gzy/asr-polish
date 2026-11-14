@@ -145,10 +145,10 @@ def _cmd_subs(args: argparse.Namespace) -> None:
     import threading
 
     from . import export
-    from .bili import (BiliError, BiliLoginRequired, configure, expand_pages,
-                       extract_bvid, extract_mid, fetch, get_video_info,
-                       group_only_pages, list_season, list_up_videos,
-                       parse_only_targets, search_videos)
+    from .bili import (BiliError, BiliLoginRequired, BiliRiskControl, configure,
+                       expand_pages, extract_bvid, extract_mid, fetch,
+                       get_video_info, group_only_pages, list_season,
+                       list_up_videos, parse_only_targets, search_videos)
 
     configure(min_interval=args.min_interval)
 
@@ -225,17 +225,29 @@ def _cmd_subs(args: argparse.Namespace) -> None:
     #: Cookie 失效时整批立刻收手。否则几十条视频会一条条地失败，
     #: 每条都等一个 --min-interval，用户干等几分钟才看到「全是登录问题」。
     abort = threading.Event()
+    #: 中止原因。两种原因后续该做的事完全不同（换 Cookie / 等一会再来），
+    #: 所以结尾那句提示不能写成同一句话。
+    abort_why = [""]
 
     def grab(bvid: str) -> dict:
         row = {"bvid": bvid, "title": "", "ok": 0, "nosub": 0, "fail": 0,
                "err": "", "multi": False, "failed": []}
         if abort.is_set():
-            row["err"] = "已中止（登录态失效）"
+            row["err"] = "已中止（%s）" % (abort_why[0] or "前一条出错")
             return row
         try:
             info = get_video_info(bvid, cookie_path=args.cookie)
         except BiliLoginRequired as e:
             abort.set()
+            abort_why[0] = "登录态失效"
+            row["fail"], row["err"] = 1, str(e)
+            row["failed"].append((None, str(e)))
+            return row
+        except BiliRiskControl as e:
+            # 风控按 IP / 账号记，不按单条视频记：接着打剩下的，只会延长封禁，
+            # 而且它们大概率全失败——用户拿到一串假失败还得自己猜原因。
+            abort.set()
+            abort_why[0] = "被风控"
             row["fail"], row["err"] = 1, str(e)
             row["failed"].append((None, str(e)))
             return row
@@ -259,6 +271,14 @@ def _cmd_subs(args: argparse.Namespace) -> None:
                             allow_asr=args.asr)
             except BiliLoginRequired as e:
                 abort.set()
+                abort_why[0] = "登录态失效"
+                row["fail"] += 1
+                row["err"] = str(e)
+                row["failed"].append((p["index"], str(e)))
+                continue
+            except BiliRiskControl as e:
+                abort.set()
+                abort_why[0] = "被风控"
                 row["fail"] += 1
                 row["err"] = str(e)
                 row["failed"].append((p["index"], str(e)))
@@ -319,9 +339,19 @@ def _cmd_subs(args: argparse.Namespace) -> None:
                 break
 
     if abort.is_set():
-        print("\n登录态已失效，已中止剩余条目。\n"
-              "修复办法：重新导出 cookies.txt，放到 README「登录态」一节列出的"
-              "任一位置（或用 --cookie 指定）。", file=sys.stderr)
+        if abort_why[0] == "被风控":
+            # 这两条建议是分开的，别混成一句「稍后重试」：降并发能减少触发，
+            # 但已经被拦住的出口 IP 只能等它自己解封（实测 45 分钟还没解）。
+            print("\n被 B站 风控拦下，已中止剩余条目——这不是单条视频的问题，"
+                  "继续打只会延长封禁。\n"
+                  "建议：等一段时间再跑（从几十分钟起算，具体看对方）；"
+                  "重跑时把 -j 降到 1、--min-interval 调到 3 以上。\n"
+                  "如果有登录态，就别走 ASR：字幕轨按 cid 取，不碰必剪风控。",
+                  file=sys.stderr)
+        else:
+            print("\n登录态已失效，已中止剩余条目。\n"
+                  "修复办法：重新导出 cookies.txt，放到 README「登录态」一节列出的"
+                  "任一位置（或用 --cookie 指定）。", file=sys.stderr)
 
     ok = sum(r["ok"] for r in rows)
     nosub = sum(r["nosub"] for r in rows)

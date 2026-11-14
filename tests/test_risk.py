@@ -255,6 +255,64 @@ class TestBcutErrorsAreBiliErrors(unittest.TestCase):
         self.assertEqual(str(ctx.exception), "yt-dlp 下载音频失败：403")
 
 
+# ── 必剪链路上的风控也要能认出来 ────────────────────────────
+
+class TestBcutHttpRiskDetection(unittest.TestCase):
+    """必剪的 412 / 429 是风控，不能降级成「这一篇失败」。
+
+    实测（抓 BV1kid5BNEPH 的 P4）：create / 分片 / complete / create_task 全 200，
+    只有 `task/result` 回 412，body 是一张 HTML 风控页——「由于触发哔哩哔哩安全
+    风控策略，该次访问请求被拒绝」。跟参数、UA、GET/POST 都无关：拿一个根本不
+    存在的 task_id 去查，照样 412。
+
+    降级成普通 BiliError 的后果很具体：CLI 把这一条记成失败、接着打下一条；
+    服务端任务也不会进 `_with_risk_backoff`。而风控是按 IP 记的，继续打只会
+    延长封禁，剩下的条目还会全被打成假失败。
+    """
+
+    BCUT = "https://member.bilibili.com/x/bcut/rubick-interface/task/result"
+
+    def _call(self, code, headers=None):
+        err = urllib.error.HTTPError(self.BCUT, code, "x", headers or {}, None)
+        with mock.patch.object(bili.urllib.request, "urlopen", side_effect=err):
+            return bili._bcut_http(self.BCUT + "?a=1", method="POST", form={"a": "b"})
+
+    def test_412_is_risk(self) -> None:
+        with self.assertRaises(BiliRiskControl) as ctx:
+            self._call(412)
+        self.assertEqual(ctx.exception.code, 412)
+
+    def test_429_is_risk(self) -> None:
+        with self.assertRaises(BiliRiskControl):
+            self._call(429)
+
+    def test_retry_after_is_carried_through(self) -> None:
+        """对方给了等待时间就带上——上层退避用它，比按次数猜准。"""
+        with self.assertRaises(BiliRiskControl) as ctx:
+            self._call(412, {"Retry-After": "120"})
+        self.assertEqual(ctx.exception.retry_after, 120.0)
+
+    def test_other_codes_are_plain_errors(self) -> None:
+        """500 是我们的问题还是对方的问题说不准，但肯定不是风控——
+        把它也当风控会让整批白白停下。"""
+        with self.assertRaises(BiliError) as ctx:
+            self._call(500)
+        self.assertNotIsInstance(ctx.exception, BiliRiskControl)
+        self.assertIn("500", str(ctx.exception))
+
+    def test_risk_is_not_rewrapped_by_transcribe(self) -> None:
+        """`_as_bili_error` 不能把风控包成「必剪 ASR 失败」——那样只剩一句话，
+        上层认不出类型，又退回「记成单条失败」。"""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "audio.m4a")
+            Path(path).write_bytes(b"fake-audio")
+            with mock.patch.object(bili, "_download_audio", return_value=path), \
+                    mock.patch.object(bili, "_bcut_http",
+                                      side_effect=BiliRiskControl("被风控", code=412)):
+                with self.assertRaises(BiliRiskControl):
+                    bili.transcribe_bcut({"bvid": "BV1xx", "cid": 1})
+
+
 # ── wbi 密钥缓存 ────────────────────────────────────────────
 
 class TestWbiCacheExpiry(unittest.TestCase):

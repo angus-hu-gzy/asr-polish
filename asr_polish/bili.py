@@ -750,8 +750,29 @@ def _bcut_http(url: str, method: str = "GET", form: Optional[dict] = None,
         data = json.dumps(json_body).encode()
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # 412 / 429 在这条链路上不是「这个请求写错了」，是 B站的安全风控：回的
+        # 是一张 HTML 页面（「由于触发哔哩哔哩安全风控策略，该次访问请求被拒绝」），
+        # 不是 JSON。实测（抓 BV1kid5BNEPH 的 P4）跟参数、UA、GET/POST 都无关
+        # ——create / 分片 / complete / task 全 200，只有 `task/result` 412；拿一个
+        # 根本不存在的 task_id 去查，也照样 412。
+        #
+        # 必须抛成 BiliRiskControl。上层认这个类型才会整体退避（server/jobs 的
+        # `_with_risk_backoff`）或整批停下（CLI）。降级成普通 BiliError 的后果很
+        # 具体：把这一条记成失败、接着打下一条——而风控是按 IP 记的，继续打只会
+        # 延长封禁，剩下的条目还会全被打成假失败。
+        try:
+            if e.code in (412, 429):
+                raise BiliRiskControl(
+                    "必剪接口被 B站风控拦下（HTTP %d）" % e.code, code=e.code,
+                    retry_after=parse_retry_after(e.headers)) from e
+            raise BiliError("必剪接口返回 HTTP %d：%s"
+                            % (e.code, url.split("?")[0])) from e
+        finally:
+            close_quietly(e)
 
 
 def _bcut_put(url: str, payload: bytes) -> Optional[str]:

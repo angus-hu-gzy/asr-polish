@@ -84,6 +84,52 @@ class TestSubsOnly(unittest.TestCase):
         self.assertIn("全部成功", err.getvalue())
 
 
+class TestRiskControlStopsTheBatch(unittest.TestCase):
+    """被风控拦下时，剩下的条目不该再打出去。
+
+    风控按 IP / 账号记，不按单条视频记：继续跑只会延长封禁，而且剩下的条目
+    会全被打成假失败——用户看到的是一串「失败」，真正的原因（等一会再来）
+    反而被埋掉。实测就是这形状：同一个合集 P1–P3 成功，P4–P6 全 412，而提示
+    只有一句「必剪 ASR 失败（HTTPError）：HTTP Error 412」。
+
+    所以中止的原因也要分开说：换 Cookie 和等封禁解除是两件不同的事。
+    """
+
+    def test_batch_stops_after_risk_control(self):
+        import shutil
+        import tempfile
+
+        from asr_polish import bili
+
+        calls: list = []
+        info = {"title": "标题", "cid": 1, "duration": 10,
+                "pages": [{"cid": 1, "part": "P1", "duration": 5}]}
+
+        def boom(bvid, cookie_path=None, page=1, allow_asr=False):
+            calls.append(bvid)
+            raise bili.BiliRiskControl("必剪接口被 B站风控拦下（HTTP 412）", code=412)
+
+        out = tempfile.mkdtemp(prefix="asrcli_")
+        self.addCleanup(shutil.rmtree, out, True)
+        with mock.patch.object(bili, "get_video_info", lambda *a, **k: info), \
+                mock.patch.object(bili, "fetch", boom), \
+                mock.patch("sys.stderr", io.StringIO()) as err:
+            code = 0
+            try:
+                cli.main(["subs", "--only", "BV1xx411c003#1", "BV1yy411c003#1",
+                          "-o", out])
+            except SystemExit as exc:
+                code = exc.code
+
+        text = err.getvalue()
+        self.assertEqual(len(calls), 1, "风控之后不该再打第二个视频")
+        self.assertIn("风控", text)
+        self.assertIn("已中止", text)
+        # 中止原因是风控时，不能给出「重新导出 cookies」这条建议——那是登录失效的药方
+        self.assertNotIn("登录态已失效", text)
+        self.assertEqual(code, 2)
+
+
 class TestNoOutputIsNotSuccess(unittest.TestCase):
     """零产出不能报「全部成功」。
 
