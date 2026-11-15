@@ -20,6 +20,7 @@ import json
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest import mock
 
 from asr_polish.server import quiz, summary
 
@@ -395,6 +396,47 @@ class CallTest(unittest.TestCase):
         """整条路走一遍：模型给字母，回来的题目的 answer 是下标。"""
         out = quiz.call(self.cfg, _BODY)
         self.assertEqual(out["quiz"]["questions"][0]["answer"], 0)
+
+
+class QuizRetryTest(unittest.TestCase):
+    """测验这一层也吃「解析失败重发一次」——真跑里挂的正是这一层。
+
+    2026-11-15 那轮，P1 测验报「JSON 解析不了」，同一份正文立刻单发一次就过了。
+    重发逻辑本身在 `summary.complete_parsed` 里测，这里只钉两件事：这条链真的
+    接上了，以及重发时仍然开着 json_mode（第二次丢掉约束就等于白重发）。
+    """
+
+    def test_broken_json_then_good(self) -> None:
+        good = json.loads(_quiz_reply(_q()))["choices"][0]["message"]["content"]
+        contents = ['{"questions": [ {"stem": "写到一半断了', good]
+        seen = []
+
+        def fake(cfg, messages, timeout=None, json_mode=False):
+            seen.append(bool(json_mode))
+            return {"content": contents[len(seen) - 1], "model": "m1"}
+
+        with mock.patch.object(summary, "complete", fake):
+            out = quiz.call({"base": "http://127.0.0.1:1/v1", "model": "m1",
+                             "key": _KEY}, _BODY, count=1)
+
+        self.assertEqual(len(seen), 2)
+        self.assertEqual(seen, [True, True])
+        self.assertTrue(out["retried"])
+        self.assertEqual(len(out["quiz"]["questions"]), 1)
+
+    def test_two_broken_json_give_up(self) -> None:
+        seen = []
+
+        def fake(cfg, messages, timeout=None, json_mode=False):
+            seen.append(1)
+            return {"content": "抱歉，我无法完成这个请求。", "model": "m1"}
+
+        with mock.patch.object(summary, "complete", fake):
+            with self.assertRaises(summary.SummaryError) as cm:
+                quiz.call({"base": "http://127.0.0.1:1/v1", "model": "m1",
+                           "key": _KEY}, _BODY, count=1)
+        self.assertEqual(cm.exception.kind, "parse")
+        self.assertEqual(len(seen), 2)
 
 
 class EmptyAnswerTest(unittest.TestCase):

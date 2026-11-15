@@ -575,18 +575,55 @@ def complete(cfg: dict, messages: list,
     return {"content": _content_of(raw), "model": cfg["model"]}
 
 
+#: 解析失败后重发几次。一次就够——真跑里那次是「模型这一次写得不好」，同一条
+#: 请求再发一遍有实质概率成功（实测同输入重发即过）。调大只会让真正不守格式的
+#: 模型多花几次钱，而那该改提示词。
+PARSE_RETRIES = 1
+
+
+def complete_parsed(cfg: dict, messages: list, parse, *,
+                    timeout: float = DEFAULT_TIMEOUT,
+                    json_mode: bool = True) -> dict:
+    """发一次请求、把回答解析成结构化结果，**只在解析失败时重发**。
+
+    返回 ``{"data": 解析结果, "model": 模型名, "retried": 是否重发过}``。
+
+    只对 ``kind == "parse"`` 重发：它的意思是「模型这一次没按格式写」，同样的
+    请求再发一遍结果可能不同（采样有随机性）。其余几类一概不重发——key 错、
+    地址错、模型名错、限流、连不上，重发只会再花一次钱，还给用户一段更长的
+    等待。所以这里不是「失败就重试」。
+
+    重发用的是**同一条请求**：不加提示、不改温度。把「这次写坏了」和「提示词
+    有问题」分开看——后者该改提示词，不该靠重发盖住。
+    """
+    cfg = require_cfg(cfg)
+    last: SummaryError | None = None
+    for i in range(1 + max(0, PARSE_RETRIES)):
+        out = complete(cfg, messages, timeout=timeout, json_mode=json_mode)
+        try:
+            return {"data": parse(out["content"]), "model": out["model"],
+                    "retried": i > 0}
+        except SummaryError as e:
+            if e.kind != "parse":
+                raise
+            last = e
+    assert last is not None                      # 循环至少跑了一次
+    raise last
+
+
 def call(cfg: dict, text: str, timeout: float = DEFAULT_TIMEOUT) -> dict:
     """发一次总结请求。成功返回 ``{"summary": …, "model": …}``。
 
     `cfg` 就是前端设置面板里那三样：``{"base", "model", "key"}``。
     """
-    cfg = require_cfg(cfg)
+    cfg = require_cfg(cfg)          # 先夹一次：没填 key 时别先报「正文是空的」
 
     body = require_len(text)
     if not body:
         raise SummaryError("empty", "这一篇没有正文，没什么可总结的。", 400)
 
-    out = complete(cfg, [{"role": "system", "content": PROMPT},
-                         {"role": "user", "content": body}], timeout,
-                   json_mode=True)
-    return {"summary": parse_content(out["content"]), "model": out["model"]}
+    out = complete_parsed(cfg, [{"role": "system", "content": PROMPT},
+                                {"role": "user", "content": body}],
+                          parse_content, timeout=timeout)
+    return {"summary": out["data"], "model": out["model"],
+            "retried": out["retried"]}

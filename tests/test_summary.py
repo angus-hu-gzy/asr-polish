@@ -445,6 +445,91 @@ class JsonModeFallbackTest(unittest.TestCase):
             self.assertIn("json", prompt.lower(), name)
 
 
+class ParseRetryTest(unittest.TestCase):
+    """JSON 解析失败时重发一次；**别的失败一概不重发**。
+
+    背景：2026-11-15 那轮真跑，6 篇 18 层里 P1 测验失败一次，报「JSON 解析不了」，
+    同一份正文立刻单发一次就过了——模型这一次没写好，不是输入有问题。这类偶发
+    不该让整层作废，也不该让用户为它点一次「只重跑失败的篇」。
+
+    反面同样重要：key 错、地址错、限流、连不上，重发只会再花一次钱、把等待拖长，
+    所以重发条件写成「kind == parse」而不是「失败就重试」。
+    """
+
+    _GOOD = _reply(json.dumps({"tldr": "讲了安装",
+                               "points": [{"text": "先去官网", "t": "01:03"}]},
+                              ensure_ascii=False))
+    #: 配对完整、但字符串里有裸换行——json.loads 会失败。真跑那次最可能是这种。
+    _BROKEN = _reply('{"tldr": "第一行\n第二行", "points": []}')
+
+    def _cfg(self, steps=None):
+        srv, recs = _serve_seq(steps or [(200, self._BROKEN), (200, self._GOOD)])
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        return {"base": "http://127.0.0.1:%d/v1" % srv.server_address[1],
+                "model": "m1", "key": _KEY}, recs
+
+    def test_broken_json_is_retried_once(self) -> None:
+        cfg, recs = self._cfg()
+        out = summary.call(cfg, "正文")
+        self.assertEqual(len(recs), 2)
+        self.assertEqual(out["summary"]["tldr"], "讲了安装")
+        self.assertTrue(out["retried"])
+
+    def test_retry_sends_the_same_request(self) -> None:
+        """重发就是原样再发一遍：不改提示词、不改温度。"""
+        cfg, recs = self._cfg()
+        summary.call(cfg, "正文")
+        self.assertEqual(recs[0], recs[1])
+
+    def test_good_reply_is_not_retried(self) -> None:
+        cfg, recs = self._cfg([(200, self._GOOD)])
+        out = summary.call(cfg, "正文")
+        self.assertEqual(len(recs), 1)
+        self.assertFalse(out["retried"])
+
+    def test_gives_up_after_two_broken_replies(self) -> None:
+        """两次都坏就抛，不能无限重发——那是用户在等、在付钱。"""
+        srv, recs = _serve_seq([(200, self._BROKEN)])
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        cfg = {"base": "http://127.0.0.1:%d/v1" % srv.server_address[1],
+               "model": "m1", "key": _KEY}
+        with self.assertRaises(summary.SummaryError) as cm:
+            summary.call(cfg, "正文")
+        self.assertEqual(cm.exception.kind, "parse")
+        self.assertEqual(len(recs), 2)
+
+    def test_auth_error_is_not_retried(self) -> None:
+        srv, recs = _serve_seq([(401, json.dumps(
+            {"error": {"message": "Incorrect API key provided"}}))])
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        cfg = {"base": "http://127.0.0.1:%d/v1" % srv.server_address[1],
+               "model": "m1", "key": _KEY}
+        with self.assertRaises(summary.SummaryError) as cm:
+            summary.call(cfg, "正文")
+        self.assertEqual(cm.exception.kind, "auth")
+        self.assertEqual(len(recs), 1)          # 一次都不多打
+
+    def test_server_error_is_not_retried(self) -> None:
+        srv, recs = _serve_seq([(500, json.dumps({"error": {"message": "boom"}}))])
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        cfg = {"base": "http://127.0.0.1:%d/v1" % srv.server_address[1],
+               "model": "m1", "key": _KEY}
+        with self.assertRaises(summary.SummaryError):
+            summary.call(cfg, "正文")
+        self.assertEqual(len(recs), 1)
+
+    def test_no_key_still_sends_nothing(self) -> None:
+        cfg, recs = self._cfg()
+        with self.assertRaises(summary.SummaryError) as cm:
+            summary.call({"base": cfg["base"], "model": "m1", "key": ""}, "正文")
+        self.assertEqual(cm.exception.kind, "no_key")
+        self.assertEqual(recs, [])
+
+
 class KeyNeverLeaksTest(unittest.TestCase):
     """key 不进任何一种错误消息。这条比「功能好不好用」重要得多。"""
 

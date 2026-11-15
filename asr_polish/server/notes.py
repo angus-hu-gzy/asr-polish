@@ -27,8 +27,8 @@
 
 关于 key 与成本
 ---------------
-和前三层同一条链：`summary.require_cfg` → `complete` → 错误翻译。这一层多的
-只有两件事：**写文件**，以及把已有概念名（只名字）带进提示词。已有名字是这
+和前三层同一条链：`summary.require_cfg` → `complete_parsed` → 错误翻译。这一层
+多的只有两件事：**写文件**，以及把已有概念名（只名字）带进提示词。已有名字是这
 一层最便宜的防重复手段——模型每次给同一个概念起个新名，库就永远聚不起来。
 
 关于时间戳
@@ -49,7 +49,7 @@ from typing import Optional
 from .._atomic import replace_with_retry
 from ..export import safe_name as _safe
 from .summary import (BODY_HEAD, BODY_TAIL, DEFAULT_TIMEOUT, SummaryError,
-                      complete, json_object, parse_stamp, require_len)
+                      complete_parsed, json_object, parse_stamp, require_len)
 
 #: 笔记库的目录名，落在服务进程的当前目录下（和 `FOR_AI.md` 的约定一致）。
 DIR_NAME = "notes"
@@ -274,12 +274,12 @@ def call(cfg: dict, text: str, known: Optional[list[str]] = None,
     if not body:
         raise SummaryError(
             "empty", "这一篇没有正文，写不出笔记。换一篇有字幕的再试。", 400)
-    out = complete(cfg, [
+    out = complete_parsed(cfg, [
         {"role": "system", "content": build_system(known or [], has_time)},
         {"role": "user", "content": BODY_HEAD + body + BODY_TAIL},
-    ], timeout=timeout, json_mode=True)
-    return {"notes": parse_content(out["content"], has_time),
-            "model": out["model"]}
+    ], lambda s: parse_content(s, has_time), timeout=timeout)
+    return {"notes": out["data"], "model": out["model"],
+            "retried": out["retried"]}
 
 
 # --------------------------------------------------------------------------- #

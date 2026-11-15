@@ -31,8 +31,10 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 from asr_polish.server import App, Store, make_server, notes, notes_page
+from asr_polish.server import summary as summary_mod
 from asr_polish.server.summary import SummaryError
 
 _KEY = "sk-secret-must-not-leak"
@@ -753,6 +755,32 @@ class CallTest(unittest.TestCase):
             notes.call({"base": "http://127.0.0.1:1/v1", "model": "m",
                         "key": _KEY}, "   ")
         self.assertEqual(cm.exception.kind, "empty")
+
+    def test_broken_json_is_retried_and_keeps_has_time(self) -> None:
+        """笔记层同样重发一次，且重发后 `has_time` 仍一路传到解析器。
+
+        这一条盯的是容易漏的地方：解析器是用 lambda 包进去的，重发那次若图省事
+        直接调 `parse_content(content)`，就会落回默认的 `has_time=True`——于是
+        「这一篇没有时间」的正文里，缺出处的要点会被当成不合格丢掉，笔记少一半。
+        """
+        # 故意不给 t：has_time=False 时该留（t 为 None），传丢了就该被当不合格丢掉
+        answer = json.dumps({"points": [{"text": "讲了限流"}], "concepts": []},
+                            ensure_ascii=False)
+        seen = []
+
+        def fake(cfg, messages, timeout=None, json_mode=False):
+            seen.append(1)
+            return {"content": ('{"points": [{"text": "写到一半'
+                                if len(seen) == 1 else answer), "model": "m"}
+
+        with mock.patch.object(summary_mod, "complete", fake):
+            got = notes.call({"base": "http://127.0.0.1:1/v1", "model": "m",
+                              "key": _KEY}, _BODY, has_time=False)
+
+        self.assertEqual(len(seen), 2)
+        self.assertTrue(got["retried"])
+        self.assertEqual(got["notes"]["points"][0]["text"], "讲了限流")
+        self.assertIsNone(got["notes"]["points"][0]["t"])
 
 
 # --------------------------------------------------------------------------- #

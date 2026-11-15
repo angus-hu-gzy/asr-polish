@@ -6,7 +6,8 @@
 和第 1、2 层同一个理由：拼端点、带 key、翻译提供方的错误已经在
 `summary.complete` 里了，这里只多一样东西——**输出的形状不一样**。总结要
 `tldr/points`，问答要散文，测验要选择题。所以这里只有提示词和解析，
-一次调用仍然走 `complete`，不复制第二份发请求的代码。
+一次调用仍然走 `complete_parsed`（内含 `complete` 与「解析失败重发一次」），
+不复制第二份发请求的代码。
 
 为什么出题比总结更不能编
 ------------------------
@@ -33,7 +34,7 @@ from __future__ import annotations
 import re
 
 from .summary import (BODY_HEAD, BODY_TAIL, DEFAULT_TIMEOUT, SummaryError,
-                      complete, json_object, parse_stamp, require_len)
+                      complete_parsed, json_object, parse_stamp, require_len)
 
 #: 一次出几道。五道是一屏能读完、又不至于「蒙也蒙对一半」的量。
 DEFAULT_COUNT = 5
@@ -396,10 +397,11 @@ def call(cfg: dict, text: str, has_time: bool = True,
 
     n = count_of(count)
     system = (QUIZ_PROMPT % {"count": n}) + ("" if has_time else NO_TIME_RULE)
-    out = complete(cfg, [
+    out = complete_parsed(cfg, [
         {"role": "system", "content": system},
         # 正文包起来给：同一对标记问答也在用，模型看到的边界一致
         {"role": "user", "content": BODY_HEAD + body + BODY_TAIL},
-    ], timeout=timeout, json_mode=True)
-    return {"quiz": parse_content(out["content"]), "model": out["model"]}
+    ], parse_content, timeout=timeout)
+    return {"quiz": out["data"], "model": out["model"],
+            "retried": out["retried"]}
 
