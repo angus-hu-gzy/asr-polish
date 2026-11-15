@@ -369,6 +369,9 @@ mark.cur{background:var(--mark-cur);color:var(--mark-cur-ink);
 .toc .pst .x.ok{color:var(--ok)}
 .toc .pst .x.bad{color:var(--bad)}
 .toc .pst .x.run{color:var(--accent)}
+/* 「之前就做完了、本轮没重做」：结果在，只是没重新生成。用 ✓ 的形状说「有」，
+   用更淡的颜色说「这次没动」——比一个 – 明确得多，– 会被读成这层没了。 */
+.toc .pst .x.skip{color:var(--faint)}
 .toc .pst .nt{color:var(--warn)}
 .toc .pst .why{flex-basis:100%;color:var(--bad);word-break:break-word}
 /* 跑着的时候顶栏那个按钮变成「停止」，用语义色标出来：原地换功能是最容易点错
@@ -3916,6 +3919,8 @@ $("#ntbtn").addEventListener("click", function(){ saveNotes() });
 
 var LEARN_LAYERS = ["summary", "quiz", "notes"];
 var LEARN_NAME = { summary: "总结", quiz: "测验", notes: "笔记" };
+/* `skip` 的 – 只在「这一篇没有正文」时出现——那是真的没有。至于「之前就做完了、
+   本轮没重做」，结果是在的，用淡色 ✓ 另画（见 paintRow），不在这里。 */
 var LEARN_MARK = { todo: "·", run: "…", ok: "✓", fail: "✗", skip: "–" };
 /* 这三种错一出现，整轮停下：换一篇重试没有任何意义，只会把同一个错重复二十遍，
    还可能把帐单越滚越大（限流那一支尤其）。 */
@@ -3976,7 +3981,14 @@ function planParts(parts, sums, quizzes, notes){
     };
     LEARN_LAYERS.forEach(function(layer){
       var skip = row.empty || done[layer];
+      // 跳过有两种，读者看到的东西完全相反，所以分开记：
+      //   reuse —— 这层早就有结果，本轮只是没重做。**结果在，能用。**
+      //   无产出 —— 这一篇没有正文，三层一次都没做过。**真没有。**
+      // 混成一个标记会出事：补跑一次，一整排 ✓ 变成一整排 –，看着像倒退，
+      // 而实际上下面的结果一个都没少。判据给成显式布尔量，不在绘制那一层
+      // 拿中文字面量去比。
       row.layers[layer] = { run: !skip,
+                            reuse: !row.empty && !!done[layer],
                             why: row.empty ? "无产出" : (done[layer] ? "已有" : "") };
       if (skip) plan.skip[layer]++;
       else { plan.run[layer]++; plan.calls++ }
@@ -4134,10 +4146,19 @@ function renderLearnPanel(){
   // phase === "done"
   var t2 = learnTally();
   stat.textContent = (S.run && S.run.stopped) ? "已停止" : "跑完了";
+  // 「跳过」这两个字单摆着会被读成「这层没做成」。补一句它到底是什么：
+  // 多半是早就做完了本轮没重做（结果还在），只有空篇才是真的没有。
+  var skipWhy = "";
+  if (t2.skipLayers){
+    skipWhy = t2.emptyLayers
+      ? "（" + t2.reuseLayers + " 层已有结果、" + t2.emptyLayers + " 层无产出）"
+      : "（都已有结果，不是没做）";
+  }
   body.appendChild(el("div", "lsum",
     ((S.run && S.run.stopped) ? "已停止：" : "跑完了：")
-    + "完成 " + t2.doneParts + " 篇 · 跳过 " + t2.skipLayers + " 层 · 失败 "
-    + t2.failParts + " 篇" + (t2.doneLayers ? ("（本次成功 " + t2.doneLayers + " 层）") : "")));
+    + "完成 " + t2.doneParts + " 篇 · 跳过 " + t2.skipLayers + " 层" + skipWhy
+    + " · 失败 " + t2.failParts + " 篇"
+    + (t2.doneLayers ? ("（本次成功 " + t2.doneLayers + " 层）") : "")));
   if (S.run && S.run.fatal){
     body.appendChild(el("div", "lsum",
       "整轮停下：" + (S.run.fatal.message || "")
@@ -4168,8 +4189,8 @@ function renderLearnPanel(){
 
 /* 从状态里数出面板要的三个数。不另存计数——存了就一定会和状态对不上。 */
 function learnTally(){
-  var out = { doneLayers: 0, skipLayers: 0, failLayers: 0,
-              doneParts: 0, failParts: 0 };
+  var out = { doneLayers: 0, skipLayers: 0, reuseLayers: 0, emptyLayers: 0,
+              failLayers: 0, doneParts: 0, failParts: 0 };
   var run = S.run;
   if (!run || !run.status) return out;
   var failIdx = {};
@@ -4180,7 +4201,12 @@ function learnTally(){
     LEARN_LAYERS.forEach(function(layer){
       var v = st[layer] || "todo";
       if (v === "ok") out.doneLayers++;
-      else if (v === "skip") out.skipLayers++;
+      else if (v === "skip"){
+        out.skipLayers++;
+        // 跳过的层里分两种：沿用旧结果、这篇没正文。收尾那句话要说清是哪种，
+        // 否则「跳过 16 层」和目录里那一排淡 ✓ 对不上号。
+        if (row.empty) out.emptyLayers++; else out.reuseLayers++;
+      }
       else if (v === "fail"){ out.failLayers++; anyFail = true }
       if (v !== "ok" && v !== "skip") all = false;
     });
@@ -4210,13 +4236,18 @@ function paintRow(i){
   clear(box);
   LEARN_LAYERS.forEach(function(layer){
     var v = st[layer] || "todo";
+    var lr = (run.plan && run.plan.rows[i] && run.plan.rows[i].layers[layer]) || {};
+    // 「已有结果、本轮跳过」不能画得跟「这一层真没有」一样：– 会被读成「这层没了」。
+    // 它和 ✓ 是同一件事（结果在），差别只在这次做没做，所以用同一个符号、换更淡的
+    // 颜色——形状说「有」，颜色说「这次没动」。真正的「没做」留着 –，那才是真的空。
+    var reuse = (v === "skip" && !!lr.reuse);
     var cls = "x" + (v === "ok" ? " ok" : v === "fail" ? " bad"
-                    : v === "run" ? " run" : "");
-    var span = el("span", cls, LEARN_NAME[layer] + " " + (LEARN_MARK[v] || "·"));
+                    : v === "run" ? " run" : reuse ? " skip" : "");
+    var span = el("span", cls, LEARN_NAME[layer] + " " + (reuse ? "✓" : (LEARN_MARK[v] || "·")));
     if (v === "skip"){
-      var why = (run.plan.rows[i] && run.plan.rows[i].layers[layer]
-                 && run.plan.rows[i].layers[layer].why) || "";
-      span.title = why ? ("跳过：" + why) : "跳过";
+      span.title = reuse
+        ? "本轮跳过：这一层之前就做完了，结果还在（想重做就点「重新跑全部」）"
+        : "这一篇没有正文，三层都没做";
     }
     box.appendChild(span);
   });
@@ -4306,6 +4337,10 @@ async function openLearn(mode){
         if (want){ plan.skip[layer]--; plan.run[layer]++; plan.calls++ }
         else { plan.skip[layer]++; plan.run[layer]--; plan.calls-- }
         row.layers[layer].why = want ? "" : "上次已成";
+        // 跳过时还得跟着改 reuse：绘制层只认这一个字段。漏了它的话，一层被
+        // 「只重跑失败的篇」保下来（上次做成了，但指纹说它过期了 → planParts
+        // 当时判的是要重跑），就会被画成一个 –，而 – 的意思是「这篇没有正文」。
+        row.layers[layer].reuse = !want && !row.empty;
       });
     });
   }

@@ -1358,6 +1358,9 @@ class ReaderLogicTest(unittest.TestCase):
         for name in ("summary", "quiz", "notes"):
             self.assertFalse(layers[name]["run"])
             self.assertEqual(layers[name]["why"], "已有")
+            # 「已有」要能被绘制那一层认出来（它跟空的篇画法不同），所以得有个
+            # 显式字段，而不是让 paintRow 去比 "已有" 这个中文字面量。
+            self.assertTrue(layers[name]["reuse"])
 
     def test_plan_reruns_stale_layers(self) -> None:
         """「看着做过」不等于做过：指纹变了、笔记 stale 了，都得重跑。
@@ -1384,6 +1387,9 @@ class ReaderLogicTest(unittest.TestCase):
         for name in ("summary", "quiz", "notes"):
             self.assertFalse(empty["layers"][name]["run"])
             self.assertEqual(empty["layers"][name]["why"], "无产出")
+            # 空的篇不叫「已有结果」：它一次都没做过。这个字段一并挡在
+            # !row.empty 上，否则空篇的 – 会被画成淡色 ✓，正好反了。
+            self.assertFalse(empty["layers"][name]["reuse"])
         # 3 篇有内容的 × 3 层；那篇空的没有占掉名额
         self.assertEqual(plan["calls"], 9)
 
@@ -1579,6 +1585,69 @@ class LearnMarkupTest(unittest.TestCase):
         self.assertIn("_pst", m.group(1))
         # 没跑过的时候不占位（空行会在目录里留一道白）
         self.assertIn("pst.hidden = true", m.group(1))
+
+    def test_retry_keeps_the_reuse_flag_in_sync(self) -> None:
+        """「只重跑失败的篇」改写计划时，reuse 得跟着改。
+
+        那一段会把某些层从「要跑」改回「跳过」（上次做成了，别为过期指纹再折腾
+        一遍），但它只改了 run 和 why。绘制读的是 reuse——不同步的话，一层明明
+        被保下来了，却会画成 –，而 – 的意思是「这篇没有正文」，正好说反。
+
+        这一条只盯源码形态，因为 openLearn 要真拉笔记清单、真读 S，在 node 里
+        跑不起；真正跑一次「只重跑失败的篇」另有浏览器验证。
+        """
+        m = re.search(r'\} else if \(mode === "failed"\)\{(.*?)plan\.allDone',
+                      self.html, re.S)
+        self.assertIsNotNone(m)
+        body = m.group(1)
+        self.assertIn('"上次已成"', body)
+        self.assertIn("reuse = !want", body)
+
+    def test_skipped_but_done_is_not_drawn_like_missing(self) -> None:
+        """「早做完了、本轮没重做」不能画成跟「这篇没正文」一样的 –。
+
+        实测：在真页面上补跑一次，P2–P6 那 15 个 ✓ 立刻全变成 –，一行看过去像
+        这五篇的活白干了——而它们的结果一个都没少，只是这轮没重新生成。
+
+        这两种跳过语义相反：一个是结果在，一个是压根没有。所以前者画成淡色 ✓
+        （形状说「有」，颜色说「这次没动」），后者才留 –。
+        """
+        # 颜色：淡到能跟实心绿 ✓ 分开，但又不像失效
+        m = re.search(r"\.toc \.pst \.x\.skip\{([^}]*)\}", self.html)
+        self.assertIsNotNone(m, "缺 .x.skip 的样式")
+        self.assertIn("var(--faint)", m.group(1))
+
+        # 绘制：判据用 planParts 给的 reuse，而不是在 paintRow 里比中文字面量
+        m = re.search(r"function paintRow\(i\)\{(.*?)\n\}", self.html, re.S)
+        self.assertIsNotNone(m)
+        body = m.group(1)
+        self.assertIn("lr.reuse", body)
+        self.assertIn('reuse ? " skip"', body)
+        self.assertIn('reuse ? "✓"', body)
+        # 两种跳过的 title 要说清分别是哪种，否则悬停也只是重复一个「跳过」
+        self.assertIn("之前就做完了", body)
+        self.assertIn("没有正文", body)
+
+        # 那个专门给 blank 用的 – 还在：空的篇必须跟「做过」区分得开
+        self.assertIn('skip: "–"', self.html)
+
+    def test_done_line_says_what_skip_means(self) -> None:
+        """收尾那句「跳过 N 层」得说明跳的是哪一种。
+
+        不写清楚，「跳过 16 层」和目录里一排淡 ✓ 对不上号——读者只能自己猜是
+        「没做成」还是「没重做」，而这两种的后续动作完全不一样。
+        """
+        m = re.search(r"// phase === \"done\"(.*?)\n  if \(S\.run && S\.run\.fatal\)",
+                      self.html, re.S)
+        self.assertIsNotNone(m)
+        body = m.group(1)
+        self.assertIn("不是没做", body)          # 全是沿用时的说法
+        self.assertIn("层无产出", body)          # 有空篇时要分列出来
+        # 计数得真的分开，不能拿 skipLayers 一锅端了再说「都已有结果」
+        tally = re.search(r"function learnTally\(\)\{(.*?)\n\}", self.html, re.S)
+        self.assertIsNotNone(tally)
+        self.assertIn("reuseLayers", tally.group(1))
+        self.assertIn("emptyLayers", tally.group(1))
 
     def test_aborted_requests_still_release_the_button(self) -> None:
         """停下之后那三个单篇按钮必须能再点。
