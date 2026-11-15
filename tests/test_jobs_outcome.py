@@ -193,6 +193,133 @@ class TestOutcome(_RunJob):
         self.assertEqual(result["failed_items"][0]["page"], 2)
 
 
+class TestBatchAbort(_RunJob):
+    """整批性质的错，不能按「这一条失败」处理。
+
+    登录态失效和风控都是按账号 / IP 记的：第一个 P 撞上它们之后，往后每一条
+    都是同样的结果。原来这些错在分 P 那一层被 `except BiliError` 吞掉——它确实是
+    `BiliError` 的子类——于是 20 条的 UP 主会老老实实打完 20 条，每条都失败，
+    最后给一句「全部失败（20 处错误）」，那条能直接解决问题的「重新导出
+    cookies.txt」永远不出现。
+    """
+
+    def test_dead_cookie_stops_the_batch(self) -> None:
+        bvs = _bvs(3)
+
+        def fetch(bv, page=1, allow_asr=False):
+            raise bili.BiliLoginRequired("取第 1 P 需要登录态（code -101）")
+
+        with self.assertRaises(jobs.JobFailure) as ctx:
+            self._run({"target": "up:1", "outdir": self.tmp}, fetch, bvs)
+
+        msg = str(ctx.exception)
+        # 能直接照做的那句话必须在
+        self.assertIn("需要登录态", msg)
+        self.assertIn("cookies.txt", msg)
+        # 第一条就没戏，剩下的不该再打
+        self.assertEqual(ctx.exception.result["aborted"]["not_run"], 3)
+        self.assertEqual(ctx.exception.result["parts_written"], 0)
+
+    def test_already_fetched_parts_survive(self) -> None:
+        """中止不是「把跑完的也扔掉」：前两条已经落盘，得留在结果里。"""
+        bvs = _bvs(3)
+        seen: list = []
+
+        def fetch(bv, page=1, allow_asr=False):
+            seen.append(bv)
+            if bv == bvs[1]:
+                raise bili.BiliLoginRequired("Cookie 已失效")
+            return _res(bv)
+
+        with self.assertRaises(jobs.JobFailure) as ctx:
+            self._run({"target": "up:1", "outdir": self.tmp}, fetch, bvs)
+        detail = ctx.exception.result
+        self.assertEqual(detail["parts_written"], 1)
+        # 第 3 条根本没碰
+        self.assertEqual(seen, [bvs[0], bvs[1]])
+        # 「没跑」按「一条都没拿到」算：撞上的第 2 条和没碰的第 3 条都是 0 产出
+        self.assertEqual(detail["aborted"]["not_run"], 2)
+        self.assertIn(bvs[2], [x["bvid"] for x in detail["failed_items"]])
+
+    def test_risk_give_up_keeps_the_result(self) -> None:
+        """退避耗尽也是「整批别打了」，而且明细不能丢——原来抛 RuntimeError，
+        结果整份消失，用户连已经抓到的都看不到。"""
+        bvs = _bvs(2)
+
+        def fetch(bv, page=1, allow_asr=False):
+            raise bili.BiliRiskControl("被风控")
+
+        with mock.patch.object(jobs, "_sleep"), \
+                self.assertRaises(jobs.JobFailure) as ctx:
+            self._run({"target": "up:1", "outdir": self.tmp}, fetch, bvs)
+        detail = ctx.exception.result
+        self.assertIsNotNone(detail)
+        self.assertIn("风控", str(ctx.exception))
+        self.assertEqual(detail["aborted"]["not_run"], 2)
+
+    def test_unfinished_pages_of_the_current_video_are_marked(self) -> None:
+        """一个 3 P 的视频，P1 成了 P2 撞上登录态：P3 也得标成「没跑」，
+        否则「只重跑失败的篇」会把 P3 悄悄漏掉。"""
+        bv = _bvs(1)[0]
+
+        def fetch(b, page=1, allow_asr=False):
+            if page >= 2:
+                raise bili.BiliLoginRequired("Cookie 已失效")
+            return _res(b, page)
+
+        with self.assertRaises(jobs.JobFailure) as ctx:
+            self._run({"target": bv, "outdir": self.tmp}, fetch, [bv],
+                      info=_info(pages=3))
+        detail = ctx.exception.result
+        self.assertEqual(detail["parts_written"], 1)
+        got = [(x["bvid"], x["page"]) for x in detail["failed_items"]]
+        self.assertEqual(got, [(bv, 2), (bv, 3)])
+
+    def test_video_info_failure_also_lands_in_details(self) -> None:
+        """第一条就卡在「取视频信息」：这一条不能从明细里消失。
+
+        它是空 row（没写成 P、也没记过错误），最容易被当成「什么都没发生」丢掉。
+        丢掉之后 `failed_items` 里没有它，补跑时就少一条，而用户以为补过了。
+        """
+        bvs = _bvs(2)
+
+        def info(bv):
+            if bv == bvs[0]:
+                raise bili.BiliLoginRequired("取视频信息需要登录态")
+            return _info()
+
+        with mock.patch.object(jobs, "resolve_targets", return_value=bvs), \
+                mock.patch.object(jobs, "get_video_info", side_effect=info), \
+                mock.patch.object(jobs, "fetch",
+                                  side_effect=lambda b, page=1, allow_asr=False:
+                                  _res(b, page)), \
+                mock.patch.object(jobs.export, "write_all"), \
+                self.assertRaises(jobs.JobFailure) as ctx:
+            jobs.run_subs({"target": "up:1", "outdir": self.tmp},
+                          lambda _f, _m: None)
+        detail = ctx.exception.result
+        self.assertIn(bvs[0], [x["bvid"] for x in detail["failed_items"]])
+        self.assertEqual(detail["aborted"]["not_run"], 2)
+
+    def test_upload_failure_is_not_a_batch_abort(self) -> None:
+        """反向的：必剪分片重传失败是这一条的事，别把整批停掉。
+
+        它外层会被包成 BiliError（`_as_bili_error`），不是 BatchAbort——
+        这条测试盯着别为了图省事在整个循环外面 catch RuntimeError。
+        """
+        bvs = _bvs(3)
+
+        def fetch(bv, page=1, allow_asr=False):
+            if bv == bvs[1]:
+                raise bili.BiliError("必剪 ASR 失败（RuntimeError）：分片上传失败")
+            return _res(bv)
+
+        result, _ = self._run({"target": "up:1", "outdir": self.tmp}, fetch, bvs)
+        self.assertEqual(result["parts_written"], 2)
+        self.assertEqual(result["outcome"], "partial")
+        self.assertNotIn("aborted", result)
+
+
 class TestOnly(_RunJob):
     def test_only_skips_target_resolution(self) -> None:
         """重跑不能重新解析 target：UP 主投稿一变就跑错东西了。"""

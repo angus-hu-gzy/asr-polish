@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -117,6 +118,23 @@ class TestRetry(_TempDB):
         t = self.store.create("subs", {}, max_retries=0)
         self.store.claim("w1")
         self.assertEqual(self.store.fail(t.id, "挂了"), FAILED)
+
+    def test_fail_can_refuse_to_retry(self) -> None:
+        """重跑一遍不会有不同的错，就别回队列。
+
+        登录态失效是最典型的：Cookie 没换，再跑一遍是同一个 -101。更糟的是
+        回队列那一支**不写 result**，已经抓到的几条会跟着一起没掉，而面板上
+        显示的是「失败，等待重试」——用户以为还有一次机会，实际上没有。
+        """
+        t = self.store.create("subs", {}, max_retries=2)
+        self.store.claim("w1")
+        got = self.store.fail(t.id, "需要登录态", result={"items": [1]},
+                              retry=False)
+        self.assertEqual(got, FAILED)
+        final = self.store.get(t.id)
+        self.assertEqual(final.status, FAILED)
+        self.assertEqual(final.retries, 0)          # 一次重试预算都没用掉
+        self.assertEqual(final.result, {"items": [1]})
 
     def test_success_after_retry_clears_error(self) -> None:
         """重试后成功的任务不该保留上一次的报错——界面上会看起来像失败。"""
@@ -438,6 +456,31 @@ class TestWorkerOwnership(_TempDB):
         # 错误文案不该带 "JobFailure:" 这种类名前缀，那是给意外异常用的
         self.assertEqual(after.error, "全部失败（1 处错误）：风控")
         self.assertTrue(any("失败" in e for e in events), events)
+
+    def test_job_failure_can_forbid_retry(self) -> None:
+        """任务自己说「重跑没意义」时，worker 必须照办。
+
+        默认的两次自动重试对登录态失效是灾难：三次都是一样的 -101，而且回队列
+        那一支不写 result，前两次抓到的文件在结果里凭空消失，用户看到的是
+        「失败，等待重试」，以为还有机会。
+        """
+        from asr_polish.server import jobs
+        events: list[str] = []
+        pool = self._pool(events)
+        t = self.store.create("subs", {"target": "BV1xx"})   # max_retries 默认 2
+        task = self.store.claim("worker-1")
+        detail = {"outcome": "failed", "aborted": {"not_run": 3}}
+
+        def fake_run(_kind, _payload, _progress):
+            raise jobs.JobFailure("已中止：需要登录态", detail, retry=False)
+
+        with mock.patch.object(jobs, "run", fake_run):
+            pool._run("worker-1", task)
+
+        after = self.store.get(t.id)
+        self.assertEqual(after.status, FAILED)              # 没回队列
+        self.assertEqual(after.retries, 0)
+        self.assertEqual(after.result["aborted"]["not_run"], 3)
 
 
 class TestFailureKeepsResult(_TempDB):
@@ -771,6 +814,36 @@ class TestHTTP(unittest.TestCase):
         code, body = self._get("/api/tasks/%s/retry-failed" % parent, "POST")
         self.assertEqual(code, 409)
         self.assertIn("没有可重跑", body["error"])
+
+
+class TestPanelErrorRendering(unittest.TestCase):
+    """面板上的错误要整段显示，不能截在最关键的地方。
+
+    「需要登录态」那句话的后半句就是「修复办法：重新导出 cookies.txt」。原来
+    只渲染前 80 字，正好切在这句话中间：用户看到「需要登录态：…需要登录态
+    （code -101）。修复办法：重新导出 cookies.t」，最该照做的那一步只剩半截。
+    """
+
+    def setUp(self) -> None:
+        from asr_polish.server import app as appmod
+        self.html = appmod._index_html()
+
+    def test_error_is_rendered_in_full(self) -> None:
+        self.assertNotIn("esc(t.error).slice", self.html)
+        # 只有片段会被截，限高交给 CSS——截字符串连「悬停看全」的机会都没有
+        self.assertIn('title="${esc(t.error)}"', self.html)
+
+    def test_error_box_wraps_and_is_bounded(self) -> None:
+        m = re.search(r"\.err\{([^}]*)\}", self.html)
+        self.assertIsNotNone(m)
+        css = m.group(1)
+        self.assertIn("pre-wrap", css)          # 换行是作者写的，别折叠成空格
+        self.assertIn("line-clamp:4", css)      # 但也不能把一行撑成一屏
+
+    def test_escape_covers_quotes(self) -> None:
+        """错误文本要进 title="…"，引号不转义就能把属性截断。"""
+        self.assertIn('/[&<>"\']/g', self.html)
+        self.assertIn("&quot;", self.html)
 
 
 class WarehouseFake:

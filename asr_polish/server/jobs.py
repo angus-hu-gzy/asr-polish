@@ -11,6 +11,12 @@
 
 单个 job 内部不再开线程池：并发度由 worker 数量决定，
 这样「谁在干活」在任务表里始终看得见。
+
+**没有取消通道**：面板上那个「停止」是前端的——它让阅读页不再发新请求，正在跑的
+那一次会写完落盘（那次调用也已经计费）。服务端这边没有「停掉这个任务」的接口，
+`payload` 里也没有任何中断标记，所以别在这层假装能停：写一个没人会置位的
+`payload["stop"]` 只会让人以为停得住。真要做，得先在 store 上有一个取消标记，
+由 worker 传入中断信号——那是另一件事。
 """
 from __future__ import annotations
 
@@ -34,6 +40,10 @@ _MAX_ERRORS_KEPT = 5
 #: 结果里最多保留多少条失败明细（面板要列出来，也不能无限长）
 _MAX_FAILED_KEPT = 200
 
+#: 整批中止时，没轮到的条目的失败说明。用同一句话而不是各写一遍：面板要按这
+#: 个字符串就能把「被中止」和「真出错」分开，两处措辞不一致就没法认。
+_NOT_RUN = "未跑：整批中止"
+
 #: 调用方没写 formats 时落哪些格式。
 #:
 #: 不跟 CLI 的 `--format txt` 走：CLI 是用户自己说要什么（只要文字很正常），
@@ -49,11 +59,33 @@ class JobFailure(RuntimeError):
     以前全失败只抛一句话，`result` 是空的——面板上只剩一个错误字符串，
     用户看不到「哪几条失败、为什么」，也就没法只重跑失败的那几条。
     异常带上 result，worker 落库时会把它一起写进任务的 result 字段。
+
+    `retry=False` 表示别自动重跑：登录态失效、被风控这类错，重跑一遍只会
+    得到同一个结果，还会把已经跑出来的结果一起丢掉（回队列那一支不写 result）。
     """
 
-    def __init__(self, message: str, result: Optional[dict] = None) -> None:
+    def __init__(self, message: str, result: Optional[dict] = None,
+                 retry: bool = True) -> None:
         super().__init__(message)
         self.result = result
+        self.retry = retry
+
+
+class BatchAbort(RuntimeError):
+    """这一批别打了——错不是这一条的事。
+
+    和 `JobFailure` 不是一类东西：`JobFailure` 是「跑完了，结论是失败」，是结果
+    语义；它是「还没跑完，别跑了」，是控制流。`run_subs` 接住它，把已经跑出来的
+    收进结果，再翻成 `JobFailure` 抛出去。
+
+    继承 `RuntimeError`：两处抛出点（退避耗尽、对方要求久等）原本就抛
+    `RuntimeError`，这样现有的捕获口径不变。
+
+    为什么必须区分：风控按 IP / 账号记，登录态按 Cookie 算——都不是单条视频的
+    属性。当成「这一条失败」处理，20 条的 UP 主会老老实实打完 20 条，每条都撞
+    同一堵墙，最后给一句「全部失败（20 处错误）」，而那条能真正解决问题的
+    「重新导出 cookies.txt」永远不会出现。
+    """
 
 
 #: 被风控后依次等待的秒数。取 60 / 180 / 300 的理由：
@@ -185,7 +217,7 @@ def _with_risk_backoff(fn: Callable, progress: Progress, frac: float,
             suggested = getattr(explained, "retry_after", None)
             wait = _backoff_for(attempt, suggested)
             if wait is None:
-                raise RuntimeError(
+                raise BatchAbort(
                     "B站要求 %d 秒后再来（Retry-After），超过 %d 秒的等待上限。"
                     "继续重试只会把失败往后推，所以这里停下。"
                     "建议：过 %d 分钟再试，或把 --min-interval 调大（例如 3）、"
@@ -199,7 +231,7 @@ def _with_risk_backoff(fn: Callable, progress: Progress, frac: float,
                 # 可信度不一样，出问题时排查方向也不同。
                 note += "，B站建议等 %ds" % int(suggested)
             _sleep_with_heartbeat(wait, progress, frac, note + "，退避中")
-    raise RuntimeError(
+    raise BatchAbort(
         "连续 %d 次被风控（最后一次：%s）。已累计退避 %d 秒仍被拦，"
         "继续重试只会延长限制。建议：把 --min-interval 调大（例如 3）、"
         "降低单次任务条数，或更新 Cookie 后重试。"
@@ -245,6 +277,18 @@ def resolve_targets(target: str, limit: Optional[int] = None,
     return [bv]
 
 
+def _login_hint(exc: BiliLoginRequired) -> str:
+    """把「需要登录态」说成一句能照着做的话。
+
+    只写「-101 账号未登录」等于让用户自己去翻文档：Cookie 在哪、怎么换、换了放
+    哪儿，都是下一步才想得到的事。这段话是这一整条链上唯一会被人读到的地方。
+    """
+    return ("需要登录态：%s。\n"
+            "修复办法：重新导出 cookies.txt，放到 README「登录态」一节列出的"
+            "任一位置（或用 --cookie 指定），再重试；"
+            "只想抓单个视频的话可以改用 BV 号。" % exc)
+
+
 def run_subs(payload: dict, progress: Progress = _noop) -> dict:
     """抓字幕并落盘。payload 字段见模块文档。"""
     target = payload.get("target") or ""
@@ -283,11 +327,11 @@ def run_subs(payload: dict, progress: Progress = _noop) -> dict:
                     pages=int(payload.get("search_pages") or 1)),
                 progress, 0.02, "解析目标")
         except BiliLoginRequired as e:
-            raise RuntimeError(
-                "需要登录态：%s。\n"
-                "修复办法：重新导出 cookies.txt，放到 README「登录态」一节列出的"
-                "任一位置（或用 --cookie 指定），再重试；"
-                "只想抓单个视频的话可以改用 BV 号。" % e) from e
+            # 连目标都解析不出来，说明这个 Cookie 对整批都没用。别让 worker 抱着
+            # 「重试两次也许就好了」的念头：它只会照同一个死 Cookie 再来两遍。
+            raise JobFailure(_login_hint(e), retry=False) from e
+        except BatchAbort as e:
+            raise JobFailure(str(e), retry=False) from e
     if not targets:
         raise ValueError("没有找到可处理的视频")
     if only is None and limit and len(targets) > limit:
@@ -298,98 +342,181 @@ def run_subs(payload: dict, progress: Progress = _noop) -> dict:
     errors: list[str] = []
     written_files: list[str] = []
     n_ok = n_nosub = n_fail = 0
+    # 中途掐断时要能回答两件事：停在哪一条、这一条已经攒了什么。缺了这两样，
+    # 「跑完的留着」就只是句场面话——文件在盘上，结果里一条都不提，用户找不到。
+    # `settled` 记的是「已经有结论的分 P」：写成了、没字幕、或者记了真实错误。
+    # 只有没结论的才算「未跑」，否则撞上登录态的那一个 P 两头不着，补跑时漏掉。
+    cur: dict = {"i": 0, "row": None, "pages": [], "settled": set()}
 
-    for i, bvid in enumerate(targets, 1):
-        row = {"bvid": bvid, "title": "", "parts": 0, "nosub": 0,
-               "error": "", "note": "", "pages": 1, "failed_pages": []}
-        frac_hint = 0.05 + 0.93 * ((i - 1) / total)
-        try:
-            info = _with_risk_backoff(
-                lambda bv=bvid: get_video_info(bv),
-                progress, frac_hint, "取视频信息")
-            row["title"] = info.get("title") or bvid
-            total_pages = len(info.get("pages") or []) or 1
-            row["pages"] = total_pages
-            pages = expand_pages(info)
-            if want is not None:
-                pages = [p for p in pages if p["index"] in want]
-            if bvid in only_pages and only_pages[bvid] is not None:
-                # 重跑时限定到当初失败的那几个分 P，别把已经成功的重做一遍。
-                pages = [p for p in pages if p["index"] in only_pages[bvid]]
-            if max_parts and len(pages) > max_parts:
-                dropped = len(pages) - max_parts
-                parts_truncated += dropped
-                # 不静默截断：用户看到「成了 20 段」却不知道还有 64 段没取，
-                # 会以为这条视频就这么多。单独存一个字段而不是塞 note——
-                # note 会被「这条没有字幕」的提示覆盖掉。
-                row["parts_capped"] = {"total": len(pages), "taken": max_parts,
-                                       "dropped": dropped}
-                pages = pages[:max_parts]
+    try:
+        for i, bvid in enumerate(targets, 1):
+            row = {"bvid": bvid, "title": "", "parts": 0, "nosub": 0,
+                   "error": "", "note": "", "pages": 1, "failed_pages": []}
+            cur.update({"i": i, "row": row, "pages": [], "settled": set()})
+            frac_hint = 0.05 + 0.93 * ((i - 1) / total)
+            try:
+                info = _with_risk_backoff(
+                    lambda bv=bvid: get_video_info(bv),
+                    progress, frac_hint, "取视频信息")
+                row["title"] = info.get("title") or bvid
+                total_pages = len(info.get("pages") or []) or 1
+                row["pages"] = total_pages
+                pages = expand_pages(info)
+                if want is not None:
+                    pages = [p for p in pages if p["index"] in want]
+                if bvid in only_pages and only_pages[bvid] is not None:
+                    # 重跑时限定到当初失败的那几个分 P，别把已经成功的重做一遍。
+                    pages = [p for p in pages if p["index"] in only_pages[bvid]]
+                if max_parts and len(pages) > max_parts:
+                    dropped = len(pages) - max_parts
+                    parts_truncated += dropped
+                    # 不静默截断：用户看到「成了 20 段」却不知道还有 64 段没取，
+                    # 会以为这条视频就这么多。单独存一个字段而不是塞 note——
+                    # note 会被「这条没有字幕」的提示覆盖掉。
+                    row["parts_capped"] = {"total": len(pages), "taken": max_parts,
+                                           "dropped": dropped}
+                    pages = pages[:max_parts]
 
-            for p in pages:
-                if payload.get("stop"):
-                    break
-                # 开了 ASR 就带上伴跑心跳：下载音频 + 上传 + 云端转写是一段
-                # 十几分钟没有输出的黑洞，不续命就会被当成僵尸。
-                keep = (_Keepalive(progress, frac_hint,
-                                   "第 %s P：ASR 识别中" % p["index"])
-                        if payload.get("asr") else nullcontext())
-                try:
-                    with keep:
-                        res = _with_risk_backoff(
-                            lambda bv=bvid, ix=p["index"]: fetch(
-                                bv, page=ix, allow_asr=bool(payload.get("asr"))),
-                            progress, frac_hint, "取第 %s P" % p["index"])
-                except BiliError as e:
+                cur["pages"] = pages
+                for p in pages:
+                    # 开了 ASR 就带上伴跑心跳：下载音频 + 上传 + 云端转写是一段
+                    # 十几分钟没有输出的黑洞，不续命就会被当成僵尸。
+                    keep = (_Keepalive(progress, frac_hint,
+                                       "第 %s P：ASR 识别中" % p["index"])
+                            if payload.get("asr") else nullcontext())
+                    try:
+                        with keep:
+                            res = _with_risk_backoff(
+                                lambda bv=bvid, ix=p["index"]: fetch(
+                                    bv, page=ix, allow_asr=bool(payload.get("asr"))),
+                                progress, frac_hint, "取第 %s P" % p["index"])
+                    except BiliLoginRequired:
+                        # Cookie 失效是整批的事，别在这一 P 上记账。记成「这一 P
+                        # 失败」的话，一个 50 条的 UP 主会老老实实打完 50 条、
+                        # 每条都撞同一堵墙，而那条能真正解决问题的「重新导出
+                        # cookies.txt」永远不会出现。
+                        raise
+                    except BiliError as e:
+                        n_fail += 1
+                        msg = str(e)
+                        errors.append("%s P%s: %s" % (bvid, p["index"], msg))
+                        # 分 P 级失败也要落到明细里：否则 20 条成了 18 条时，
+                        # 用户只知道「差了 2」，不知道差在哪一条哪一个 P。
+                        row["failed_pages"].append(
+                            {"page": p["index"], "error": msg[:200]})
+                        cur["settled"].add(p["index"])
+                        continue
+                    if not res.segments:
+                        row["nosub"] += 1
+                        n_nosub += 1
+                        cur["settled"].add(p["index"])
+                        if res.warnings:
+                            # 例如「未登录导致取不到 AI 字幕」——不带出来用户只会
+                            # 以为这些视频本来就没字幕。
+                            row["note"] = res.warnings[-1][:160]
+                        continue
+                    if payload.get("correct"):
+                        from ..correction import correct_text
+                        fixed = [correct_text(s["text"]).text for s in res.segments]
+                        for seg, txt in zip(res.segments, fixed):
+                            seg["text"] = txt
+                        res.text = "\n".join(fixed)
+                    part = p["title"] if total_pages > 1 else ""
+                    stem = export.base_name(res, p["title"], total_pages)
+                    paths = export.write_all(outdir, stem, formats, res, part,
+                                             skip_existing=bool(payload.get("skip_existing")))
+                    # 记下真实落盘路径：面板要能点开，MCP 那边也要把文件位置
+                    # 直接交给调用方，不该让人再去输出目录里翻。
+                    written_files.extend(str(x.resolve()) for x in paths)
+                    row["parts"] += 1
+                    n_ok += 1
+                    cur["settled"].add(p["index"])
+            except BiliLoginRequired:
+                raise                       # 同分 P 那一层：整批的事，往上交
+            except BiliError as e:
+                row["error"] = str(e)
+                n_fail += 1
+                errors.append("%s: %s" % (bvid, e))
+            items.append(row)
+            cur["row"] = None
+
+            frac = 0.05 + 0.93 * (i / total)
+            progress(frac, "已处理 %d/%d：%s" % (i, total, row["title"][:28]))
+    except (BiliLoginRequired, BatchAbort) as e:
+        # 整批性质的错到此为止：登录态没换、或者风控退避已耗尽，接着打剩下的
+        # 只会更糟（风控是按 IP / 账号记的，不是按单条记的）。
+        why = _login_hint(e) if isinstance(e, BiliLoginRequired) else str(e)
+        row = cur["row"]
+        if row is not None:
+            # 这条视频里还没轮到的分 P 也要点名：「只重跑失败的篇」照着
+            # failed_pages 走，漏掉它们等于悄悄少抓几段，而用户以为补跑过一轮了。
+            # 判据是「有没有结论」而不是「碰没碰过」——撞上登录态的那一个 P 碰过，
+            # 但它什么也没留下，正是最该补的那一个。
+            for p in cur["pages"]:
+                if p["index"] not in cur["settled"]:
+                    row["failed_pages"].append({"page": p["index"], "error": _NOT_RUN})
                     n_fail += 1
-                    msg = str(e)
-                    errors.append("%s P%s: %s" % (bvid, p["index"], msg))
-                    # 分 P 级失败也要落到明细里：否则 20 条成了 18 条时，
-                    # 用户只知道「差了 2」，不知道差在哪一条哪一个 P。
-                    row["failed_pages"].append(
-                        {"page": p["index"], "error": msg[:200]})
-                    continue
-                if not res.segments:
-                    row["nosub"] += 1
-                    n_nosub += 1
-                    if res.warnings:
-                        # 例如「未登录导致取不到 AI 字幕」——不带出来用户只会
-                        # 以为这些视频本来就没字幕。
-                        row["note"] = res.warnings[-1][:160]
-                    continue
-                if payload.get("correct"):
-                    from ..correction import correct_text
-                    fixed = [correct_text(s["text"]).text for s in res.segments]
-                    for seg, txt in zip(res.segments, fixed):
-                        seg["text"] = txt
-                    res.text = "\n".join(fixed)
-                part = p["title"] if total_pages > 1 else ""
-                stem = export.base_name(res, p["title"], total_pages)
-                paths = export.write_all(outdir, stem, formats, res, part,
-                                         skip_existing=bool(payload.get("skip_existing")))
-                # 记下真实落盘路径：面板要能点开，MCP 那边也要把文件位置
-                # 直接交给调用方，不该让人再去输出目录里翻。
-                written_files.extend(str(x.resolve()) for x in paths)
-                row["parts"] += 1
-                n_ok += 1
-        except BiliLoginRequired as e:
-            # Cookie 没换，等多久都是同样的结果；整批都没戏，立刻停。
-            raise RuntimeError(
-                "需要登录态：%s。\n"
-                "修复办法：重新导出 cookies.txt，放到 README「登录态」一节列出的"
-                "任一位置（或用 --cookie 指定），再重试；"
-                "只想抓单个视频的话可以改用 BV 号。" % e) from e
-        except BiliError as e:
-            row["error"] = str(e)
+                    errors.append("%s P%s: %s" % (row["bvid"], p["index"], _NOT_RUN))
+            if row["parts"] or row["nosub"] or row["failed_pages"] or row["error"]:
+                items.append(row)
+            else:
+                # 连视频信息都没取到（第一条就撞上登录态的常见形态）。这一条也得
+                # 留在明细里，否则它从结果里整个消失——「只重跑失败的篇」拿不到它，
+                # 用户只能自己记住少了一条。
+                row["error"] = _NOT_RUN
+                n_fail += 1
+                errors.append("%s: %s" % (row["bvid"], _NOT_RUN))
+                items.append(row)
+        fresh = targets[cur["i"]:]
+        for bv in fresh:
             n_fail += 1
-            errors.append("%s: %s" % (bvid, e))
-        items.append(row)
+            errors.append("%s: %s" % (bv, _NOT_RUN))
+            items.append({"bvid": bv, "title": "", "parts": 0, "nosub": 0,
+                          "error": _NOT_RUN, "note": "", "pages": 1,
+                          "failed_pages": []})
+        # 「还剩几条没跑」按「一条都没拿到」算：撞上的这条只要写成了哪怕一个 P，
+        # 它就算跑过了，再算进这一栏只会让数字比用户的直观感觉多一条。
+        not_run = len(fresh) + (1 if (row is None or not row["parts"]) else 0)
+        result = _result(
+            target=target, outcome="partial" if n_ok else "failed", total=total,
+            n_ok=n_ok, n_nosub=n_nosub, n_fail=n_fail, outdir=outdir,
+            formats=formats, written_files=written_files, items=items,
+            errors=errors, parts_truncated=parts_truncated,
+            payload=payload, only=only)
+        # 单列一个字段：面板要能把「为什么停」和「日常的失败」分开说，混在
+        # errors 里就只剩一堆「未跑：整批中止」，看着像 20 条各自出了问题。
+        result["aborted"] = {"reason": why, "not_run": not_run}
+        raise JobFailure(
+            "已中止：%s\n（还剩 %d 条没跑；已经拿到的 %d 个分 P 留在结果里，"
+            "要补就照着 failed_items 重跑）" % (why, not_run, n_ok),
+            result, retry=False) from e
 
-        frac = 0.05 + 0.93 * (i / total)
-        progress(frac, "已处理 %d/%d：%s" % (i, total, row["title"][:28]))
-
-    failed_items = _collect_failures(items)
     outcome = _judge(n_ok, n_nosub, n_fail)
+    result = _result(
+        target=target, outcome=outcome, total=total, n_ok=n_ok, n_nosub=n_nosub,
+        n_fail=n_fail, outdir=outdir, formats=formats,
+        written_files=written_files, items=items, errors=errors,
+        parts_truncated=parts_truncated, payload=payload, only=only)
+    if outcome == "failed":
+        # 全失败仍然是「任务失败」（状态 failed），但这次把明细一起带出去：
+        # 只留一句「全部失败」等于把已经拿到的错误线索扔掉。
+        raise JobFailure(
+            "全部失败（%d 处错误）：%s"
+            % (n_fail, "; ".join(errors[:3]) or "未知原因"), result)
+    progress(1.0, _done_note(outcome, n_ok, n_nosub, n_fail))
+    return result
+
+
+def _result(*, target: str, outcome: str, total: int, n_ok: int, n_nosub: int,
+            n_fail: int, outdir: Path, formats, written_files: list,
+            items: list, errors: list, parts_truncated: int,
+            payload: dict, only) -> dict:
+    """把跑到一半的账装成结果。
+
+    正常跑完和中途被掐断走同一份账：另写一遍的话，两份字段迟早对不上——谁少写
+    一个，面板上就少显示一块，而且只在「刚好被掐断」时才缺，最不容易被发现。
+    """
+    failed_items = _collect_failures(items)
     result = {
         "target": target,
         "outcome": outcome,
@@ -409,13 +536,6 @@ def run_subs(payload: dict, progress: Progress = _noop) -> dict:
         # 让结果自己能说清「这是重跑出来的那几条」，面板上不必去翻 payload。
         result["only"] = [str(x) for x in (payload.get("only") or [])]
         result["retry_of"] = payload.get("retry_of")
-    if outcome == "failed":
-        # 全失败仍然是「任务失败」（状态 failed），但这次把明细一起带出去：
-        # 只留一句「全部失败」等于把已经拿到的错误线索扔掉。
-        raise JobFailure(
-            "全部失败（%d 处错误）：%s"
-            % (n_fail, "; ".join(errors[:3]) or "未知原因"), result)
-    progress(1.0, _done_note(outcome, n_ok, n_nosub, n_fail))
     return result
 
 

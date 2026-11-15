@@ -117,6 +117,10 @@ class WorkerPool:
             # 不像普通异常那样只有一句话可写。
             partial = getattr(e, "result", None) if isinstance(
                 e, jobs.JobFailure) else None
+            # 「重跑一遍也不会有不同」的错（登录态、风控）由任务自己说，别由
+            # worker 一律当成可重试：那会让一批本来就没戏的活再跑两遍。
+            retry = getattr(e, "retry", True) if isinstance(
+                e, jobs.JobFailure) else True
             reason = (str(e) if isinstance(e, jobs.JobFailure)
                       else "%s: %s" % (type(e).__name__, e))
             if lost[0]:
@@ -125,7 +129,7 @@ class WorkerPool:
                 return
             try:
                 final = self.store.fail(task.id, reason, attempt=task.attempt,
-                                        result=partial)
+                                        result=partial, retry=retry)
             except Exception as e2:                       # 连状态都写不进去
                 self._on_event("%s 失败且无法落库 %s：%s" % (name, task.id, e2))
                 return

@@ -95,7 +95,11 @@ tr:last-child td{border-bottom:none}
 .bar i{display:block;height:100%;background:var(--run)}
 tr.done-row .bar i{background:var(--done)}
 tr.failed-row .bar i{background:var(--fail)}
-.err{color:var(--fail);font-size:11px}
+/* 错误可能是一整段话（「需要登录态」那条会带上修复办法、还剩几条），原来只截
+   前 80 字，正好切在最有用的那半句上。改成整段显示、最多四行，悬停看全——
+   四行是实测：那句最长的错误正文占三行半，再少一行就把「还剩几条没跑」吃掉。 */
+.err{color:var(--fail);font-size:11px;white-space:pre-wrap;
+display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
 .empty{text-align:center;color:var(--muted);padding:28px}
 .ctl{display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
 input,select,button{background:#1a212b;border:1px solid var(--line);color:var(--text);
@@ -146,7 +150,7 @@ a.rd:hover{border-bottom-style:solid}
 </div>
 <script>
 const $ = id => document.getElementById(id);
-function esc(s){return String(s==null?"":s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]))}
+function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 const OUT = {complete:["全部成功","ok"], partial:["部分成功","part"],
              empty:["无产出","empty"], failed:["全部失败","bad"]};
 // 「阅读」入口只在任务真的写出了文件时才给。判断依据是 result.files 而不是
@@ -192,7 +196,10 @@ async function load(){
   if(!rows.length){$("rows").innerHTML='<tr><td colspan="6" class="empty">还没有任务</td></tr>';return}
   $("rows").innerHTML = rows.map(t=>{
     const pct = Math.round((t.progress||0)*100);
-    const err = t.error ? `<div class="err">${esc(t.error).slice(0,80)}</div>` : "";
+    // 错误整段放出来，样式里限三行、悬停看全。原来只截前 80 字，正好把最该看的
+    // 那半句切掉——「需要登录态…」这条的后半句就是「修复办法：重新导出 cookies.txt」。
+    const err = t.error
+      ? `<div class="err" title="${esc(t.error)}">${esc(t.error)}</div>` : "";
     const note = (t.status==="running" && t.message)
       ? `<div class="msg">${esc(t.message).slice(0,90)}</div>` : "";
     const box = (t.status==="done"||t.status==="failed") ? resultBox(t) : "";
