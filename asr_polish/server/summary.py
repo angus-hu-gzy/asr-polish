@@ -332,6 +332,65 @@ def parse_content(content: str) -> dict:
     return normalize(json_object(content))
 
 
+#: 解析失败时，出错点前后各取多少字符给人看。80 通常够看清一整个键值对，
+#: 又不至于把一大段 JSON 糊到面板上。
+_BROKEN_JSON_WINDOW = 40
+
+
+def _visible(s: str) -> str:
+    """把会让说明塌成多行的字符换成看得见的符号。
+
+    这段说明必须是**一行**：前端把它当一行文本显示，真换行会被折叠，而
+    「字符串里带了裸换行」恰恰是最常见的失败原因——一折叠，这条线索就没了，
+    看到的只是两个词莫名其妙地粘在一起。
+    """
+    return (s.replace("\r\n", "⏎").replace("\n", "⏎")
+             .replace("\r", "⏎").replace("\t", "⇥"))
+
+
+def _broken_json_detail(obj: str, exc: ValueError) -> str:
+    """解析失败时告诉人**坏在哪**，而不是只给开头 200 字。
+
+    以前固定截开头 200 字。2026-11-15 那轮真跑的失败位置在两百字之后，于是
+    面板上显示的是一段完全正常的 JSON——知道「坏了」却看不到坏处，只能重跑。
+    这里改用 json 自己报的位置，取出前后各 40 字，在出错处插一个 ⟪⟫ 标记。
+
+    位置（行/列）是相对**模型给出的这段 JSON** 算的，不是相对它的整段回答；
+    模型前面若说了一句「好的，以下是…」，两者会差那一点。所以这行只当线索。
+    """
+    pos = getattr(exc, "pos", None)
+    if not isinstance(pos, int) or pos < 0 or pos > len(obj):
+        # 不是 JSONDecodeError（极少），或者位置没法用：退回老办法
+        return "模型返回的 JSON 解析不了：%s" % _visible(obj[:200])
+
+    lo = max(0, pos - _BROKEN_JSON_WINDOW)
+    hi = min(len(obj), pos + _BROKEN_JSON_WINDOW)
+    cut = pos - lo
+    snippet = obj[lo:hi]
+    marked = _visible(snippet[:cut]) + "⟪⟫" + _visible(snippet[cut:])
+    where = "第 %d 行第 %d 列" % (getattr(exc, "lineno", 0), getattr(exc, "colno", 0))
+    return "模型返回的 JSON 解析不了（%s，%s）：%s%s%s" % (
+        where, getattr(exc, "msg", str(exc)),
+        "…" if lo else "", marked, "…" if hi < len(obj) else "")
+
+
+def _no_json_detail(body: str) -> str:
+    """一个完整对象都没挖到时说什么——分两种，因为原因完全不同。
+
+    - **通篇没有 `{`**：模型根本没打算给 JSON（回了一句人话，或吐了别的东西）。
+      这时把它的原话带上最有用。
+    - **有 `{` 但括号没配上**：它写了，只是没写完。最常见是撞上 max_tokens 或
+      连接被掐断。这种情况给开头 200 字毫无用处——开头总是正常的，要看的是
+      **它停在哪**，所以给末尾。
+
+    第二种以前被当成了第一种，于是截断的场景下用户看到的是一段漂亮完整的开头。
+    """
+    if "{" not in body:
+        return "模型没有按格式返回 JSON，它说的是：" + _visible(body[:200])
+    return ("模型返回的 JSON 没写完（括号没配上），最后停在：…"
+            + _visible(body[-200:]))
+
+
 def json_object(content: str) -> dict:
     """助手说的话 → 它吐出来的那个 JSON 对象，不管这个对象是什么意思。
 
@@ -342,13 +401,11 @@ def json_object(content: str) -> dict:
     body = _strip_fence(content or "")
     obj = _first_json_object(body)
     if not obj:
-        raise SummaryError(
-            "parse", "模型没有按格式返回 JSON，它说的是：" + body[:200], 502)
+        raise SummaryError("parse", _no_json_detail(body), 502)
     try:
         data = json.loads(obj)
-    except ValueError:
-        raise SummaryError(
-            "parse", "模型返回的 JSON 解析不了：%s" % obj[:200], 502) from None
+    except ValueError as e:
+        raise SummaryError("parse", _broken_json_detail(obj, e), 502) from None
     if not isinstance(data, dict):
         raise SummaryError("parse", "模型返回的不是一个 JSON 对象。", 502)
     return data

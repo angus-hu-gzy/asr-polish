@@ -216,6 +216,90 @@ class ParseReplyTest(unittest.TestCase):
         self.assertIn("model not found", cm.exception.message)
 
 
+class BrokenJsonDetailTest(unittest.TestCase):
+    """解析失败时说的是「坏在哪」，不是「开头长什么样」。
+
+    2026-11-15 那轮真跑，P1 测验报「JSON 解析不了」。消息里固定截的开头 200 字
+    全是正常内容，坏处在两百字之后——知道坏了，却看不到坏处，只能再点一次。
+    这里钉的就是「消息要落在断点上」。
+    """
+
+    @staticmethod
+    def _long_broken() -> str:
+        """造一段 200 字之后才出问题的 JSON：中间少一个逗号。"""
+        pad = ", ".join('"k%02d": "v"' % i for i in range(20))
+        return '{"tldr": "ok", %s "x": "y" "z": "w"}' % pad
+
+    def test_shows_the_break_not_the_head(self) -> None:
+        body = self._long_broken()
+        self.assertGreater(len(body), 200)          # 前 200 字里看不到坏处
+        with self.assertRaises(summary.SummaryError) as cm:
+            summary.json_object(body)
+        msg = cm.exception.message
+        self.assertIn("⟪⟫", msg)
+        head, _, tail = msg.partition("⟪⟫")
+        self.assertIn("k19", head)                  # 断点之前的一点残片
+        self.assertIn('"z": "w"', tail)             # 断点之后的残片在标记右边
+        self.assertNotIn("k00", msg)                # 开头那截没被塞进来
+        self.assertIn("…", msg)                     # 两头都省略了
+
+    def test_bare_newline_is_shown_not_swallowed(self) -> None:
+        """字符串里的裸换行是最常见的坏法，务必让它可见。
+
+        消息是当一行文本显示的：真换行会被折叠，折叠之后就只剩「第一行第二行」
+        粘在一起，看不出问题出在换行上。
+        """
+        with self.assertRaises(summary.SummaryError) as cm:
+            summary.json_object('{"points": [{"text": "第一行\n第二行", "t": "00:12"}]}')
+        msg = cm.exception.message
+        self.assertNotIn("\n", msg)
+        self.assertIn("⏎", msg)
+        self.assertIn("⟪⟫⏎", msg)                    # 标记正落在那处换行上
+
+    def test_short_json_has_no_ellipsis(self) -> None:
+        """整段都装得下时不要加省略号——两头都齐的片段更可信。"""
+        with self.assertRaises(summary.SummaryError) as cm:
+            summary.json_object('{"a": 1 "b": 2}')
+        msg = cm.exception.message
+        self.assertNotIn("…", msg)
+        self.assertIn("⟪⟫", msg)
+
+    def test_falls_back_when_position_is_unknown(self) -> None:
+        """不是 JSONDecodeError（没有 pos）时退回截前 200 字，别抛第二个异常。"""
+        msg = summary._broken_json_detail('{"a": 1', ValueError("boom"))
+        self.assertIn("解析不了", msg)
+        self.assertIn('{"a": 1', msg)
+
+    def test_truncated_output_shows_the_tail_not_the_head(self) -> None:
+        """输出被截断时给**末尾**：开头总是正常的，看不到开口在哪。
+
+        这一条是真实实验逼出来的：把真实模型的答案截掉 40 字之后，大括号配不上，
+        于是走的不是「解析不了」那条，而是「没拿到对象」那条——而那条当时仍然
+        只给开头 200 字，用户看到的是一段漂亮完整、看不出任何问题的 JSON。
+        """
+        body = '{"tldr": "开头标记", "points": [' + "很长的正文" * 40
+        with self.assertRaises(summary.SummaryError) as cm:
+            summary.json_object(body)
+        msg = cm.exception.message
+        self.assertIn("没写完", msg)
+        self.assertIn("很长的正文", msg)         # 末尾那截
+        self.assertNotIn("开头标记", msg)        # 开头不再塞进来
+        self.assertNotIn("\n", msg)
+
+    def test_no_brace_still_quotes_the_model(self) -> None:
+        """通篇没有 `{` 是另一回事：它压根没打算给 JSON，原话最有信息量。"""
+        with self.assertRaises(summary.SummaryError) as cm:
+            summary.json_object("抱歉，我这次没法完成。")
+        self.assertIn("抱歉", cm.exception.message)
+        self.assertNotIn("没写完", cm.exception.message)
+
+    def test_keeps_kind_parse_so_it_still_retries(self) -> None:
+        """消息改了，但错误种类没变——重发一次那条路仍然认得它。"""
+        with self.assertRaises(summary.SummaryError) as cm:
+            summary.json_object(self._long_broken())
+        self.assertEqual(cm.exception.kind, "parse")
+
+
 class ProviderErrorTest(unittest.TestCase):
     """错误必须分得清是哪一种，而且带着提供方的原话。"""
 

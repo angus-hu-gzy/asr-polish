@@ -438,6 +438,28 @@ class QuizRetryTest(unittest.TestCase):
         self.assertEqual(cm.exception.kind, "parse")
         self.assertEqual(len(seen), 2)
 
+    def test_giving_up_reports_where_it_broke(self) -> None:
+        """两次都坏之后，带出去的是断点位置，不是开头 200 字。
+
+        这条盯的是「消息穿过测验层还完整」：位置信息在 summary.json_object 里
+        生成，中途若有人把它重新包一层「生成失败」就前功尽弃。
+        """
+        pad = ", ".join('"k%02d": "v"' % i for i in range(20))
+        broken = '{"questions": [], %s "x": "y" "z": "w"}' % pad
+
+        def fake(cfg, messages, timeout=None, json_mode=False):
+            return {"content": broken, "model": "m1"}
+
+        with mock.patch.object(summary, "complete", fake):
+            with self.assertRaises(summary.SummaryError) as cm:
+                quiz.call({"base": "http://127.0.0.1:1/v1", "model": "m1",
+                           "key": _KEY}, _BODY, count=1)
+        msg = cm.exception.message
+        self.assertEqual(cm.exception.kind, "parse")
+        self.assertIn("⟪⟫", msg)
+        self.assertIn('"z": "w"', msg)            # 断点之后的内容在
+        self.assertNotIn("k00", msg)              # 开头那截不在
+
 
 class EmptyAnswerTest(unittest.TestCase):
     def test_empty_content_is_an_error(self) -> None:
