@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -528,6 +529,144 @@ class SaveTest(_TempNotes):
         (self.root / "concepts" / "阈值.md").unlink()
         notes.rebuild_index(self.root, "h")
         self.assertNotIn("[[阈值]]", self.read("INDEX.md"))
+
+
+class ConcurrentSaveTest(_TempNotes):
+    """两个标签页同时点「存入笔记库」：服务端是一请求一线程，写入得排队。
+
+    这一类的坏法和前面几类都不一样——它不报错，也不写坏文件，只是**少东西**：
+    某个概念的出处行没了，或者两条撞名的概念合成了一条。事后从笔记里看不出
+    发生过什么，因为被覆盖的那份已经不在了。
+
+    拖慢落盘是为了让两段并发真的撞上：不拖的话两次写相隔几毫秒，撞不上就
+    什么也测不出来（这也是这个 bug 一直没被遇到的原因）。
+    """
+
+    def slow_write(self, delay: float = 0.02):
+        real = notes._write
+
+        def write(path, text):
+            time.sleep(delay)
+            real(path, text)
+
+        return mock.patch.object(notes, "_write", write)
+
+    def save_in_threads(self, jobs: list) -> None:
+        """两个线程同时起跑；起跑点对齐到同一刻，否则第一个可能已经写完了。
+
+        线程里的异常不会自己冒到主线程（只会打到 stderr，测试照样「通过」），
+        所以这里收着——盘上的断言说明不了「这一段是不是压根报错了」。
+        """
+        gate = threading.Barrier(len(jobs))
+        failed: list = []
+
+        def run(fn):
+            gate.wait()
+            try:
+                fn()
+            except BaseException as exc:      # noqa: BLE001 - 要原样带回主线程
+                failed.append(exc)
+
+        threads = [threading.Thread(target=run, args=(fn,), daemon=True)
+                   for fn in jobs]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+        self.assertFalse([t for t in threads if t.is_alive()], "有线程卡住了")
+        if failed:
+            raise failed[0]
+
+    def save(self, meta, points, concepts) -> dict:
+        return notes.save_video_note(self.root, meta, points, concepts, "h")
+
+    def test_two_saves_of_the_same_concept_keep_both_occurrences(self) -> None:
+        """同一个概念被两篇同时讲到：两条出处都要在。
+
+        概念笔记是「读出来 → 追加一行 → 整篇写回」。两段并发各自读到的都是
+        对方没写之前的样子，后写的那份把先写的那行盖掉，库里就少一次出处。
+        """
+        self.save(_meta(), [], [_c("阈值", "定义", "00:30")])   # 先有一条打底
+
+        def a():
+            notes.save_video_note(
+                self.root,
+                _meta(title="并发 A", label="P2", part_index=1,
+                      part_name="BV1TEST00001-P2-并发A.srt"),
+                [], [_c("阈值", "定义", "00:00")], "h")
+
+        def b():
+            notes.save_video_note(
+                self.root,
+                _meta(title="并发 B", label="P3", part_index=2,
+                      part_name="BV1TEST00001-P3-并发B.srt"),
+                [], [_c("阈值", "定义", "00:30")], "h")
+
+        with self.slow_write():
+            self.save_in_threads([a, b])
+
+        text = self.read("concepts/阈值.md")
+        self.assertEqual(text.count("- ["), 3, "有一次出处被另一段并发盖掉了")
+        self.assertIn("并发 A · P2", text)
+        self.assertIn("并发 B · P3", text)
+        # 目录也得是两份都在：它同样是「先读库再整篇写回」
+        idx = self.read("INDEX.md")
+        self.assertIn("并发 A", idx)
+        self.assertIn("并发 B", idx)
+
+    def test_two_saves_that_collide_on_disk_keep_both_concepts(self) -> None:
+        """`A/B` 和 `A:B` 同时进来：各自扫到「这个文件名还空着」，然后互相覆盖。
+
+        两条概念只剩一条，而且两篇视频笔记都链到同一个文件——点进另一篇的
+        链接，看到的是别的概念的定义。
+        """
+        def a():
+            notes.save_video_note(
+                self.root, _meta(title="并发斜杠", label="P2", part_index=1,
+                                 part_name="BV1TEST00001-P2-斜杠.srt"),
+                [], [_c("A/B", "斜杠版本", "00:00")], "h")
+
+        def b():
+            notes.save_video_note(
+                self.root, _meta(title="并发冒号", label="P3", part_index=2,
+                                 part_name="BV1TEST00001-P3-冒号.srt"),
+                [], [_c("A:B", "冒号版本", "00:00")], "h")
+
+        with self.slow_write():
+            self.save_in_threads([a, b])
+
+        names = {}
+        for p in (self.root / "concepts").glob("*.md"):
+            meta, _ = notes.split_front(p.read_text(encoding="utf-8"))
+            names[meta["概念"]] = p.name
+        self.assertEqual(sorted(names), ["A/B", "A:B"], "两条撞名的概念少了一条")
+
+        # 链接得指向自己那条：名字对不上就是「点过去是别人」
+        for note, want in (("并发斜杠 · P2.md", "A/B"),
+                           ("并发冒号 · P3.md", "A:B")):
+            body = notes.split_front(self.read(note))[1]
+            target = re.search(r"\[\[([^\]|]+)", body).group(1)
+            self.assertEqual(names[want], target + ".md",
+                             "%s 的链接指到了另一条概念" % note)
+
+    def test_write_path_does_not_deadlock_on_itself(self) -> None:
+        """写入的锁必须可重入：`save_video_note` 里还会调 upsert/rebuild。
+
+        用普通 Lock 的话，第一个概念就自己把自己锁死——HTTP 请求永不返回，
+        而且不会抛任何异常，只能靠重启服务恢复。
+        """
+        done: list = []
+
+        def run():
+            notes.save_video_note(self.root, _meta(title="重入"), [],
+                                  [_c("阈值", "定义", "00:30"),
+                                   _c("限流", "单位时间放固定数量", "00:00")], "h")
+            done.append(True)
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        t.join(10)
+        self.assertTrue(done, "写笔记这条路上自己锁死了自己")
 
 
 class ConceptNoteTest(_TempNotes):

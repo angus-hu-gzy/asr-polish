@@ -40,16 +40,55 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import threading
 import unicodedata
 from datetime import datetime
+from functools import wraps
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from .._atomic import replace_with_retry
 from ..export import safe_name as _safe
 from .summary import (BODY_HEAD, BODY_TAIL, DEFAULT_TIMEOUT, SummaryError,
                       complete_parsed, json_object, parse_stamp, require_len)
+
+#: 写笔记的整条路排成一队：算落点 → 写视频笔记 → 追加概念 → 重建 INDEX。
+#:
+#: 为什么要锁：服务端是 `ThreadingHTTPServer`，一请求一线程。两个标签页同时点
+#: 「存入笔记库」就是两段真并发，而这一层全是「先读库、再整篇写回」：
+#:
+#: - 概念笔记的出处行：两边都读到「已有 1 条」，各自追加自己那条写回去，后写
+#:   的把先写的盖掉——库里少一次出处，而且从文件上看不出是谁删的；
+#: - 撞名的概念（`A/B` 与 `A:B` 落到同一个 `A_B.md`）：两边都扫到「这个名字还
+#:   空着」，于是互相覆盖，两条概念只剩一条，另一篇的链接指到别人的定义；
+#: - INDEX：重建时各自读一遍盘，后写完的那份漏掉对方刚写的视频。
+#:
+#: 这三种都不报错，只是**少东西**，所以只能靠排他，不能靠重试。
+#:
+#: 必须在「整段事务」上加锁，不能只在 `_write` 里加：落点是写之前读盘算出来的，
+#: 只锁写等于两边各拿一份过期的计划去写。
+#:
+#: 可重入是必须的：`save_video_note` 拿着锁还要调 `upsert_concept` 和
+#: `rebuild_index`。普通 Lock 会在第一个概念上把自己锁死，而且不抛任何异常。
+_NOTES_LOCK = threading.RLock()
+
+
+def _locked(fn: Callable) -> Callable:
+    """把整个函数放进 `_NOTES_LOCK`（可重入，嵌套调用不会自锁）。
+
+    只挂在**会读库再整篇写回**的那几个入口上：`save_video_note`、
+    `upsert_concept`、`rebuild_index`。纯读的 `load_*` / `search` 不挂——
+    它们看到的是某次原子替换之后的完整文件，不需要排队。
+    """
+
+    @wraps(fn)
+    def run(*args, **kwargs):
+        with _NOTES_LOCK:
+            return fn(*args, **kwargs)
+
+    return run
 
 #: 笔记库的目录名，落在服务进程的当前目录下（和 `FOR_AI.md` 的约定一致）。
 DIR_NAME = "notes"
@@ -401,6 +440,12 @@ def split_front(text: str) -> tuple[dict, str]:
 def _write(path: Path, text: str) -> None:
     """原子写：先写同目录临时文件，再替换。
 
+    临时文件名带进程号和线程号。固定叫 `<名字>.tmp` 的话，两个写入方会打开
+    **同一个**临时文件互相截断，而先完成的那次 `os.replace` 还会把这个文件从
+    另一个写入方脚下挪走——Windows 上实测是 `PermissionError: 拒绝访问`，
+    到面板上就变成「笔记写不进磁盘」。本进程内已经有 `_NOTES_LOCK` 排队，
+    这一条是同一台机器跑两个服务实例指着同一个笔记目录时的最后一道保险。
+
     直接覆盖一个正在 Obsidian 里开着的文件，Windows 上会拿到共享冲突；
     `replace_with_retry` 会退避重试。写完统一 LF，git 里好看。
 
@@ -408,7 +453,8 @@ def _write(path: Path, text: str) -> None:
     `newline` 参数，而这个项目支持 3.9。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = path.with_name("%s.%d.%d.tmp" % (path.name, os.getpid(),
+                                           threading.get_ident()))
     with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(text.replace("\r\n", "\n"))
     replace_with_retry(tmp, path)
@@ -834,6 +880,7 @@ def _plan_concepts(root: Path, concepts: list[dict]) -> list[dict]:
     return plan
 
 
+@_locked
 def save_video_note(root: Path, meta: dict, points: list[dict],
                     concepts: list[dict], host: str) -> dict:
     """写视频笔记 + 概念笔记 + INDEX。
@@ -847,6 +894,9 @@ def save_video_note(root: Path, meta: dict, points: list[dict],
     同一个概念在一条回答里出现两次（模型爱干这事：`阈值` 和 `  阈值 `）只在
     视频里写一行、出处也只追加一行。不归并的话，界面会同时说「新增 1 个、
     复用 1 个」，用户没法判断库到底是聚上了还是没聚上。
+
+    整段在 `_NOTES_LOCK` 里（`@_locked`）：两个标签页同时存时，这里算落点、
+    写视频笔记、追加概念、重建目录得是一件不可拆的事，见 `_NOTES_LOCK` 的注释。
     """
     points = [_with_sec(p, meta) for p in points]
     concepts = _dedupe([_with_sec(c, meta) for c in concepts])
@@ -898,6 +948,7 @@ def _with_sec(item: dict, meta: dict) -> dict:
     return out
 
 
+@_locked
 def upsert_concept(root: Path, c: dict, meta: dict, host: str,
                    slot: Optional[dict] = None) -> tuple[str, bool]:
     """把一个概念写进库：有就追加一行出处，没有就新建。返回 ``(路径, 是否新建)``。
@@ -993,6 +1044,7 @@ def _sorted(videos: list[dict], concepts: list[dict]) -> tuple:
     return videos, concepts
 
 
+@_locked
 def rebuild_index(root: Path, host: str = "") -> Path:
     """重写 ``notes/INDEX.md``：先视频、后概念，只做目录。
 
