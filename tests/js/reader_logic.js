@@ -348,6 +348,7 @@ async function main() {
     playerUrlZero: api.playerUrl({ bvid: "BV1RXx169Exu", page: 1 }, 0),
     partMulti: api.partMeta("BV1RXx169Exu-P2-【基础篇】Python解释器的安装.srt", task),
     partSingle: api.partMeta("BV1RXx169Exu-【2024最新】Python从零入门.srt", task),
+    partMd: api.partMeta("BV1RXx169Exu-P2-【基础篇】Python解释器的安装.md", task),
     partFromTarget: api.partMeta("手工放进来的.srt",
       { payload: { target: "https://www.bilibili.com/video/BV1xx411c7mD?p=3" } }),
     partNoBv: api.partMeta("随便.srt", { payload: { target: "up:12345" } }),

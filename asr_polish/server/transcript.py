@@ -25,7 +25,12 @@ from pathlib import Path
 from typing import Optional
 
 #: 各格式的信息量排序，数字小的优先。
-_FORMAT_RANK = {"srt": 0, "json": 1, "txt": 2}
+#:
+#: 必须和 `export.FORMATS` 一一对应——少一个，只导了那种格式的任务在阅读页上
+#: 就是一张白页，而 `_hint` 还会说「文件不在原处（被移动或删除？）」，让人去翻
+#: 输出目录。md 排最后：它的正文和 txt 一模一样（都是 `result.text`，没有时间
+#: 戳），只多了一段元信息头，能选 txt 就不必走要多一步剥头的路径。
+_FORMAT_RANK = {"srt": 0, "json": 1, "txt": 2, "md": 3}
 
 #: 单个文件最多吐多少段。一小时视频约 1000 段，两万段够覆盖 20 小时了；
 #: 设上限是为了挡住「误把整个语料目录当成一个任务产出」这种情况。
@@ -187,6 +192,8 @@ def _read_part(path: Path) -> dict:
                          "text": txt})
         if not segs and data.get("text"):
             segs = _txt_segments(data["text"])
+    elif ext == "md":
+        segs = _txt_segments(_md_body(raw))
     else:
         segs = _txt_segments(raw)
     truncated = len(segs) > _MAX_SEGMENTS
@@ -194,6 +201,28 @@ def _read_part(path: Path) -> dict:
         segs = segs[:_MAX_SEGMENTS]
     return {"name": path.name, "source": ext, "segments": segs,
             "truncated": truncated}
+
+
+def _md_body(raw: str) -> str:
+    """剥掉 `export.render_md` 写在前面的元信息，只留正文。
+
+    md 是唯一带包装的格式：标题、视频链接、UP 主、时长、抓取时间都排在正文
+    前面，用一行 `---` 隔开。不剥的话逐句里会混进「# 标题」「- 视频：https://…」
+    ——那些不是这个人说过的话，放在「逐句」里比缺内容更让人困惑。
+
+    只在认得出是自己写的头时才动手：首行 `# ` 开头、且前几十行里有本项目的
+    视频链接。用户手写或改过的 md 原样返回，猜错了会把真正文吃掉。
+    """
+    text = (raw or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.split("\n")
+    if not lines or not lines[0].startswith("# "):
+        return raw
+    if not any("bilibili.com/video/" in ln for ln in lines[:24]):
+        return raw
+    for i, ln in enumerate(lines[:24]):
+        if ln.strip() == "---":
+            return "\n".join(lines[i + 1:]).lstrip("\n")
+    return raw
 
 
 def _txt_segments(text: str) -> list[dict]:

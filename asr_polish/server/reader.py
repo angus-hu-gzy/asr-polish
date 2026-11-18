@@ -1144,7 +1144,7 @@ function partMeta(name, task){
   return {
     bvid: m ? m[1] : bvFromTarget(target),
     page: (m && m[2]) ? parseInt(m[2], 10) : pageFromTarget(target),
-    title: (name || "").replace(/\.(srt|json|txt)$/i, "").replace(BV_RE, "")
+    title: (name || "").replace(/\.(srt|json|txt|md)$/i, "").replace(BV_RE, "")
   };
 }
 
@@ -1205,11 +1205,12 @@ function partNote(part, pm){
   if (!pm.bvid){
     why = "这一篇定位不到视频：产物文件名里没有 BV 号（`--only` 重跑或手工放进"
         + "输出目录的文件会这样），所以点句子不跳转。读和搜索都照常。";
-  } else if (part.source === "txt"){
-    // 落盘时只要了 txt。走到这儿只有一种原因：这次请求里没有 srt（默认还是
-    // txt 的老任务，或者命令行写了 --format txt）。所以补抓一定有意义——
-    // 必剪 ASR 那条路落的是带占位时间的 srt，不会落到这个分支。
-    why = "这一篇来自纯文本导出（落盘时只写了 txt），没有时间戳，所以点句子不能跳转。";
+  } else if (part.source === "txt" || part.source === "md"){
+    // 落盘时只要了纯文本（txt 或 md）。走到这儿只有一种原因：这次请求里没有
+    // srt（默认还是 txt 的老任务，或者命令行写了 --format txt）。所以补抓一定
+    // 有意义——必剪 ASR 那条路落的是带占位时间的 srt，不会落到这个分支。
+    why = "这一篇来自纯文本导出（落盘时只写了 " + part.source
+        + "），没有时间戳，所以点句子不能跳转。";
   } else {
     why = "这一篇没有逐句时间戳：必剪 ASR 只给了 0 → 99:59:59 的一整块占位时间，"
         + "整篇是按行拆开的。跳转会落到视频开头，看着像跳错，所以这里不给跳。";
@@ -1218,7 +1219,7 @@ function partNote(part, pm){
   box.appendChild(document.createTextNode(" · " + why));
   // 说得清「怎么补」不够，得让人点得动。原来这里只有一句「命令行加 --format
   // srt」，对着从面板建任务的人等于没说：面板上没有地方填 formats。
-  if (part.source === "txt" && pm.bvid){
+  if ((part.source === "txt" || part.source === "md") && pm.bvid){
     var redo = el("button", "btn sm redo", "重抓这一篇");
     redo.type = "button";
     redo.addEventListener("click", function(){ refetchWithTime(pm, redo, box); });
@@ -4256,7 +4257,7 @@ function paintRow(i){
   var row = run.plan && run.plan.rows[i];
   if (row && !row.hasTime){
     var tag = el("span", "nt", "无时间轴");
-    tag.title = row.source === "txt"
+    tag.title = (row.source === "txt" || row.source === "md")
       ? "这一篇来自纯文本导出，没有时间戳：三层照跑，但不带锚点"
       : "这一篇只有必剪 ASR 的占位时间：三层照跑，但不带锚点";
     box.appendChild(tag);

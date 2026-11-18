@@ -466,7 +466,7 @@ class ReaderMarkupTest(unittest.TestCase):
         self.assertIn("if (part.hasTime && !valid)", body)
 
     def test_txt_only_part_offers_a_redo_button(self) -> None:
-        """只落了 txt 的篇：给一个能点的按钮，不是让人去学命令行。
+        """只落了纯文本的篇：给一个能点的按钮，不是让人去学命令行。
 
         原来这句写的是「命令行加 --format srt / 接口里写 formats」。对着从
         面板建任务的人等于没说：那两处他都没有。说得清「怎么补」不够，得让
@@ -474,15 +474,24 @@ class ReaderMarkupTest(unittest.TestCase):
         """
         body = re.search(r"function partNote\(.*?\n\}", _page_script(), re.S)
         self.assertIsNotNone(body, "找不到 partNote")
-        self.assertIn('el("button", "btn sm redo"', body.group(0))
+        src = body.group(0)
+        self.assertIn('el("button", "btn sm redo"', src)
         # 只有「这次确实没要 srt」才给按钮。必剪 ASR 落的是带占位时间的 srt，
         # 走不到这一支；没有 BV 号的那一篇重抓也无从下手，也不给。
-        self.assertIn('part.source === "txt" && pm.bvid', body.group(0))
+        #
+        # 纯文本有两种写法（txt 和 md），判据是「没有时间戳的那两种都算」而不是
+        # 抄一遍格式名：只认 txt 时，只导了 md 的人看不到这个按钮。
+        redo = re.search(r"if \((.+?)\)\s*\{\s*\n\s*var redo", src, re.S)
+        self.assertIsNotNone(redo, "找不到挂按钮的那个条件")
+        cond = redo.group(1)
+        self.assertIn("part.source", cond)
+        self.assertIn("pm.bvid", cond)          # 没有 BV 号的不给
+        self.assertIn("md", cond)               # 纯文本的两种写法都要认
         # 代价写清楚：新任务、只抓这一篇、原来那份留着
-        self.assertIn("原来那个任务留着不动", body.group(0))
-        self.assertIn('"只抓第 " + (pm.page || 1)', body.group(0))
+        self.assertIn("原来那个任务留着不动", src)
+        self.assertIn('"只抓第 " + (pm.page || 1)', src)
         # 按钮另起一行。和解释挤同一行时说明会被折成两行，第一版就这样
-        self.assertIn('el("div", "redo-row")', body.group(0))
+        self.assertIn('el("div", "redo-row")', src)
 
     def test_redo_asks_for_a_time_axis(self) -> None:
         """重抓这一篇：要 srt，只抓这一分 P，失败要说原因。
@@ -801,6 +810,16 @@ class ReaderLogicTest(unittest.TestCase):
         single = self.d["partSingle"]
         self.assertEqual(single["page"], 1)
         self.assertEqual(single["title"], "【2024最新】Python从零入门")
+
+    def test_part_meta_strips_the_md_suffix_too(self) -> None:
+        """只导了 md 的时候，分 P 名不能带着 `.md` 出现在标题里。
+
+        剥扩展名那张清单是手写的，跟 `export.FORMATS` 漏一项就是这种后果：
+        标题变成「【基础篇】Python解释器的安装.md」。
+        """
+        md = self.d["partMd"]
+        self.assertEqual(md["title"], "【基础篇】Python解释器的安装")
+        self.assertEqual(md["page"], 2)
 
     def test_part_meta_falls_back_to_target(self) -> None:
         """文件名没 BV 号（--only 重跑/手工文件）时退回 target，并读出 ?p=3。"""

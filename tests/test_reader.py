@@ -31,6 +31,24 @@ SRT = (
 )
 
 
+def _real_md() -> str:
+    """md 夹具走真正的导出函数，不手抄。
+
+    手抄一份的话，`render_md` 以后改了头部结构，测试还照样绿——而真跑起来阅读页
+    会把新的那几行元信息当正文第一段显示。
+    """
+    from asr_polish.bili import FetchResult
+    from asr_polish.export import render_md
+    res = FetchResult(
+        bvid="BV1dd", title="标题", owner="某人", duration=62,
+        source="字幕轨", subtitle_lan="ai-zh",
+        text="第一句\n第二句\n",
+        segments=[{"start": 0.0, "end": 1.0, "text": "第一句"},
+                  {"start": 1.0, "end": 2.0, "text": "第二句"}],
+    )
+    return render_md(res)
+
+
 def _opener():
     """直连 127.0.0.1，不走系统代理。
 
@@ -181,6 +199,61 @@ class TestBuild(unittest.TestCase):
 
     def test_hint_when_no_result(self) -> None:
         self.assertTrue(T.build("T1", None)["hint"])
+
+    def test_format_rank_covers_every_export_format(self) -> None:
+        """导出的每一种格式，阅读页都得认得。
+
+        这两张清单分居两个模块，谁加格式时漏了另一头，症状是「只导了那种格式
+        的任务在阅读页上一片空白，还说文件被移动或删除」——md 就是这么漏的。
+        与其再记一条约定，不如让它变成一条测试。
+        """
+        from asr_polish import export
+        self.assertEqual(set(T._FORMAT_RANK), set(export.FORMATS))
+
+    def test_md_only_result_is_still_readable(self) -> None:
+        """只勾了 md 时，阅读页以前是空的，还说「文件不在原处（被移动或删除？）」。
+
+        文件明明就在那儿，这句话会让人去翻输出目录、去确认是不是被同步盘搬走了。
+        """
+        md = self._write("BV1dd-标题.md", _real_md())
+        out = T.build("T1", self._result([md], parts_written=1))
+        self.assertEqual(len(out["parts"]), 1)
+        self.assertEqual(out["parts"][0]["source"], "md")
+        self.assertNotIn("不在原处", out["hint"])
+        self.assertEqual([s["text"] for s in out["parts"][0]["segments"]],
+                         ["第一句", "第二句"])
+
+    def test_md_header_does_not_become_the_first_segments(self) -> None:
+        """md 是唯一带包装的格式：标题、UP 主、时长都在正文前面。
+
+        不剥的话逐句里会混进「# 标题」「- 视频：https://…」——那些不是这个人
+        说过的话。
+        """
+        md = self._write("BV1dd-标题.md", _real_md())
+        segs = T.build("T1", self._result([md]))["parts"][0]["segments"]
+        joined = "\n".join(s["text"] for s in segs)
+        for junk in ("# ", "UP 主", "bilibili.com/video", "抓取时间", "---"):
+            self.assertNotIn(junk, joined)
+        self.assertIsNone(segs[0]["start"])      # md 没有时间戳
+
+    def test_txt_wins_over_md_for_same_stem(self) -> None:
+        """同 stem 的 md 和 txt 内容一样，宁可选不用剥头的那个。
+
+        这条钉的是「加进格式清单时排序别乱」：md 排在 txt 之后，等价内容就不该
+        走要多一步处理的路径。
+        """
+        txt = self._write("BV1ee.txt", "第一句\n")
+        md = self._write("BV1ee.md", _real_md())
+        out = T.build("T1", self._result([md, txt]))
+        self.assertEqual(len(out["parts"]), 1)
+        self.assertEqual(out["parts"][0]["source"], "txt")
+
+    def test_md_without_header_is_read_as_is(self) -> None:
+        """手写/老版本的 md 没有那段元信息头，别去猜哪里是正文。"""
+        path = self._write("BV1ff.md", "## 我自己写的\n\n第一行\n")
+        segs = T.build("T1", self._result([path]))["parts"][0]["segments"]
+        self.assertEqual(segs[0]["text"], "## 我自己写的")
+        self.assertEqual(len(segs), 2)
 
 
 class _ServerBase(unittest.TestCase):
