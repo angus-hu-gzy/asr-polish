@@ -285,15 +285,37 @@ async function getJSON(url){
   return d;
 }
 
+/* 请求回来的顺序不保证：输入框一改就发一次，先发的那次完全可能后到。没有这道
+   闸门，屏幕会先显示新的、再自己退回旧的（搜「阈值」结果变回「阈」的结果），
+   而且清空输入框后还能被上一轮的搜索结果盖回去。只认最新那一次的编号，其余
+   一律丢弃——包括报错，否则老请求的失败会顶掉新请求的内容。 */
+var reqSeq = 0;
+
 async function loadAll(){
-  try { paint(await getJSON("/api/notes"), ""); }
-  catch(e){ showError("读不到笔记库：" + (e.message || e)); }
+  var mine = ++reqSeq;
+  try {
+    var d = await getJSON("/api/notes");
+    if (mine !== reqSeq) return;
+    paint(d, "");
+  }
+  catch(e){
+    if (mine !== reqSeq) return;
+    showError("读不到笔记库：" + (e.message || e));
+  }
 }
 
 async function doSearch(q){
-  if (!q){ loadAll(); return }
-  try { paint(await getJSON("/api/notes/search?q=" + encodeURIComponent(q)), q); }
-  catch(e){ showError("搜不了：" + (e.message || e)); }
+  if (!q){ return loadAll() }
+  var mine = ++reqSeq;
+  try {
+    var d = await getJSON("/api/notes/search?q=" + encodeURIComponent(q));
+    if (mine !== reqSeq) return;
+    paint(d, q);
+  }
+  catch(e){
+    if (mine !== reqSeq) return;
+    showError("搜不了：" + (e.message || e));
+  }
 }
 
 function showError(msg){
@@ -323,7 +345,8 @@ var start = initialQuery();
 if (start){ $("#q").value = start; doSearch(start); }
 else loadAll();
 
-/* 测试钩子：这几个都是纯函数（不读 DOM、不发请求），能带着夹具在 node 里跑。 */
+/* 测试钩子：前几个是纯函数（不读 DOM、不发请求），能带着夹具在 node 里跑；
+   最后两个不是——竞态那条测试要按自己的节奏放行请求，得够得着它们。 */
 window.__notes = {
   esc: esc,
   inline: inline,
@@ -333,7 +356,9 @@ window.__notes = {
   metaBits: metaBits,
   clockLabel: clockLabel,
   renderVideos: renderVideos,
-  renderConcepts: renderConcepts
+  renderConcepts: renderConcepts,
+  loadAll: loadAll,
+  doSearch: doSearch
 };
 })();
 </script>

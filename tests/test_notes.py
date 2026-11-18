@@ -1229,5 +1229,70 @@ class NotesPageTest(unittest.TestCase):
         self.assertEqual(self.d["metaBits"][1], "")
 
 
+@unittest.skipUnless(_NODE, "没有 node，跳过前端逻辑测试")
+class NotesPageRaceTest(unittest.TestCase):
+    """搜索框的请求顺序。
+
+    输入框一改就发一次请求，回答的顺序不保证。两次都成功、只是先发的那次慢
+    一点，屏幕就会先显示新的、再自己退回旧的——用户看到「搜的是 A、列的是 B」，
+    过一会儿又变回来，还不知道该信哪个。
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False,
+                                         encoding="utf-8") as fh:
+            fh.write(_page_script())
+            cls.script = fh.name
+        out = subprocess.run([_NODE, str(_HARNESS), cls.script, "--race"],
+                             capture_output=True, encoding="utf-8",
+                             errors="replace", timeout=60)
+        if out.returncode != 0 or not out.stdout:
+            raise AssertionError("node 跑竞态场景失败（退出码 %s）：%s\n%s"
+                                 % (out.returncode, (out.stdout or "")[-500:],
+                                    (out.stderr or "")[-2000:]))
+        cls.d = json.loads(out.stdout)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        Path(cls.script).unlink(missing_ok=True)
+
+    def test_older_answer_never_overwrites_a_newer_one(self) -> None:
+        """搜「阈」→ 搜「阈值」，快的那个先回来，慢的（更旧的）后回来。
+
+        最终留在屏幕上必须是「阈值」那一次；退回「阈」等于自己把用户刚搜的东西
+        换掉。
+        """
+        self.assertIn("新的那次", self.d["afterNew"]["videos"])
+        self.assertIn("阈值", self.d["afterNew"]["count"])
+        self.assertNotIn("旧的那次", self.d["afterOld"]["videos"])
+        self.assertIn("新的那次", self.d["afterOld"]["videos"])
+        self.assertIn("阈值", self.d["afterOld"]["count"])
+
+    def test_clearing_the_box_is_not_undone_by_a_slow_search(self) -> None:
+        """清空输入框会重新读全库；此前那次搜索晚到时不能把全库盖成搜索结果。"""
+        got = self.d["afterClear"]
+        self.assertIn("全库", got["videos"])
+        self.assertNotIn("上一轮搜索", got["videos"])
+        self.assertNotIn("搜「", got["count"])
+
+    def test_answer_in_order_still_updates(self) -> None:
+        """回答顺序和发出顺序一致时，后发的那次必须能盖掉先发的。
+
+        只有这条成立，才说明闸门是按「谁最新」判的，而不是「谁先到」。
+        """
+        got = self.d["inOrder"]
+        self.assertIn("乙的结果", got["videos"])
+        self.assertNotIn("甲的结果", got["videos"])
+        self.assertIn("乙", got["count"])
+
+    def test_failed_newest_request_does_not_fall_back_to_the_old_result(self) -> None:
+        """最新那次失败、老的那次随后成功：要报错，不能把老结果画上去冒充。"""
+        got = self.d["newestFails"]
+        self.assertIn("服务端炸了", got["videos"])
+        self.assertNotIn("甲的结果", got["videos"])
+        self.assertNotIn("搜「甲」", got["count"])
+
+
 if __name__ == "__main__":
     unittest.main()

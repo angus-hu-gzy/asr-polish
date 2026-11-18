@@ -33,19 +33,23 @@ function fakeNode(tag) {
   };
 }
 
-function makeEnv(src, search) {
+function makeEnv(src, search, opts) {
+  opts = opts || {};
+  // 同一个选择器永远拿到同一个桩：竞态那条要看「最后画上去的是谁」，按次新建
+  // 节点的话画完就查不着了。
+  const nodes = {};
   const doc = {
     body: fakeNode("body"),
-    querySelector: () => fakeNode("div"),
+    querySelector: (sel) => nodes[sel] || (nodes[sel] = fakeNode("div")),
     querySelectorAll: () => [],
     createElement: (t) => fakeNode(t),
     addEventListener() {},
   };
   const win = {
     document: doc,
-    // fetch 永远 pending：这一层只验纯函数，不许真去请求。页面自己在加载时会
-    // 调一次 loadAll()，桩里让它挂着就行。
-    fetch: () => new Promise(() => {}),
+    // 默认 fetch 永远 pending：纯函数那一层不许真去请求。页面自己在加载时会
+    // 调一次 loadAll()，桩里让它挂着就行。竞态那条会传自己的 fetch 进来。
+    fetch: opts.fetch || (() => new Promise(() => {})),
     location: { search: search || "" },
     setTimeout: () => 0,
     clearTimeout: () => {},
@@ -60,8 +64,7 @@ function makeEnv(src, search) {
   return win;
 }
 
-function main() {
-  const src = fs.readFileSync(process.argv[2], "utf8");
+function main(src) {
   const api = makeEnv(src, "").__notes;
   if (!api) throw new Error("笔记页没有挂出 window.__notes，测试钩子被删了？");
 
@@ -171,4 +174,117 @@ function main() {
   process.stdout.write(JSON.stringify(out));
 }
 
-main();
+// ── 竞态：谁的回答最后落到屏幕上 ────────────────────────────────────────────
+//
+// 搜索框一改就发一次请求，而回答的顺序不保证。两次都成功、只是先发的那次慢
+// 一点，屏幕就会先显示新的、再自己退回旧的——用户看到「搜的是 A，列的是 B」，
+// 过一会儿又变回来，也不知道该信哪个。
+//
+// 这里不模拟网络时序，直接把「谁先回答」捏在手里：先把第二次的回答放行，再把
+// 第一次的放行，看最终留在屏幕上的是谁。
+
+function scene(src) {
+  const pending = [];
+  const win = makeEnv(src, "", {
+    fetch: (url) => new Promise((resolve) => pending.push({ url, resolve })),
+  });
+  if (!win.__notes) throw new Error("笔记页没有挂出 window.__notes");
+  return {
+    api: win.__notes,
+    // 页面自己加载时已经发了一次 loadAll（永远挂着），调用是从 1 开始数的
+    pending,
+    node: (sel) => win.document.querySelector(sel),
+    snap: () => ({
+      count: win.document.querySelector("#count").textContent,
+      videos: win.document.querySelector("#videos").innerHTML,
+      concepts: win.document.querySelector("#concepts").innerHTML,
+    }),
+  };
+}
+
+const tick = () => new Promise((r) => setImmediate(r));
+
+async function settle(n) {
+  for (let i = 0; i < (n || 6); i++) await tick();
+}
+
+function reply(list) {
+  return { ok: true, status: 200, json: async () => ({ videos: list, concepts: [] }) };
+}
+
+function video(title) {
+  return { file: title + ".md", title, date: "2026-11-07", body: "" };
+}
+
+async function raceOut(src) {
+  // ① 慢的旧请求晚于快的新请求到达
+  const a = scene(src);
+  a.api.doSearch("阈");
+  a.api.doSearch("阈值");
+  if (a.pending.length !== 3) {
+    throw new Error("应当有 3 次请求（自带 loadAll + 两次搜索），实际 " +
+                    a.pending.length);
+  }
+  a.pending[2].resolve(reply([video("新的那次")]));
+  await settle();
+  const afterNew = a.snap();
+  a.pending[1].resolve(reply([video("旧的那次")]));
+  await settle();
+  const afterOld = a.snap();
+
+  // ② 清空搜索框：慢的搜索晚于「读全库」到达，不能把全库盖成搜索结果
+  const b = scene(src);
+  b.api.doSearch("阈");
+  b.api.doSearch("");
+  if (b.pending.length !== 3) {
+    throw new Error("应当有 3 次请求，实际 " + b.pending.length);
+  }
+  b.pending[2].resolve(reply([video("全库")]));
+  await settle();
+  b.pending[1].resolve(reply([video("上一轮搜索")]));
+  await settle();
+  const afterClear = b.snap();
+
+  // ③ 反过来：回答顺序和发出顺序一致时，后发的那次必须能盖掉先发的。
+  //    只有这条成立，才说明闸门按「谁最新」判，而不是「谁先到」。
+  const c = scene(src);
+  c.api.doSearch("甲");
+  c.api.doSearch("乙");
+  c.pending[1].resolve(reply([video("甲的结果")]));
+  await settle();
+  c.pending[2].resolve(reply([video("乙的结果")]));
+  await settle();
+  const inOrder = c.snap();
+
+  // ④ 最新那次失败、老的那次随后成功：只报错，不许把老的画上去
+  const d = scene(src);
+  d.api.doSearch("甲");
+  d.api.doSearch("乙");
+  d.pending[2].resolve({ ok: false, status: 500,
+                         json: async () => ({ error: "服务端炸了" }) });
+  await settle();
+  d.pending[1].resolve(reply([video("甲的结果")]));
+  await settle();
+  const newestFails = d.snap();
+
+  return {
+    afterNew: afterNew,
+    afterOld: afterOld,
+    afterClear: afterClear,
+    inOrder: inOrder,
+    newestFails: newestFails,
+  };
+}
+
+const file = process.argv[2];
+if (process.argv[3] === "--race") {
+  raceOut(fs.readFileSync(file, "utf8")).then(
+    (d) => process.stdout.write(JSON.stringify(d)),
+    (e) => {
+      console.error((e && e.stack) || String(e));
+      process.exit(1);
+    }
+  );
+} else {
+  main(fs.readFileSync(file, "utf8"));
+}
