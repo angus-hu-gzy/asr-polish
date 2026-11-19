@@ -148,7 +148,8 @@ def _cmd_subs(args: argparse.Namespace) -> None:
     from .bili import (BiliError, BiliLoginRequired, BiliRiskControl, configure,
                        expand_pages, extract_bvid, extract_mid, fetch,
                        get_video_info, group_only_pages, list_season,
-                       list_up_videos, parse_only_targets, search_videos)
+                       list_up_videos, parse_only_targets, search_videos,
+                       verify_login)
 
     configure(min_interval=args.min_interval)
 
@@ -290,6 +291,13 @@ def _cmd_subs(args: argparse.Namespace) -> None:
                 continue
             if not res.segments:
                 row["nosub"] += 1
+                # 未登录时 B站 不给 AI 字幕，「这条没字幕」和「没登录」在结果上
+                # 长得一模一样。记一条，汇总时用来归因——整批都空的时候，多半
+                # 不是这些视频的问题。
+                for w in res.warnings:
+                    if "未登录" in w:
+                        row["nosub_note"] = w
+                        break
                 continue
             if args.correct:
                 fixed = [correct_text(s["text"]).text for s in res.segments]
@@ -322,6 +330,15 @@ def _cmd_subs(args: argparse.Namespace) -> None:
             extra = f"{row['ok']} 条"
         print(f"[{i}/{total}] {mark} {row['bvid']} {row['title'][:34]}  {extra}",
               file=sys.stderr, flush=True)
+
+    # 未登录时每条都会显示「无字幕」，跑完 20 条才发现太亏——先探一次。
+    # 结果有 5 分钟缓存，后面 fetch 里那次不会再打请求。**不中止**：普通字幕轨
+    # 未登录也拿得到，只有 AI 字幕要登录态，直接停会把能抓的也拦掉。
+    logged_out = verify_login(args.cookie) is False
+    if logged_out and not args.quiet:
+        print("提示：Cookie 已失效（nav 接口返回未登录）。B站的 AI 字幕要登录态"
+              "才给，这一轮可能整批都显示「无字幕」——那不是视频没有字幕。\n"
+              "      修复：重新导出 cookies.txt 后重跑。", file=sys.stderr)
 
     rows: list[dict] = []
     total = len(targets)
@@ -374,6 +391,12 @@ def _cmd_subs(args: argparse.Namespace) -> None:
         verdict = "全部成功（%d 条）" % ok
     elif fail and not ok and not nosub:
         verdict = "全部失败"
+    elif not ok and nosub and logged_out:
+        # 全都没字幕 + 没登录：这句不能写「这些视频没有字幕」。B站 的 AI 字幕
+        # 要登录态才给，未登录时「没取到」和「本来没有」在返回里一模一样，
+        # 照原样报会让人去换视频、换 UP 主，怎么试都一样。
+        verdict = ("没有产出：%d 条都没取到字幕，而 Cookie 已失效——"
+                   "不是这些视频没有字幕，是 B站的 AI 字幕要登录态才给" % nosub)
     elif not ok:
         verdict = "没有产出：%d 条都没有字幕" % nosub
     else:
@@ -393,7 +416,10 @@ def _cmd_subs(args: argparse.Namespace) -> None:
     if retry and not abort.is_set():
         print("\n只重跑失败的 %d 条（已成功的不会重做）：\n  asr-polish subs "
               "--only %s" % (len(retry), " ".join(retry)), file=sys.stderr)
-    if not ok and (fail or not nosub):
+    if not ok and nosub and logged_out:
+        print("修复：重新导出 cookies.txt，放到 README「登录态」一节列出的任一位置"
+              "（或用 --cookie 指定），再重跑。", file=sys.stderr)
+    if not ok and (fail or not nosub or logged_out):
         # 一条都没拿到：要么全失败，要么一条都没轮到（--pages 越界）。
         # 「有字幕需求但没有一条拿到」另算，那种情况输出里已经写明原因。
         sys.exit(2)

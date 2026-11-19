@@ -262,5 +262,58 @@ class TestSubmitAsksForTimeAxis(unittest.TestCase):
         self.assertEqual(payload["formats"], ["txt"])
 
 
+class TestSubsAllNoSubtitle(unittest.TestCase):
+    """整批都没字幕时，得说清「是不是 Cookie 的问题」。
+
+    真跑出来的形状：cookie 过期（nav 返回未登录）之后跑两条真实视频，
+    输出是「结果：没有产出：2 条都没有字幕」——听着像这两个视频本来就没字幕。
+    实际是 B站 的 AI 字幕要登录态才给，未登录时「没取到」和「本来没有」长得
+    一模一样。用户照这个结论去换视频、换 UP 主，怎么试都一样。
+    """
+
+    INFO = {"title": "标题", "cid": 1, "duration": 10,
+            "pages": [{"cid": 1, "part": "P1", "duration": 5}]}
+
+    def _run(self, logged_out: bool):
+        from asr_polish import bili
+
+        def fake_fetch(bvid, cookie_path=None, page=1, allow_asr=False):
+            r = bili.FetchResult(bvid=bvid, title="标题", owner="", duration=10,
+                                 source="无字幕", text="", page=page, segments=[])
+            r.warnings.append("该视频没有可用字幕轨（未启用必剪 ASR 兜底）")
+            if logged_out:
+                r.warnings.append(
+                    "当前未登录：B站的 AI 字幕需要登录态才能取到，"
+                    "所以上面的「无字幕」可能并不准确——更新 Cookie 后再试一次")
+            return r
+
+        err = io.StringIO()
+        code = 0
+        with mock.patch.object(bili, "get_video_info", lambda *a, **k: self.INFO), \
+                mock.patch.object(bili, "fetch", fake_fetch), \
+                mock.patch.object(bili, "verify_login", lambda *a, **k: not logged_out), \
+                mock.patch("sys.stderr", err), \
+                mock.patch("sys.stdout", io.StringIO()):
+            try:
+                cli.main(["subs", "--only", "BV1xx411c003", "-o", "subs_tmp"])
+            except SystemExit as exc:
+                code = exc.code
+        return code, err.getvalue()
+
+    def test_logged_out_says_cookie_may_be_the_cause(self) -> None:
+        code, text = self._run(logged_out=True)
+        self.assertIn("Cookie 已失效", text)
+        self.assertIn("不是这些视频没有字幕", text)
+        self.assertIn("重新导出 cookies.txt", text)
+        # 这条不是「跑完了」：脚本化调用要能看出需要人处理
+        self.assertEqual(code, 2)
+
+    def test_no_subtitle_without_login_problem_keeps_old_wording(self) -> None:
+        code, text = self._run(logged_out=False)
+        self.assertIn("2 条都没有字幕".replace("2", "1"), text)
+        self.assertNotIn("Cookie 已失效", text)
+        self.assertEqual(code, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
